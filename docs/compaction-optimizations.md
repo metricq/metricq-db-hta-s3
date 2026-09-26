@@ -48,6 +48,16 @@ tests in `engine/compaction_optimization_test.go`.
   result order are preserved. Blocks larger than 8 MiB remain individual reads.
 - Aggregate queries skip neighboring blocks, while FLEX still includes the bucket
   containing an unaligned start. Raw queries keep boundary neighbors.
+- A committed flush keeps the decoded rightmost index path it wrote for each
+  stream, bounded to 2^19 entries. The next flush appends without re-reading
+  those pages under the ingestion mutex. With 1500 metrics and five levels, an
+  append-only flush previously issued 4500 sequential index GETs; it now issues
+  none, and in-memory flush time no longer grows with rightmost-leaf size
+  (0.7-1.1 s instead of 0.9-5.3 s over six flushes). Compaction-replaced roots miss
+  and are read once. Selection also treats pinned one-entry roots as known
+  singletons, independent of shared-cache warmth. `TestFlushReusesPinnedIndexTails`
+  asserts zero index reads across leaf splits, and correctness after compaction
+  and restart.
 
 The executable defaults to `append_only_aggregates=true`, with 512 source blocks
 per job and a 30-second window for starting consecutive jobs every 60 seconds.

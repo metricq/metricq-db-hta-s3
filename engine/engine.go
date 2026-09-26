@@ -126,6 +126,9 @@ type Engine struct {
 	nodeCache                map[blob]indexNode
 	sharedNodes              *indexPageCache
 	sharedBlocks             *dataBlockCache
+	tailPages                map[blob]indexNode
+	tailPaths                map[string]tailPath
+	tailEntries              int
 	state                    manifest
 	committed                manifest
 	pins                     map[uint64]int
@@ -470,6 +473,7 @@ func (e *Engine) Flush(ctx context.Context) (err error) {
 	next := e.state
 	refDelta := make(map[string]int64)
 	var publishedData, publishedIndex *pack
+	var stagedTails map[string]tailPath
 	next.Sequence = e.sequence
 	next.Generation++
 	next.Roots = make(map[string]map[int64]blob, len(e.state.Roots))
@@ -499,6 +503,8 @@ func (e *Engine) Flush(ctx context.Context) (err error) {
 			return packErr
 		}
 		publishedIndex = indexPack
+		indexPack.nodes = make(map[blob]indexNode)
+		stagedTails = make(map[string]tailPath)
 		type indexUpdate struct {
 			items       []indexEntry
 			replaceTail bool
@@ -576,6 +582,7 @@ func (e *Engine) Flush(ctx context.Context) (err error) {
 					return appendErr
 				}
 				next.Roots[metric][level] = root
+				stagedTails[streamKey(metric, level)] = rightmostPath(root, indexPack.nodes)
 			}
 		}
 		if _, err = e.put(ctx, indexPack.key, indexPack.buf.Bytes(), &empty); err != nil {
@@ -640,6 +647,10 @@ func (e *Engine) Flush(ctx context.Context) (err error) {
 		e.garbage = next.Garbage
 	}
 	e.version = version
+	if publishedIndex != nil {
+		e.pinTailPaths(stagedTails, publishedIndex.nodes)
+		publishedIndex.nodes = nil
+	}
 	e.pending = nil
 	e.pendingBytes = 0
 	e.oldestWAL = 0

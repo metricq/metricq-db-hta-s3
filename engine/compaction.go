@@ -97,6 +97,7 @@ func (e *Engine) reserveCompaction(ctx context.Context) (CompactionJob, error) {
 	scanAfter := e.candidateCursor
 	seedObject, seedOffset := e.compactionSeedObject, e.compactionSeedOffset
 	evacuateObject := e.compactionEvacuateObject
+	singletons := e.singletonTailRoots()
 	e.pin(generation)
 	e.mu.Unlock()
 	keepPin := false
@@ -181,6 +182,9 @@ func (e *Engine) reserveCompaction(ctx context.Context) (CompactionJob, error) {
 					// Known singleton tails must not consume the bounded stream-search
 					// budget on every pass. A flush changes the root/hash, so this
 					// shortcut cannot hide subsequently appended fragments.
+					if singletons[root] {
+						continue
+					}
 					if snapshot.sharedNodes != nil {
 						if node, ok := snapshot.sharedNodes.get(root); ok && node.Leaf && len(node.Entries) == 1 {
 							continue

@@ -44,6 +44,7 @@ type pack struct {
 	descriptors []BlockInfo
 	metric      string
 	level       int64
+	nodes       map[blob]indexNode // decoded pages, only when requested
 }
 
 func newPack(prefix string) (*pack, error) {
@@ -109,6 +110,9 @@ func (e *Engine) readNode(ctx context.Context, r blob) (indexNode, error) {
 			return indexNode{}, fmt.Errorf("index operation budget exceeded")
 		}
 	}
+	if n, ok := e.tailPages[r]; ok {
+		return n, nil
+	}
 	if e.nodeCache != nil {
 		if n, ok := e.nodeCache[r]; ok {
 			return n, nil
@@ -155,6 +159,9 @@ func writeNode(p *pack, n indexNode) (indexEntry, error) {
 		return indexEntry{}, err
 	}
 	edge := indexEntry{First: n.Entries[0].First, Last: n.Entries[len(n.Entries)-1].Last, Blob: p.add(b)}
+	if p.nodes != nil {
+		p.nodes[edge.Blob] = indexNode{Leaf: n.Leaf, Entries: append([]indexEntry(nil), n.Entries...)}
+	}
 	p.descriptors = append(p.descriptors, BlockInfo{Metric: p.metric, Level: p.level, Entry: edge, Index: true})
 	return edge, nil
 }

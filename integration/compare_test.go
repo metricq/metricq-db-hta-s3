@@ -241,7 +241,7 @@ func TestLegacyRequestParity(t *testing.T) {
 		}
 		docker(t, "rm", "-f", id)
 	})
-	opts := engine.Options{WALDirectory: t.TempDir(), ObjectTarget: 4096, BuilderHard: 8 << 20}
+	opts := engine.Options{WALDirectory: t.TempDir(), ObjectTarget: 4096, BuilderHard: 8 << 20, BackgroundMaintenance: true, Compaction: engine.CompactionOptions{Enabled: true, DeadFraction: .05, BytesPerSecond: 64 << 20, MaxBlocks: 512, MergeSmallBlocks: true}}
 	var current *engine.Engine
 	blocked := make(chan struct{})
 	var blockedOnce sync.Once
@@ -398,13 +398,23 @@ func TestLegacyRequestParity(t *testing.T) {
 		}
 	}
 	comparisons := 0
-	for _, phase := range []string{"hot", "WAL-restart", "S3-restart"} {
+	for _, phase := range []string{"hot", "WAL-restart", "S3-restart", "compacted", "compacted-S3-restart"} {
 		if phase == "WAL-restart" {
 			stop()
 			startDB()
 			waitReady(id+".new.dense", sets[0].points[len(sets[0].points)-1].Time)
 		}
-		if phase == "S3-restart" {
+		if phase == "compacted" {
+			if err = current.Flush(ctx); err != nil {
+				t.Fatal(err)
+			}
+			for i := 0; i < 4; i++ {
+				if err = current.CompactOnce(ctx); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+		if phase == "S3-restart" || phase == "compacted-S3-restart" {
 			if err = current.Flush(ctx); err != nil {
 				t.Fatal(err)
 			}

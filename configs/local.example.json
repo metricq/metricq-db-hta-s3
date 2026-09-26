@@ -17,6 +17,18 @@
     "wal_hard_bytes": 83886080,
     "object_target_bytes": 4194304,
     "builder_hard_bytes": 33554432,
-    "max_query_rows": 1000000
+    "max_query_rows": 1000000,
+    "compaction": {
+      "enabled": true,
+      "interval_seconds": 60,
+      "cooldown_seconds": 60,
+      "max_duration_seconds": 60,
+      "max_job_bytes": 33554432,
+      "max_blocks": 128,
+      "object_bytes": 4194304,
+      "bytes_per_second": 8388608,
+      "dead_fraction": 0.4,
+      "merge_small_blocks": true
+    }
   }
 }

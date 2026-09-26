@@ -63,52 +63,43 @@ span and display width.
 This format keeps raw and completed aggregate records indefinitely, subject
 to the durability of the WAL and object store. Tail consolidation trades
 bounded reads and rewrites during ingestion for fewer historical query GETs.
-Superseded tail versions remain inside older packs; there is no object
-reclamation, general historical compaction, or sharded manifest yet.
-Previously fragmented history is not automatically repacked. Entries without
-a physical record count are left intact. Checkpoint frequency still determines
-raw block sizes and object count. The root remains bounded, but its open HTA
-state still scales with the number of configured metrics and levels. A
-1,500-metric, ten-year deployment needs workload benchmarks for object-store
-request rate, latency, and cost before production use.
+Superseded tail versions are reclaimed by the background compactor. Checkpoint
+frequency still determines initial raw block sizes; compaction can merge adjacent
+small raw blocks without dropping samples. The root remains bounded by metric and
+level count, although its open HTA state still scales with those counts.
 
-## Deleting completely retired objects
+## Catalog, compaction and object reclamation
 
-S3 now implements the optional `storage.Deleter` contract. The engine counts
-references to individual blocks per data/index pack. A checkpoint adjusts
-these counts for its newly written blocks and replaced aggregate tails and
-index pages; it does not scan historical trees on each flush. A mixed pack
-is retained until its last reachable block is replaced. Permanently retained
-raw blocks therefore also keep their containing packs alive. This mechanism
-reclaims whole dead packs; it does not compact partially dead packs.
+The production DB starts a maintenance goroutine independently of ingestion and
+history requests. A persistent copy-on-write catalog records each live block's
+object, offset, length, hash, metric and level. A separate candidate tree indexes
+partly dead packs and eligible small raw blocks. The manifest contains only their
+root pointers and bounded maintenance state; it does not contain every object.
+Normal checkpoints update touched catalog paths. Existing namespaces without a
+catalog bootstrap it once from index trees; subsequent starts use persisted roots.
 
-Fully retired keys are included in a durable `Garbage` queue in the newly
-published manifest. DELETE occurs only after that manifest is confirmed and
-the local WAL checkpoint succeeds. An uncertain manifest PUT cannot cause
-premature deletion. Queries in the writer process pin snapshots; deletion is
-postponed while any query is active. The ingestion mutex excludes new readers
-during DELETE. Historical manifests are not retained as independently usable
-snapshots; separate reader processes are not covered by this in-process pin.
+Compaction copies live blocks into immutable packs and replaces the affected
+historical index paths. Optional raw-block merging preserves every record and
+verifies adjacency through the index. Work prepares outside the ingestion lock.
+Publication validates source identities against the current committed roots and
+uses conditional manifest PUT. It retains the committed WAL sequence and HTA
+state, so samples ACKed during preparation remain in the WAL until normal flush.
 
-A pass attempts at most 16 objects within two seconds, under the ingestion
-mutex. A DELETE error stops that pass and leaves the queue intact; it does
-not turn a successfully published checkpoint into a failure. S3 sends each
-DELETE once (the SDK has no retries). `RunFlush` processes remaining work on
-subsequent ticks even without new samples. Successful deletions disappear
-from the next checkpoint's queue; after a crash, repeating an already completed
-DELETE is safe because deletion is idempotent. With bucket versioning enabled,
-ordinary DELETE creates a delete marker rather than removing past versions;
-provider lifecycle rules must reclaim those versions separately.
+A durable linked trash journal authorizes deletion only after safe publication.
+Queries pin their manifest generation; a retired object remains protected while
+an older snapshot could reference it. Newer queries do not delay older garbage.
+GC reads journal pages and issues DELETE outside the ingestion lock, at most 16
+entries per pass with a two-second deletion budget. It can release space before
+writing its progress, which helps recover from a full object-store quota. Durable
+page offsets and a pending journal-page cleanup key make interrupted deletion
+restartable. Repeating an already completed DELETE is safe.
 
-Startup reconstructs the in-memory per-object counts by walking the current
-index trees once, without reading data blocks. This adds index reads and startup
-time proportional to the published index, and memory proportional to live
-object count. No object-count map is added to the manifest. Stores without
-`Deleter` skip this mechanism. Packs orphaned before manifest publication,
-and dead packs from before this implementation, are not discovered by it;
-reclaiming those requires a separate namespace inventory/reachability pass.
+Registered compaction output namespaces are inventoried and reclaimed after an
+abandoned job is fenced. This does not discover arbitrary objects orphaned by
+normal failed flushes before publication or by older untracked implementations.
+Those require a separate inventory/reachability procedure. Bucket versioning also
+requires provider lifecycle rules to remove old versions after DELETE.
 
-Prometheus exposes `metricq_db_gc_pending_objects`,
-`metricq_db_gc_deleted_objects_total`, and `metricq_db_gc_delete_errors_total`.
-Pending objects include those protected by active queries. Long-running or
-continuously overlapping queries can delay collection.
+See [compaction design and operation](compaction-plan.md) for limits, recovery,
+configuration and test coverage. Separate reader processes are not protected by
+in-process generation pins; the namespace remains single-writer.

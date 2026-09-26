@@ -3,6 +3,8 @@ package engine
 import "github.com/prometheus/client_golang/prometheus"
 
 type Metrics struct {
+	GCPending                                                                               prometheus.Gauge
+	GCDeleted, GCErrors                                                                     prometheus.Counter
 	WALTarget, WALHigh, WALHard, WALPending, OldestWAL                                      prometheus.Gauge
 	WALErrors                                                                               prometheus.Counter
 	WALBytes, Pressure, Backpressure, BuilderBytes, Series, Checkpoint, Head, LastCommit    prometheus.Gauge
@@ -27,6 +29,9 @@ func NewMetrics(r prometheus.Registerer) *Metrics {
 		return v
 	}
 	return &Metrics{
+		GCPending:    gauge("gc_pending_objects", "Fully retired objects awaiting deletion, including reader-pinned objects."),
+		GCDeleted:    counter("gc_deleted_objects_total", "Successfully deleted retired objects."),
+		GCErrors:     counter("gc_delete_errors_total", "Failed retired-object deletion attempts."),
 		WALTarget:    gauge("wal_target_bytes", "WAL usage triggering an object-store checkpoint."),
 		WALHigh:      gauge("wal_high_bytes", "WAL usage stopping further ingestion."),
 		WALHard:      gauge("wal_hard_limit_bytes", "Maximum permitted WAL size."),

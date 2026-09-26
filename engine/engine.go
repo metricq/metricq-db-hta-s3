@@ -65,6 +65,7 @@ type manifest struct {
 	Sequence uint64
 	Series   map[string]*hta.Series
 	Roots    map[string]map[int64]blob
+	Garbage  map[string]bool // Fully retired packs; durable deletion queue.
 }
 type batch struct {
 	ReceivedAt int64
@@ -97,6 +98,9 @@ type Engine struct {
 	oldestWAL    int64
 	closed       bool
 	fatal        error
+	objectRefs   map[string]int64
+	garbage      map[string]bool
+	readers      int
 }
 
 func encode(v any) ([]byte, error) {
@@ -202,6 +206,9 @@ func Open(ctx context.Context, s storage.Store, o Options, configs map[string]ht
 	}
 	if w.size > o.WALHard || e.pendingBytes > o.BuilderHard {
 		return nil, fmt.Errorf("recovered WAL exceeds configured limits; restore previous limits")
+	}
+	if err := e.initializeGC(ctx); err != nil {
+		return nil, err
 	}
 	e.updateMetrics()
 	success = true
@@ -392,6 +399,7 @@ func (e *Engine) Flush(ctx context.Context) (err error) {
 		return e.fatal
 	}
 	if e.sequence == e.state.Sequence && e.version != "" {
+		e.collectGarbage(ctx)
 		return nil
 	}
 	start := time.Now()
@@ -404,6 +412,7 @@ func (e *Engine) Flush(ctx context.Context) (err error) {
 	// The engine lock fixes a consistent checkpoint. An unavailable store stops
 	// ingestion only during the bounded PUT attempt, then WAL ingestion can resume.
 	next := e.state
+	refDelta := make(map[string]int64)
 	next.Sequence = e.sequence
 	next.Roots = make(map[string]map[int64]blob, len(e.state.Roots))
 	for metric, levels := range e.state.Roots {
@@ -448,7 +457,7 @@ func (e *Engine) Flush(ctx context.Context) (err error) {
 			part := make([]hta.Record, 0, maxDataBlockRecords)
 			// Fill the last partial aggregate block across checkpoints. Reading
 			// only this bounded tail keeps coarse levels independent of flush
-			// frequency. Raw blocks and all previously published blobs stay intact.
+			// frequency. Raw blocks are appended; published blobs remain immutable.
 			if level > 0 {
 				tail, tailErr := e.lastIndexEntry(ctx, next.Roots[metric][level])
 				if tailErr != nil {
@@ -511,6 +520,26 @@ func (e *Engine) Flush(ctx context.Context) (err error) {
 		}
 		e.metrics.Objects.Inc()
 		e.metrics.Bytes.Add(float64(indexPack.buf.Len()))
+		refDelta[dataPack.key] += dataPack.blocks
+		refDelta[indexPack.key] += indexPack.blocks
+		for _, retired := range indexPack.retired {
+			refDelta[retired.Key]--
+		}
+	}
+	if e.objectRefs != nil {
+		next.Garbage = make(map[string]bool, len(e.garbage))
+		for key := range e.garbage {
+			next.Garbage[key] = true
+		}
+		for key, delta := range refDelta {
+			count := e.objectRefs[key] + delta
+			if count < 0 {
+				return fmt.Errorf("negative object references: %s", key)
+			}
+			if count == 0 {
+				next.Garbage[key] = true
+			}
+		}
 	}
 	b, err := encode(next)
 	if err != nil {
@@ -532,6 +561,15 @@ func (e *Engine) Flush(ctx context.Context) (err error) {
 		}
 	}
 	e.state = next
+	if e.objectRefs != nil {
+		for key, delta := range refDelta {
+			e.objectRefs[key] += delta
+			if e.objectRefs[key] == 0 {
+				delete(e.objectRefs, key)
+			}
+		}
+		e.garbage = next.Garbage
+	}
 	e.version = version
 	e.pending = nil
 	e.pendingBytes = 0
@@ -547,6 +585,7 @@ func (e *Engine) Flush(ctx context.Context) (err error) {
 	e.metrics.Commits.Inc()
 	e.metrics.LastCommit.SetToCurrentTime()
 	e.updateMetrics()
+	e.collectGarbage(ctx)
 	return nil
 }
 
@@ -564,6 +603,12 @@ func (e *Engine) RunFlush(ctx context.Context) {
 				if err := e.Flush(ctx); err != nil {
 					slog.Error("object-store checkpoint failed; WAL retained", "error", err)
 				}
+			} else {
+				e.mu.Lock()
+				if !e.closed && e.fatal == nil {
+					e.collectGarbage(ctx)
+				}
+				e.mu.Unlock()
 			}
 		}
 	}

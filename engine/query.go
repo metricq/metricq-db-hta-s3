@@ -310,6 +310,8 @@ func (e *Engine) Query(ctx context.Context, name string, req *metricq.HistoryReq
 	if snapshotErr != nil {
 		return resp, snapshotErr
 	}
+	owner := e
+	defer func() { owner.mu.Lock(); owner.readers--; owner.mu.Unlock() }()
 	e = snapshot
 	s := e.state.Series[name]
 	if req == nil {
@@ -492,6 +494,7 @@ func (e *Engine) readSnapshot(name string) (*Engine, error) {
 		return nil, fmt.Errorf("unknown metric %q", name)
 	}
 	copySeries := *series
+	e.readers++
 	snapshot := &Engine{store: e.store, options: e.options, metrics: e.metrics, nodeCache: make(map[blob]indexNode), sharedNodes: e.sharedNodes, sharedBlocks: e.sharedBlocks, state: manifest{
 		Series: map[string]*hta.Series{name: &copySeries}, Roots: map[string]map[int64]blob{name: e.state.Roots[name]}}}
 	for _, en := range e.pending {

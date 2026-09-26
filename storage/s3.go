@@ -134,3 +134,13 @@ func (s *S3) Put(ctx context.Context, key string, b []byte, expected *string) (s
 }
 
 func (s *S3) Identity() string { return s.identity }
+
+func (s *S3) Delete(ctx context.Context, key string) error {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	_, err := s.client.DeleteObject(ctx, &s3.DeleteObjectInput{Bucket: &s.bucket, Key: aws.String(s.prefix + key)})
+	if errors.Is(translate(err), ErrNotFound) {
+		return nil
+	}
+	return translate(err)
+}

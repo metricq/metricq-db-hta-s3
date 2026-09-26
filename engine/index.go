@@ -37,8 +37,10 @@ type indexNode struct {
 }
 
 type pack struct {
-	key string
-	buf bytes.Buffer
+	key     string
+	buf     bytes.Buffer
+	blocks  int64
+	retired []blob
 }
 
 func newPack(prefix string) (*pack, error) {
@@ -50,6 +52,7 @@ func newPack(prefix string) (*pack, error) {
 }
 
 func (p *pack) add(b []byte) blob {
+	p.blocks++
 	r := blob{Key: p.key, Offset: int64(p.buf.Len()), Length: int64(len(b)), Hash: sha256.Sum256(b)}
 	p.buf.Write(b)
 	return r
@@ -196,6 +199,7 @@ func (e *Engine) appendNode(ctx context.Context, ptr blob, items []indexEntry, p
 			if items[0].First != last.First || items[len(items)-1].Last < last.Last {
 				return nil, fmt.Errorf("index tail replacement loses time range")
 			}
+			p.retired = append(p.retired, ptr, last.Blob)
 			combined := append(append([]indexEntry(nil), n.Entries[:len(n.Entries)-1]...), items...)
 			return writeNodes(p, true, combined)
 		}
@@ -207,6 +211,7 @@ func (e *Engine) appendNode(ctx context.Context, ptr blob, items []indexEntry, p
 			return append([]indexEntry{{First: n.Entries[0].First, Last: n.Entries[len(n.Entries)-1].Last, Blob: ptr}}, edges...), err
 		}
 		combined := append(append([]indexEntry(nil), n.Entries...), items...)
+		p.retired = append(p.retired, ptr)
 		return writeNodes(p, true, combined)
 	}
 	last := len(n.Entries) - 1
@@ -220,6 +225,7 @@ func (e *Engine) appendNode(ctx context.Context, ptr blob, items []indexEntry, p
 		return append([]indexEntry{{First: n.Entries[0].First, Last: n.Entries[last].Last, Blob: ptr}}, edges...), err
 	}
 	combined := append(append([]indexEntry(nil), n.Entries[:last]...), children...)
+	p.retired = append(p.retired, ptr)
 	return writeNodes(p, false, combined)
 }
 

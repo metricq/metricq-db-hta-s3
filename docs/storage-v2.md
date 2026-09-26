@@ -35,8 +35,9 @@ local WAL checkpoint, and WAL truncation. A failed tail read or PUT leaves
 the previous published root and WAL intact.
 If a manifest PUT response is lost, the engine reads the manifest back and
 reclaims WAL only when it matches the exact proposed checkpoint. Objects
-written before a failed root publication may be orphaned; there is currently
-no automatic garbage collector. Objects referenced by any published root
+written before a failed root publication may be orphaned and are not yet
+discovered automatically. Fully retired published packs are reclaimed as
+described below. Objects referenced by the current root or active queries
 must not be deleted.
 
 Queries traverse only index pages whose time bounds intersect the requested
@@ -70,3 +71,44 @@ raw block sizes and object count. The root remains bounded, but its open HTA
 state still scales with the number of configured metrics and levels. A
 1,500-metric, ten-year deployment needs workload benchmarks for object-store
 request rate, latency, and cost before production use.
+
+## Deleting completely retired objects
+
+S3 now implements the optional `storage.Deleter` contract. The engine counts
+references to individual blocks per data/index pack. A checkpoint adjusts
+these counts for its newly written blocks and replaced aggregate tails and
+index pages; it does not scan historical trees on each flush. A mixed pack
+is retained until its last reachable block is replaced. Permanently retained
+raw blocks therefore also keep their containing packs alive. This mechanism
+reclaims whole dead packs; it does not compact partially dead packs.
+
+Fully retired keys are included in a durable `Garbage` queue in the newly
+published manifest. DELETE occurs only after that manifest is confirmed and
+the local WAL checkpoint succeeds. An uncertain manifest PUT cannot cause
+premature deletion. Queries in the writer process pin snapshots; deletion is
+postponed while any query is active. The ingestion mutex excludes new readers
+during DELETE. Historical manifests are not retained as independently usable
+snapshots; separate reader processes are not covered by this in-process pin.
+
+A pass attempts at most 16 objects within two seconds, under the ingestion
+mutex. A DELETE error stops that pass and leaves the queue intact; it does
+not turn a successfully published checkpoint into a failure. S3 sends each
+DELETE once (the SDK has no retries). `RunFlush` processes remaining work on
+subsequent ticks even without new samples. Successful deletions disappear
+from the next checkpoint's queue; after a crash, repeating an already completed
+DELETE is safe because deletion is idempotent. With bucket versioning enabled,
+ordinary DELETE creates a delete marker rather than removing past versions;
+provider lifecycle rules must reclaim those versions separately.
+
+Startup reconstructs the in-memory per-object counts by walking the current
+index trees once, without reading data blocks. This adds index reads and startup
+time proportional to the published index, and memory proportional to live
+object count. No object-count map is added to the manifest. Stores without
+`Deleter` skip this mechanism. Packs orphaned before manifest publication,
+and dead packs from before this implementation, are not discovered by it;
+reclaiming those requires a separate namespace inventory/reachability pass.
+
+Prometheus exposes `metricq_db_gc_pending_objects`,
+`metricq_db_gc_deleted_objects_total`, and `metricq_db_gc_delete_errors_total`.
+Pending objects include those protected by active queries. Long-running or
+continuously overlapping queries can delay collection.

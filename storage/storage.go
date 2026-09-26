@@ -26,3 +26,8 @@ type Store interface {
 type RangeGetter interface {
 	GetRange(context.Context, string, int64, int64) ([]byte, error)
 }
+
+// Deleter removes an object idempotently, including when it is already absent.
+type Deleter interface {
+	Delete(context.Context, string) error
+}

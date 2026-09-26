@@ -143,3 +143,41 @@ func TestRangeGetRejectsIgnoredRange(t *testing.T) {
 		t.Fatalf("ignored range accepted or retried: %v, requests=%d", err, requests)
 	}
 }
+
+func TestDeleteUsesPrefixAndSingleAttempt(t *testing.T) {
+	requests := 0
+	fail := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if r.Method != http.MethodDelete || r.URL.Path != "/bucket/db/data/dead" {
+			t.Errorf("unexpected DELETE: %s %s", r.Method, r.URL.Path)
+		}
+		if fail {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			fmt.Fprint(w, "<Error><Code>ServiceUnavailable</Code></Error>")
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+	cfg := aws.Config{Region: "us-east-1", Credentials: aws.NewCredentialsCache(credentials.NewStaticCredentialsProvider("test", "test", ""))}
+	client := s3.NewFromConfig(cfg, func(o *s3.Options) {
+		o.BaseEndpoint = aws.String(server.URL)
+		o.UsePathStyle = true
+		o.RetryMaxAttempts = 1
+	})
+	store := &S3{client: client, bucket: "bucket", prefix: "db/"}
+	if err := store.Delete(context.Background(), "data/dead"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Delete(context.Background(), "data/dead"); err != nil {
+		t.Fatal(err)
+	}
+	fail = true
+	if err := store.Delete(context.Background(), "data/dead"); err == nil {
+		t.Fatal("delete failure ignored")
+	}
+	if requests != 3 {
+		t.Fatalf("unexpected retry: %d requests", requests)
+	}
+}

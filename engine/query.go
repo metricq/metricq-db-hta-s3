@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"math"
 	"sort"
@@ -22,29 +23,41 @@ type reader struct {
 	budget *atomic.Int64
 }
 
-// maxParallelBlockFetches bounds how many cold blocks one records() call
-// fetches from the store at once. It caps both goroutine fan-out and how far
-// a pathological scan can overshoot the query memory budget before the batch
-// boundary catches it.
+// Bound request fan-out, compressed ranges and decoded records independently.
 const maxParallelBlockFetches = 8
+const maxQueryBlockBatch = 128
+const maxCoalescedRange = 8 << 20
+const maxCoalescedGap = 64 << 10
 
 func recordsCost(n int) int64 { return int64(n) * 128 }
 
 func (q *reader) records(level, begin, end int64) ([]hta.Record, error) {
 	root := q.e.state.Roots[q.metric][level]
 	var refs []blob
-	if prior, err := q.e.indexNeighbor(q.ctx, root, begin, true); err != nil {
-		return nil, err
-	} else if prior.Key != "" {
-		refs = append(refs, prior)
+	lookupBegin, lookupEnd := begin, end
+	if level > 0 {
+		if begin >= end {
+			return nil, nil
+		}
+		// FLEX includes the bucket containing begin, including empty runs.
+		lookupBegin = begin - begin%level
+		lookupEnd = end - 1
+	} else {
+		if prior, err := q.e.indexNeighbor(q.ctx, root, begin, true); err != nil {
+			return nil, err
+		} else if prior.Key != "" {
+			refs = append(refs, prior)
+		}
 	}
-	if err := q.e.indexRange(q.ctx, root, begin, end, &refs); err != nil {
+	if err := q.e.indexRange(q.ctx, root, lookupBegin, lookupEnd, &refs); err != nil {
 		return nil, err
 	}
-	if next, err := q.e.indexNeighbor(q.ctx, root, end, false); err != nil {
-		return nil, err
-	} else if next.Key != "" {
-		refs = append(refs, next)
+	if level == 0 {
+		if next, err := q.e.indexNeighbor(q.ctx, root, end, false); err != nil {
+			return nil, err
+		} else if next.Key != "" {
+			refs = append(refs, next)
+		}
 	}
 	dedup := refs[:0]
 	seen := make(map[blob]bool, len(refs))
@@ -56,11 +69,11 @@ func (q *reader) records(level, begin, end int64) ([]hta.Record, error) {
 	}
 	refs = dedup
 	var out []hta.Record
-	for start := 0; start < len(refs); start += maxParallelBlockFetches {
+	for start := 0; start < len(refs); start += maxQueryBlockBatch {
 		if err := q.ctx.Err(); err != nil {
 			return nil, err
 		}
-		batch := refs[start:min(start+maxParallelBlockFetches, len(refs))]
+		batch := refs[start:min(start+maxQueryBlockBatch, len(refs))]
 		blocks, err := q.fetchBlocks(batch)
 		if err != nil {
 			return nil, err
@@ -102,31 +115,8 @@ func (q *reader) fetchBlocks(refs []blob) ([][]hta.Record, error) {
 		toFetch = append(toFetch, i)
 	}
 	if len(toFetch) > 0 {
-		errs := make([]error, len(toFetch))
-		var wg sync.WaitGroup
-		for k, i := range toFetch {
-			wg.Add(1)
-			go func(k, i int) {
-				defer wg.Done()
-				ref := refs[i]
-				b, err := q.e.readBlob(q.ctx, ref)
-				if err != nil {
-					errs[k] = err
-					return
-				}
-				var entries []hta.Record
-				if err := decode(b, &entries); err != nil {
-					errs[k] = fmt.Errorf("data block %s: %w", ref.Key, err)
-					return
-				}
-				blocks[i] = entries
-			}(k, i)
-		}
-		wg.Wait()
-		for _, err := range errs {
-			if err != nil {
-				return nil, err
-			}
+		if err := q.fetchRanges(refs, toFetch, blocks); err != nil {
+			return nil, err
 		}
 		charged = append(charged, toFetch...)
 	}
@@ -152,6 +142,79 @@ func (q *reader) fetchBlocks(refs []blob) ([][]hta.Record, error) {
 		}
 	}
 	return blocks, nil
+}
+
+// Group cache misses by object and offset, then restore their original order.
+// Each block keeps its own checksum; bytes in small gaps are never decoded.
+func (q *reader) fetchRanges(refs []blob, misses []int, blocks [][]hta.Record) error {
+	order := append([]int(nil), misses...)
+	for _, i := range order {
+		r := refs[i]
+		if r.Key == "" || r.Offset < 0 || r.Length <= 0 || r.Length > 512<<20 || r.Offset > math.MaxInt64-r.Length {
+			return fmt.Errorf("invalid object block reference")
+		}
+	}
+	sort.Slice(order, func(i, j int) bool {
+		a, b := refs[order[i]], refs[order[j]]
+		if a.Key != b.Key {
+			return a.Key < b.Key
+		}
+		return a.Offset < b.Offset
+	})
+	type span struct {
+		key        string
+		begin, end int64
+		indices    []int
+	}
+	var spans []span
+	for _, i := range order {
+		r := refs[i]
+		if len(spans) > 0 {
+			last := &spans[len(spans)-1]
+			end := max(last.end, r.Offset+r.Length)
+			if last.key == r.Key && r.Offset-last.end <= maxCoalescedGap && end-last.begin <= maxCoalescedRange {
+				last.end = end
+				last.indices = append(last.indices, i)
+				continue
+			}
+		}
+		spans = append(spans, span{key: r.Key, begin: r.Offset, end: r.Offset + r.Length, indices: []int{i}})
+	}
+	for start := 0; start < len(spans); start += maxParallelBlockFetches {
+		batch := spans[start:min(start+maxParallelBlockFetches, len(spans))]
+		errs := make([]error, len(batch))
+		var wg sync.WaitGroup
+		for k, s := range batch {
+			wg.Add(1)
+			go func(k int, s span) {
+				defer wg.Done()
+				b, err := q.e.readRange(q.ctx, s.key, s.begin, s.end-s.begin)
+				if err != nil {
+					errs[k] = err
+					return
+				}
+				for _, i := range s.indices {
+					r := refs[i]
+					part := b[r.Offset-s.begin : r.Offset-s.begin+r.Length]
+					if sha256.Sum256(part) != r.Hash {
+						errs[k] = fmt.Errorf("object block checksum mismatch: %s@%d", r.Key, r.Offset)
+						return
+					}
+					if err = decode(part, &blocks[i]); err != nil {
+						errs[k] = fmt.Errorf("data block %s: %w", r.Key, err)
+						return
+					}
+				}
+			}(k, s)
+		}
+		wg.Wait()
+		for _, err := range errs {
+			if err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 func wire(a hta.Aggregate) *metricq.HistoryResponse_Aggregate {
 	return &metricq.HistoryResponse_Aggregate{Minimum: a.Minimum, Maximum: a.Maximum, Sum: a.Sum, Count: a.Count, Integral: a.Integral, ActiveTime: a.ActiveTime}

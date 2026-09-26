@@ -65,27 +65,39 @@ func (e *Engine) readBlob(ctx context.Context, r blob) ([]byte, error) {
 	if r.Key == "" || r.Offset < 0 || r.Length <= 0 || r.Length > 512<<20 {
 		return nil, fmt.Errorf("invalid object block reference")
 	}
+	b, err := e.readRange(ctx, r.Key, r.Offset, r.Length)
+	if err != nil {
+		return nil, err
+	}
+	if sha256.Sum256(b) != r.Hash {
+		return nil, fmt.Errorf("object block checksum mismatch: %s@%d", r.Key, r.Offset)
+	}
+	return b, nil
+}
+
+// readRange accounts one physical read; callers validate each addressed block.
+func (e *Engine) readRange(ctx context.Context, key string, offset, length int64) ([]byte, error) {
 	start := time.Now()
 	defer func() { e.metrics.StoreGet.Observe(time.Since(start).Seconds()) }()
 	var b []byte
 	var err error
 	if s, ok := e.store.(storage.RangeGetter); ok {
-		b, err = s.GetRange(ctx, r.Key, r.Offset, r.Length)
+		b, err = s.GetRange(ctx, key, offset, length)
 	} else {
 		var whole []byte
-		whole, _, err = e.store.Get(ctx, r.Key)
+		whole, _, err = e.store.Get(ctx, key)
 		if err == nil {
-			if r.Offset > int64(len(whole)) || r.Length > int64(len(whole))-r.Offset {
+			if offset > int64(len(whole)) || length > int64(len(whole))-offset {
 				return nil, io.ErrUnexpectedEOF
 			}
-			b = whole[r.Offset : r.Offset+r.Length]
+			b = whole[offset : offset+length]
 		}
 	}
 	if err != nil {
 		return nil, err
 	}
-	if int64(len(b)) != r.Length || sha256.Sum256(b) != r.Hash {
-		return nil, fmt.Errorf("object block checksum mismatch: %s@%d", r.Key, r.Offset)
+	if int64(len(b)) != length {
+		return nil, io.ErrUnexpectedEOF
 	}
 	return b, nil
 }

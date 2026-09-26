@@ -41,9 +41,12 @@ func run() error {
 		return err
 	}
 	var cfg localConfig
+	cfg.Engine.Compaction.Enabled = true
+	cfg.Engine.Compaction.CooldownSeconds = 60
 	if err = json.Unmarshal(b, &cfg); err != nil {
 		return err
 	}
+	cfg.Engine.BackgroundMaintenance = true
 	if cfg.Server == "" {
 		cfg.Server = "amqp://localhost/"
 	}
@@ -131,8 +134,9 @@ func run() error {
 					return nil, err
 				}
 				dbEngine = e
-				workers.Add(1)
+				workers.Add(2)
 				go func() { defer workers.Done(); e.RunFlush(ctx) }()
+				go func() { defer workers.Done(); e.RunMaintenance(ctx) }()
 			} else if err := dbEngine.Configure(c.Metrics); err != nil {
 				return nil, err
 			}

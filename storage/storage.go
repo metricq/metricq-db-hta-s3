@@ -31,3 +31,13 @@ type RangeGetter interface {
 type Deleter interface {
 	Delete(context.Context, string) error
 }
+
+// Statter reports the complete immutable object's physical size.
+type Statter interface {
+	Stat(context.Context, string) (int64, error)
+}
+
+// Lister inventories a registered staging prefix with bounded pages.
+type Lister interface {
+	List(context.Context, string, string, int32) ([]string, string, error)
+}

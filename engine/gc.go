@@ -14,6 +14,9 @@ import (
 // blocks. Normal checkpoints adjust counts only for newly written blocks and
 // the copied rightmost index path; they never scan historical trees.
 func (e *Engine) initializeGC(ctx context.Context) error {
+	if e.options.BackgroundMaintenance {
+		return e.bootstrapCatalog(ctx)
+	}
 	if _, ok := e.store.(storage.Deleter); !ok {
 		return nil
 	}

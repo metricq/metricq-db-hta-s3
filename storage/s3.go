@@ -144,3 +144,38 @@ func (s *S3) Delete(ctx context.Context, key string) error {
 	}
 	return translate(err)
 }
+
+func (s *S3) Stat(ctx context.Context, key string) (int64, error) {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	out, err := s.client.HeadObject(ctx, &s3.HeadObjectInput{Bucket: &s.bucket, Key: aws.String(s.prefix + key)})
+	if err != nil {
+		return 0, translate(err)
+	}
+	return aws.ToInt64(out.ContentLength), nil
+}
+
+func (s *S3) List(ctx context.Context, prefix, token string, limit int32) ([]string, string, error) {
+	if limit < 1 || limit > 1000 {
+		return nil, "", fmt.Errorf("invalid inventory page size")
+	}
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	in := &s3.ListObjectsV2Input{Bucket: &s.bucket, Prefix: aws.String(s.prefix + prefix), MaxKeys: &limit}
+	if token != "" {
+		in.ContinuationToken = &token
+	}
+	out, err := s.client.ListObjectsV2(ctx, in)
+	if err != nil {
+		return nil, "", translate(err)
+	}
+	keys := make([]string, 0, len(out.Contents))
+	for _, object := range out.Contents {
+		key := aws.ToString(object.Key)
+		if !strings.HasPrefix(key, s.prefix) {
+			return nil, "", fmt.Errorf("inventory outside namespace")
+		}
+		keys = append(keys, strings.TrimPrefix(key, s.prefix))
+	}
+	return keys, aws.ToString(out.NextContinuationToken), nil
+}

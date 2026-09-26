@@ -37,10 +37,13 @@ type indexNode struct {
 }
 
 type pack struct {
-	key     string
-	buf     bytes.Buffer
-	blocks  int64
-	retired []blob
+	key         string
+	buf         bytes.Buffer
+	blocks      int64
+	retired     []blob
+	descriptors []BlockInfo
+	metric      string
+	level       int64
 }
 
 func newPack(prefix string) (*pack, error) {
@@ -133,7 +136,9 @@ func writeNode(p *pack, n indexNode) (indexEntry, error) {
 	if err != nil {
 		return indexEntry{}, err
 	}
-	return indexEntry{First: n.Entries[0].First, Last: n.Entries[len(n.Entries)-1].Last, Blob: p.add(b)}, nil
+	edge := indexEntry{First: n.Entries[0].First, Last: n.Entries[len(n.Entries)-1].Last, Blob: p.add(b)}
+	p.descriptors = append(p.descriptors, BlockInfo{Metric: p.metric, Level: p.level, Entry: edge, Index: true})
+	return edge, nil
 }
 
 // appendIndex copies the published rightmost path once per batch. Only final

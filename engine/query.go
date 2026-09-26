@@ -311,7 +311,16 @@ func (e *Engine) Query(ctx context.Context, name string, req *metricq.HistoryReq
 		return resp, snapshotErr
 	}
 	owner := e
-	defer func() { owner.mu.Lock(); owner.readers--; owner.mu.Unlock() }()
+	generation := snapshot.state.Generation
+	defer func() {
+		owner.mu.Lock()
+		owner.readers--
+		owner.pins[generation]--
+		if owner.pins[generation] == 0 {
+			delete(owner.pins, generation)
+		}
+		owner.mu.Unlock()
+	}()
 	e = snapshot
 	s := e.state.Series[name]
 	if req == nil {
@@ -495,8 +504,9 @@ func (e *Engine) readSnapshot(name string) (*Engine, error) {
 	}
 	copySeries := *series
 	e.readers++
+	e.pins[e.state.Generation]++
 	snapshot := &Engine{store: e.store, options: e.options, metrics: e.metrics, nodeCache: make(map[blob]indexNode), sharedNodes: e.sharedNodes, sharedBlocks: e.sharedBlocks, state: manifest{
-		Series: map[string]*hta.Series{name: &copySeries}, Roots: map[string]map[int64]blob{name: e.state.Roots[name]}}}
+		Generation: e.state.Generation, Series: map[string]*hta.Series{name: &copySeries}, Roots: map[string]map[int64]blob{name: e.state.Roots[name]}}}
 	for _, en := range e.pending {
 		if en.Metric == name {
 			snapshot.pending = append(snapshot.pending, en)

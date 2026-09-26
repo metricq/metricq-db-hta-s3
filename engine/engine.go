@@ -25,16 +25,19 @@ import (
 var ErrPressure = errors.New("WAL or builder high watermark reached")
 
 type Options struct {
-	WALDirectory string `json:"wal_directory"`
-	WALTarget    int64  `json:"wal_target_bytes"`
-	WALHigh      int64  `json:"wal_high_bytes"`
-	WALHard      int64  `json:"wal_hard_bytes"`
-	ObjectTarget int64  `json:"object_target_bytes"`
-	BuilderHard  int64  `json:"builder_hard_bytes"`
-	MaxQueryRows int    `json:"max_query_rows"`
+	BackgroundMaintenance bool              `json:"background_maintenance"`
+	Compaction            CompactionOptions `json:"compaction"`
+	WALDirectory          string            `json:"wal_directory"`
+	WALTarget             int64             `json:"wal_target_bytes"`
+	WALHigh               int64             `json:"wal_high_bytes"`
+	WALHard               int64             `json:"wal_hard_bytes"`
+	ObjectTarget          int64             `json:"object_target_bytes"`
+	BuilderHard           int64             `json:"builder_hard_bytes"`
+	MaxQueryRows          int               `json:"max_query_rows"`
 }
 
 func (o Options) defaults() Options {
+	o.Compaction = o.Compaction.defaults()
 	if o.WALTarget == 0 {
 		o.WALTarget = 32 << 20
 	}
@@ -61,11 +64,23 @@ type entry struct {
 	Record hta.Record
 }
 type manifest struct {
-	Version  int
-	Sequence uint64
-	Series   map[string]*hta.Series
-	Roots    map[string]map[int64]blob
-	Garbage  map[string]bool // Fully retired packs; durable deletion queue.
+	TrashOffset  int
+	TrashCleanup string
+
+	Catalog, Candidates                                blob
+	CatalogReady                                       bool
+	TrashHead, TrashComplete, TrashBatch, TrashPending blob
+	TrashObjects                                       int64
+	CompactionJob                                      blob
+	LiveObjectBytes, StoredObjectBytes                 int64
+	LiveObjects                                        int64
+
+	Version    int
+	Generation uint64
+	Sequence   uint64
+	Series     map[string]*hta.Series
+	Roots      map[string]map[int64]blob
+	Garbage    map[string]bool // Fully retired packs; durable deletion queue.
 }
 type batch struct {
 	ReceivedAt int64
@@ -82,25 +97,31 @@ func aggregationConfig(c hta.Config) hta.Config {
 }
 
 type Engine struct {
-	mu           sync.Mutex
-	store        storage.Store
-	wal          *wal
-	options      Options
-	metrics      *Metrics
-	nodeCache    map[blob]indexNode
-	sharedNodes  *indexPageCache
-	sharedBlocks *dataBlockCache
-	state        manifest
-	version      string
-	sequence     uint64
-	pending      []entry
-	pendingBytes int64
-	oldestWAL    int64
-	closed       bool
-	fatal        error
-	objectRefs   map[string]int64
-	garbage      map[string]bool
-	readers      int
+	mu                sync.Mutex
+	maintenanceMu     sync.Mutex
+	activeMaintenance string
+	stagingKeys       []string
+	candidateCursor   string
+	store             storage.Store
+	wal               *wal
+	options           Options
+	metrics           *Metrics
+	nodeCache         map[blob]indexNode
+	sharedNodes       *indexPageCache
+	sharedBlocks      *dataBlockCache
+	state             manifest
+	committed         manifest
+	pins              map[uint64]int
+	version           string
+	sequence          uint64
+	pending           []entry
+	pendingBytes      int64
+	oldestWAL         int64
+	closed            bool
+	fatal             error
+	objectRefs        map[string]int64
+	garbage           map[string]bool
+	readers           int
 }
 
 func encode(v any) ([]byte, error) {
@@ -139,6 +160,12 @@ func Open(ctx context.Context, s storage.Store, o Options, configs map[string]ht
 	if o.WALDirectory == "" || o.WALTarget <= 0 || o.WALTarget >= o.WALHigh || o.WALHigh >= o.WALHard || o.ObjectTarget <= 0 || o.BuilderHard < o.ObjectTarget || o.MaxQueryRows < 1 {
 		return nil, fmt.Errorf("invalid engine options")
 	}
+	if o.BackgroundMaintenance {
+		c := o.Compaction
+		if c.IntervalSeconds < 1 || c.CooldownSeconds < 0 || c.MaxBlocks < 1 || c.MaxBlocks > 512 || c.MaxJobBytes < 1 || c.MaxJobBytes > 64<<20 || c.ObjectBytes < 1 || c.ObjectBytes > c.MaxJobBytes || c.BytesPerSecond < 1 || c.DeadFraction <= 0 || c.DeadFraction >= 1 {
+			return nil, fmt.Errorf("invalid compaction options")
+		}
+	}
 	if m == nil {
 		m = NewMetrics(prometheus.NewRegistry())
 	}
@@ -170,6 +197,8 @@ func Open(ctx context.Context, s storage.Store, o Options, configs map[string]ht
 	} else if !errors.Is(err, storage.ErrNotFound) {
 		return nil, err
 	}
+	e.committed = cloneManifest(e.state)
+	e.pins = make(map[uint64]int)
 	if err = e.configure(configs); err != nil {
 		return nil, err
 	}
@@ -241,6 +270,9 @@ func (e *Engine) Configure(configs map[string]hta.Config) error {
 	return e.configure(configs)
 }
 func (e *Engine) updateMetrics() {
+	if e.options.BackgroundMaintenance {
+		e.updateMaintenanceMetrics(e.state)
+	}
 	e.metrics.WALTarget.Set(float64(e.options.WALTarget))
 	e.metrics.WALHigh.Set(float64(e.options.WALHigh))
 	e.metrics.WALHard.Set(float64(e.options.WALHard))
@@ -399,7 +431,9 @@ func (e *Engine) Flush(ctx context.Context) (err error) {
 		return e.fatal
 	}
 	if e.sequence == e.state.Sequence && e.version != "" {
-		e.collectGarbage(ctx)
+		if !e.options.BackgroundMaintenance {
+			e.collectGarbage(ctx)
+		}
 		return nil
 	}
 	start := time.Now()
@@ -413,7 +447,9 @@ func (e *Engine) Flush(ctx context.Context) (err error) {
 	// ingestion only during the bounded PUT attempt, then WAL ingestion can resume.
 	next := e.state
 	refDelta := make(map[string]int64)
+	var publishedData, publishedIndex *pack
 	next.Sequence = e.sequence
+	next.Generation++
 	next.Roots = make(map[string]map[int64]blob, len(e.state.Roots))
 	for metric, levels := range e.state.Roots {
 		next.Roots[metric] = make(map[int64]blob, len(levels))
@@ -435,10 +471,12 @@ func (e *Engine) Flush(ctx context.Context) (err error) {
 		if packErr != nil {
 			return packErr
 		}
+		publishedData = dataPack
 		indexPack, packErr := newPack("index")
 		if packErr != nil {
 			return packErr
 		}
+		publishedIndex = indexPack
 		type indexUpdate struct {
 			items       []indexEntry
 			replaceTail bool
@@ -494,7 +532,9 @@ func (e *Engine) Flush(ctx context.Context) (err error) {
 				if encErr != nil {
 					return encErr
 				}
-				update.items = append(update.items, indexEntry{First: part[0].Time, Last: part[len(part)-1].LastTime(), Blob: dataPack.add(b), Records: len(part)})
+				item := indexEntry{First: part[0].Time, Last: part[len(part)-1].LastTime(), Blob: dataPack.add(b), Records: len(part)}
+				update.items = append(update.items, item)
+				dataPack.descriptors = append(dataPack.descriptors, BlockInfo{Metric: metric, Level: level, Entry: item})
 				part = part[:0]
 			}
 			updates[metric][level] = update
@@ -508,6 +548,7 @@ func (e *Engine) Flush(ctx context.Context) (err error) {
 		e.metrics.Bytes.Add(float64(dataPack.buf.Len()))
 		for metric, levels := range updates {
 			for level, update := range levels {
+				indexPack.metric, indexPack.level = metric, level
 				root, appendErr := e.updateIndex(ctx, next.Roots[metric][level], update.items, indexPack, update.replaceTail)
 				if appendErr != nil {
 					return appendErr
@@ -541,6 +582,11 @@ func (e *Engine) Flush(ctx context.Context) (err error) {
 			}
 		}
 	}
+	if e.options.BackgroundMaintenance {
+		if err = e.catalogCheckpoint(ctx, &next, publishedData, publishedIndex); err != nil {
+			return err
+		}
+	}
 	b, err := encode(next)
 	if err != nil {
 		return err
@@ -561,6 +607,7 @@ func (e *Engine) Flush(ctx context.Context) (err error) {
 		}
 	}
 	e.state = next
+	e.committed = cloneManifest(next)
 	if e.objectRefs != nil {
 		for key, delta := range refDelta {
 			e.objectRefs[key] += delta
@@ -585,7 +632,9 @@ func (e *Engine) Flush(ctx context.Context) (err error) {
 	e.metrics.Commits.Inc()
 	e.metrics.LastCommit.SetToCurrentTime()
 	e.updateMetrics()
-	e.collectGarbage(ctx)
+	if !e.options.BackgroundMaintenance {
+		e.collectGarbage(ctx)
+	}
 	return nil
 }
 
@@ -606,7 +655,9 @@ func (e *Engine) RunFlush(ctx context.Context) {
 			} else {
 				e.mu.Lock()
 				if !e.closed && e.fatal == nil {
-					e.collectGarbage(ctx)
+					if !e.options.BackgroundMaintenance {
+						e.collectGarbage(ctx)
+					}
 				}
 				e.mu.Unlock()
 			}

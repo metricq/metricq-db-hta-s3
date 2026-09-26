@@ -285,9 +285,14 @@ func TestRequestLatency(t *testing.T) {
 	go func() {
 		dbDone <- db.Run(dbCtx, metricq.DBHandlers{
 			Configure: func(context.Context, json.RawMessage) ([]metricq.DBBinding, error) { return bindings, nil },
-			Data: func(ctx context.Context, input string, chunk *metricq.DataChunk) error {
-				for {
-					err := e.Ingest(ctx, inputs[input], chunk)
+			DataBatch: func(ctx context.Context, messages []metricq.DataMessage) error {
+				deliveries := make([]engine.Delivery, len(messages))
+				for i, m := range messages {
+					deliveries[i] = engine.Delivery{Metric: inputs[m.Input], Chunk: m.Chunk}
+				}
+				for len(deliveries) > 0 {
+					n, err := e.IngestBatch(ctx, deliveries)
+					deliveries = deliveries[n:]
 					if errors.Is(err, engine.ErrPressure) {
 						if err := e.Flush(ctx); err != nil {
 							return err
@@ -297,11 +302,11 @@ func TestRequestLatency(t *testing.T) {
 					if err != nil {
 						return err
 					}
-					if e.NeedsFlush() {
-						return e.Flush(ctx)
-					}
-					return nil
 				}
+				if e.NeedsFlush() {
+					return e.Flush(ctx)
+				}
+				return nil
 			},
 			History: e.Query,
 		})

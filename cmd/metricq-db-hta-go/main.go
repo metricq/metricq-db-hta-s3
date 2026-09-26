@@ -150,15 +150,29 @@ func run() error {
 			mapping = aliases
 			return bindings, nil
 		},
-		Data: func(callCtx context.Context, input string, chunk *metricq.DataChunk) error {
+		// Prefetched deliveries share one WAL fsync and one multiple ACK.
+		DataBatch: func(callCtx context.Context, messages []metricq.DataMessage) error {
 			mu.RLock()
-			e, name := dbEngine, mapping[input]
-			mu.RUnlock()
-			if e == nil || name == "" {
-				return fmt.Errorf("unconfigured input %q", input)
+			e := dbEngine
+			deliveries := make([]engine.Delivery, len(messages))
+			for i, m := range messages {
+				deliveries[i] = engine.Delivery{Metric: mapping[m.Input], Chunk: m.Chunk}
 			}
-			for {
-				err := e.Ingest(callCtx, name, chunk)
+			mu.RUnlock()
+			if e == nil {
+				return fmt.Errorf("database not ready")
+			}
+			for i, d := range deliveries {
+				if d.Metric == "" {
+					return fmt.Errorf("unconfigured input %q", messages[i].Input)
+				}
+			}
+			for len(deliveries) > 0 {
+				n, err := e.IngestBatch(callCtx, deliveries)
+				deliveries = deliveries[n:]
+				if err == nil || len(deliveries) == 0 {
+					continue
+				}
 				if !errors.Is(err, engine.ErrPressure) {
 					return err
 				}
@@ -171,6 +185,7 @@ func run() error {
 					}
 				}
 			}
+			return nil
 		},
 		History: func(callCtx context.Context, name string, req *metricq.HistoryRequest) (*metricq.HistoryResponse, error) {
 			mu.RLock()

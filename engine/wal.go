@@ -93,20 +93,31 @@ func (w *wal) replay(apply func(uint64, []byte) error) error {
 	return err
 }
 func (w *wal) append(seq uint64, b []byte) error {
-	if w.failed != nil {
-		return w.failed
-	}
 	if len(b) > maxFrame {
 		return fmt.Errorf("WAL frame exceeds %d bytes", maxFrame)
 	}
-	frame := make([]byte, frameHeader+len(b))
+	return w.write(appendFrame(nil, seq, b))
+}
+
+// appendFrame encodes one frame; write makes several frames durable at once.
+func appendFrame(dst []byte, seq uint64, b []byte) []byte {
+	start := len(dst)
+	dst = append(dst, make([]byte, frameHeader)...)
+	dst = append(dst, b...)
+	frame := dst[start:]
 	binary.LittleEndian.PutUint64(frame[:8], seq)
 	binary.LittleEndian.PutUint32(frame[8:12], uint32(len(b)))
-	copy(frame[frameHeader:], b)
 	binary.LittleEndian.PutUint32(frame[12:16], crc32.Checksum(frame[:12], crcTable))
 	binary.LittleEndian.PutUint32(frame[16:20], crc32.Checksum(b, crcTable))
-	n, err := w.file.WriteAt(frame, w.size)
-	if err == nil && n != len(frame) {
+	return dst
+}
+
+func (w *wal) write(frames []byte) error {
+	if w.failed != nil {
+		return w.failed
+	}
+	n, err := w.file.WriteAt(frames, w.size)
+	if err == nil && n != len(frames) {
 		err = io.ErrShortWrite
 	}
 	if err == nil {
@@ -116,7 +127,7 @@ func (w *wal) append(seq uint64, b []byte) error {
 		w.failed = fmt.Errorf("WAL durability failed; restart required: %w", err)
 		return w.failed
 	}
-	w.size += int64(len(frame))
+	w.size += int64(len(frames))
 	return nil
 }
 func (w *wal) truncate(n int64) error {

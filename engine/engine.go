@@ -334,104 +334,170 @@ func (e *Engine) apply(b batch) error {
 	return nil
 }
 func (e *Engine) Ingest(ctx context.Context, name string, chunk *metricq.DataChunk) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
+	_, err := e.IngestBatch(ctx, []Delivery{{Metric: name, Chunk: chunk}})
+	return err
+}
+
+// Delivery is one DataChunk for a canonical metric.
+type Delivery struct {
+	Metric string
+	Chunk  *metricq.DataChunk
+}
+
+func chunkPoints(chunk *metricq.DataChunk) ([]hta.Point, error) {
 	if chunk == nil || len(chunk.TimeDelta) != len(chunk.Value) {
-		return fmt.Errorf("malformed DataChunk")
+		return nil, fmt.Errorf("malformed DataChunk")
 	}
 	points := make([]hta.Point, len(chunk.Value))
 	var ts int64
 	for i, d := range chunk.TimeDelta {
 		if (d > 0 && ts > math.MaxInt64-d) || (d < 0 && ts < math.MinInt64-d) {
-			return fmt.Errorf("timestamp delta overflow")
+			return nil, fmt.Errorf("timestamp delta overflow")
 		}
 		ts += d
 		points[i] = hta.Point{Time: ts, Value: chunk.Value[i]}
 	}
+	return points, nil
+}
+
+// ingestPlan is one delivery's validated state and record expansion.
+type ingestPlan struct {
+	metric   string
+	series   *hta.Series
+	prepared []entry
+	extra    int64
+	accepted int
+	dropped  int
+	received int64
+}
+
+// IngestBatch makes consecutive deliveries durable with one WAL write and one
+// fsync. Each accepted delivery keeps its own WAL frame and sequence, so replay
+// is unchanged. It returns how many leading deliveries were processed (durable
+// or entirely discarded as duplicates). On ErrPressure the caller can flush and
+// retry the remainder; any other error stops the batch after that prefix.
+func (e *Engine) IngestBatch(ctx context.Context, deliveries []Delivery) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	points := make([][]hta.Point, len(deliveries))
+	var stop error
+	valid := len(deliveries)
+	for i, d := range deliveries {
+		if points[i], stop = chunkPoints(d.Chunk); stop != nil {
+			valid = i
+			break
+		}
+	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.closed {
-		return fmt.Errorf("engine closed")
+		return 0, fmt.Errorf("engine closed")
 	}
 	if e.fatal != nil {
-		return e.fatal
+		return 0, e.fatal
 	}
-	s, ok := e.state.Series[name]
-	if !ok {
-		return fmt.Errorf("unconfigured metric %q", name)
-	}
-	// Plan the exact state/record expansion before claiming durability. This also
-	// bounds sparse-series aggregation and prevents large deliveries exceeding RAM.
-	clone := *s
-	clone.Levels = make(map[int64]hta.Level, len(s.Levels))
-	for k, v := range s.Levels {
-		clone.Levels[k] = v
-	}
-	var extra int64
-	var prepared []entry
-	available := e.options.BuilderHard - e.pendingBytes
-	accepted := make([]hta.Point, 0, len(points))
-	dropped := 0
-	for _, p := range points {
-		if clone.Insert(p, func(r hta.Record) {
-			extra += int64(96 + len(name))
-			// Keep the speculative buffer bounded even for rejected deliveries.
-			if extra <= available {
-				prepared = append(prepared, entry{Metric: name, Record: r})
+	var frames []byte
+	var plans []ingestPlan
+	working := make(map[string]*hta.Series)
+	walSize, pendingBytes := e.wal.size, e.pendingBytes
+	sequence := e.sequence
+	processed := 0
+	for i := 0; i < valid; i++ {
+		name := deliveries[i].Metric
+		s := working[name]
+		if s == nil {
+			if s = e.state.Series[name]; s == nil {
+				stop = fmt.Errorf("unconfigured metric %q", name)
+				break
 			}
-		}) {
-			accepted = append(accepted, p)
-		} else {
-			dropped++
+		}
+		// Plan the exact state/record expansion before claiming durability. This also
+		// bounds sparse-series aggregation and prevents large deliveries exceeding RAM.
+		clone := *s
+		clone.Levels = make(map[int64]hta.Level, len(s.Levels))
+		for k, v := range s.Levels {
+			clone.Levels[k] = v
+		}
+		plan := ingestPlan{metric: name, series: &clone, received: time.Now().UnixNano()}
+		available := e.options.BuilderHard - pendingBytes
+		accepted := make([]hta.Point, 0, len(points[i]))
+		for _, p := range points[i] {
+			if clone.Insert(p, func(r hta.Record) {
+				plan.extra += int64(96 + len(name))
+				// Keep the speculative buffer bounded even for rejected deliveries.
+				if plan.extra <= available {
+					plan.prepared = append(plan.prepared, entry{Metric: name, Record: r})
+				}
+			}) {
+				accepted = append(accepted, p)
+			} else {
+				plan.dropped++
+			}
+		}
+		plan.accepted = len(accepted)
+		if plan.accepted == 0 {
+			plans = append(plans, plan)
+			processed = i + 1
+			continue
+		}
+		payload, err := encode(batch{ReceivedAt: plan.received, Config: s.Config, Metric: name, Points: accepted})
+		if err != nil {
+			stop = err
+			break
+		}
+		if len(payload) > maxFrame {
+			stop = fmt.Errorf("DataChunk too large")
+			break
+		}
+		if int64(len(payload)+frameHeader) > e.options.WALHard || plan.extra > e.options.BuilderHard {
+			stop = fmt.Errorf("delivery exceeds configured WAL/builder capacity")
+			break
+		}
+		if walSize >= e.options.WALHigh || walSize+int64(len(payload)+frameHeader) > e.options.WALHard || pendingBytes+plan.extra > e.options.BuilderHard {
+			e.metrics.Backpressure.Set(1)
+			stop = ErrPressure
+			break
+		}
+		sequence++
+		frames = appendFrame(frames, sequence, payload)
+		walSize += int64(len(payload) + frameHeader)
+		pendingBytes += plan.extra
+		working[name] = &clone
+		plans = append(plans, plan)
+		processed = i + 1
+	}
+	if len(frames) > 0 {
+		start := time.Now()
+		err := e.wal.write(frames)
+		e.metrics.Sync.Observe(time.Since(start).Seconds())
+		if err != nil {
+			e.metrics.WALErrors.Inc()
+			e.fatal = err
+			return 0, err
 		}
 	}
-	recordDropped := func() {
-		if dropped > 0 {
-			e.metrics.Skipped.Add(float64(dropped))
-			slog.Warn("discarded duplicate, non-monotonic or nonfinite samples before WAL append", "metric", name, "count", dropped)
+	// Publish the already validated states only after their WAL frames are
+	// durable. WAL replay independently reconstructs exactly this state using apply.
+	for _, plan := range plans {
+		if plan.dropped > 0 {
+			e.metrics.Skipped.Add(float64(plan.dropped))
+			slog.Warn("discarded duplicate, non-monotonic or nonfinite samples before WAL append", "metric", plan.metric, "count", plan.dropped)
 		}
+		if plan.accepted == 0 {
+			continue
+		}
+		e.sequence++
+		e.state.Series[plan.metric] = plan.series
+		e.pending = append(e.pending, plan.prepared...)
+		e.pendingBytes += plan.extra
+		if e.oldestWAL == 0 {
+			e.oldestWAL = plan.received
+		}
+		e.metrics.Samples.Add(float64(plan.accepted))
 	}
-	if len(accepted) == 0 {
-		recordDropped()
-		return nil
-	}
-	b := batch{ReceivedAt: time.Now().UnixNano(), Config: s.Config, Metric: name, Points: accepted}
-	payload, err := encode(b)
-	if err != nil {
-		return err
-	}
-	if len(payload) > maxFrame {
-		return fmt.Errorf("DataChunk too large")
-	}
-	if int64(len(payload)+frameHeader) > e.options.WALHard || extra > e.options.BuilderHard {
-		return fmt.Errorf("delivery exceeds configured WAL/builder capacity")
-	}
-	if e.wal.size >= e.options.WALHigh || e.wal.size+int64(len(payload)+frameHeader) > e.options.WALHard || e.pendingBytes+extra > e.options.BuilderHard {
-		e.metrics.Backpressure.Set(1)
-		return ErrPressure
-	}
-	start := time.Now()
-	err = e.wal.append(e.sequence+1, payload)
-	e.metrics.Sync.Observe(time.Since(start).Seconds())
-	if err != nil {
-		e.metrics.WALErrors.Inc()
-		e.fatal = err
-		return err
-	}
-	recordDropped()
-	e.sequence++
-	// Publish the already validated state only after the WAL frame is durable.
-	// WAL replay independently reconstructs exactly this state using apply.
-	e.state.Series[name] = &clone
-	e.pending = append(e.pending, prepared...)
-	e.pendingBytes += extra
-	if e.oldestWAL == 0 {
-		e.oldestWAL = b.ReceivedAt
-	}
-	e.metrics.Samples.Add(float64(len(accepted)))
 	e.updateMetrics()
-	return nil
+	return processed, stop
 }
 func (e *Engine) get(ctx context.Context, key string) ([]byte, string, error) {
 	start := time.Now()

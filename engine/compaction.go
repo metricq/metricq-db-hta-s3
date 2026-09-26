@@ -160,20 +160,6 @@ func (e *Engine) reserveCompaction(ctx context.Context) (CompactionJob, error) {
 				return true
 			}
 			dirty := float64(object.Size-object.LiveBytes)/float64(object.Size) >= options.DeadFraction
-			if dirty {
-				// Partial evacuation is required for mixed packs larger than a job.
-				// Retain the source key across passes until its last live block moves.
-				remaining := 0
-				for _, b := range object.Blocks {
-					if !add(b) {
-						remaining++
-					}
-				}
-				if remaining > 0 && len(inputs) > 0 {
-					nextEvacuation = object.Key
-					return false
-				}
-			}
 
 			if options.MergeSmallBlocks {
 				beginSeed := 0
@@ -250,6 +236,22 @@ func (e *Engine) reserveCompaction(ctx context.Context) (CompactionJob, error) {
 						resumeOffset = seedIndex + 1
 						return false
 					}
+				}
+			}
+			if dirty && (len(inputs) == 0 || !options.MergeSmallBlocks) {
+				// Consolidation retires source fragments naturally. Evacuating
+				// unrelated live blocks first repeatedly relocates growing mixed
+				// tails without improving queries. Use copy-only reclamation when
+				// this bounded scan has no merge work left (or merging is disabled).
+				remaining := 0
+				for _, b := range object.Blocks {
+					if !add(b) {
+						remaining++
+					}
+				}
+				if remaining > 0 && len(inputs) > 0 {
+					nextEvacuation = object.Key
+					return false
 				}
 			}
 			previousCandidate = candidate.Key

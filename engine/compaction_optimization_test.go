@@ -455,20 +455,21 @@ func TestAppendOnlyMixedStreamsConvergePastSingletons(t *testing.T) {
 	checkCatalog(t, e)
 }
 
-func TestCompactionEvacuatesMixedObjectAcrossBoundedJobs(t *testing.T) {
+func mixedEvacuationFixture(t *testing.T, merge bool) (*Engine, *rangeGCStore, string) {
+	t.Helper()
 	ctx := context.Background()
 	s := &rangeGCStore{gcStore: &gcStore{memoryStore: newStore()}}
 	configs := map[string]hta.Config{}
 	for i := 0; i < 30; i++ {
 		configs[fmt.Sprint(i)] = testConfig["x"]
 	}
-	options := maintenanceOptions(t.TempDir(), false)
+	options := maintenanceOptions(t.TempDir(), merge)
 	options.Compaction.MaxBlocks = 8
 	e, err := Open(ctx, s, options, configs, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer e.Close()
+	t.Cleanup(func() { e.Close() })
 	var source string
 	for batch := 0; batch < 2; batch++ {
 		for name := range configs {
@@ -491,6 +492,28 @@ func TestCompactionEvacuatesMixedObjectAcrossBoundedJobs(t *testing.T) {
 	if err != nil || !found || len(o.Blocks) <= options.Compaction.MaxBlocks || o.LiveBytes >= o.Size {
 		t.Fatalf("fixture lacks oversized dirty source: %+v %v", o, err)
 	}
+	return e, s, source
+}
+
+func TestCompactionPrioritizesMergingBeforeEvacuation(t *testing.T) {
+	e, _, _ := mixedEvacuationFixture(t, true)
+	if err := e.CompactOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	blocks := 0
+	for metric := range e.state.Roots {
+		blocks += len(streamBlocks(t, e, metric, 0))
+	}
+	if blocks != 56 {
+		t.Fatalf("eight-block job should merge four raw pairs, remaining=%d want=56", blocks)
+	}
+	checkCatalog(t, e)
+}
+
+func TestCompactionEvacuatesMixedObjectAcrossBoundedJobs(t *testing.T) {
+	ctx := context.Background()
+	e, s, source := mixedEvacuationFixture(t, false)
+	found := true
 	req := &metricq.HistoryRequest{Type: metricq.HistoryRequest_FLEX_TIMELINE, StartTime: 100, EndTime: 8001}
 	want, err := e.Query(ctx, "0", req)
 	if err != nil {

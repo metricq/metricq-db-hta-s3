@@ -319,7 +319,7 @@ func candidateKey(o ObjectInfo) string {
 	}
 	fragmented := false
 	for _, b := range o.Blocks {
-		if !b.Index && b.Entry.Records > 0 && b.Entry.Records < maxDataBlockRecords {
+		if !b.Index && b.Entry.Records > 0 && b.Entry.Records <= maxDataBlockRecords/2 {
 			fragmented = true
 			break
 		}

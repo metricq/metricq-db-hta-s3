@@ -397,10 +397,11 @@ func TestCompactionDoesNotRenewIngestCooldown(t *testing.T) {
 }
 
 func TestAppendOnlyMixedStreamsConvergePastSingletons(t *testing.T) {
+	const metricCount = 1500
 	ctx := context.Background()
 	s := &rangeGCStore{gcStore: &gcStore{memoryStore: newStore()}}
 	configs := map[string]hta.Config{}
-	for i := 0; i < 150; i++ {
+	for i := 0; i < metricCount; i++ {
 		configs[fmt.Sprintf("canonical.%05d", i)] = hta.Config{IntervalMin: int64(time.Second), IntervalMax: int64(1000 * time.Second), IntervalFactor: 10}
 	}
 	options := maintenanceOptions(t.TempDir(), true)
@@ -413,7 +414,7 @@ func TestAppendOnlyMixedStreamsConvergePastSingletons(t *testing.T) {
 	defer e.Close()
 	base := int64(1700000000) * int64(time.Second)
 	for batch := 0; batch < 8; batch++ {
-		for i := 0; i < 150; i++ {
+		for i := 0; i < metricCount; i++ {
 			var points []hta.Point
 			for j := 0; j < 16; j++ {
 				points = append(points, hta.Point{Time: base + int64(batch*16+j)*int64(time.Second), Value: float64(i + j%7)})
@@ -426,11 +427,13 @@ func TestAppendOnlyMixedStreamsConvergePastSingletons(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	for i := 0; i < 256 && e.MaintenanceStatus().SmallBlocks > 600; i++ {
+	for i := 0; i < 512 && e.MaintenanceStatus().SmallBlocks > metricCount*4; i++ {
 		if err = e.CompactOnce(ctx); err != nil {
 			t.Fatal(err)
 		}
-
+		if i%64 == 63 {
+			t.Logf("pass=%d small=%d dead=%d", i+1, e.state.SmallBlocks, e.state.StoredObjectBytes-e.state.LiveObjectBytes)
+		}
 	}
 	for name, levels := range e.state.Roots {
 		for level, root := range levels {
@@ -448,4 +451,157 @@ func TestAppendOnlyMixedStreamsConvergePastSingletons(t *testing.T) {
 		}
 	}
 	checkCatalog(t, e)
+}
+
+func TestCompactionEvacuatesMixedObjectAcrossBoundedJobs(t *testing.T) {
+	ctx := context.Background()
+	s := &rangeGCStore{gcStore: &gcStore{memoryStore: newStore()}}
+	configs := map[string]hta.Config{}
+	for i := 0; i < 30; i++ {
+		configs[fmt.Sprint(i)] = testConfig["x"]
+	}
+	options := maintenanceOptions(t.TempDir(), false)
+	options.Compaction.MaxBlocks = 8
+	e, err := Open(ctx, s, options, configs, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer e.Close()
+	var source string
+	for batch := 0; batch < 2; batch++ {
+		for name := range configs {
+			var points []hta.Point
+			for i := 1; i <= 40; i++ {
+				points = append(points, hta.Point{Time: int64(batch*40+i) * 100, Value: float64(i)})
+			}
+			if err = e.Ingest(ctx, name, chunk(points...)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err = e.Flush(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if batch == 0 {
+			source = streamBlocks(t, e, "0", 0)[0].Key
+		}
+	}
+	o, found, err := e.catalogGet(ctx, e.state.Catalog, source)
+	if err != nil || !found || len(o.Blocks) <= options.Compaction.MaxBlocks || o.LiveBytes >= o.Size {
+		t.Fatalf("fixture lacks oversized dirty source: %+v %v", o, err)
+	}
+	req := &metricq.HistoryRequest{Type: metricq.HistoryRequest_FLEX_TIMELINE, StartTime: 100, EndTime: 8001}
+	want, err := e.Query(ctx, "0", req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 40 && found; i++ {
+		if err = e.CompactOnce(ctx); err != nil {
+			t.Fatal(err)
+		}
+		_, found, err = e.catalogGet(ctx, e.state.Catalog, source)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if found {
+		t.Fatal("partly dead source never finished evacuation")
+	}
+	checkCatalog(t, e)
+	drain(t, e)
+	s.mu.Lock()
+	_, exists := s.objects[source]
+	s.mu.Unlock()
+	if exists {
+		t.Fatal("last block moved but old object survived GC")
+	}
+	got, err := e.Query(ctx, "0", req)
+	if err != nil || !proto.Equal(want, got) {
+		t.Fatalf("evacuation changed history: %v", err)
+	}
+}
+
+func TestCompactionPublicationWaitsForFlushAndAllowsIngest(t *testing.T) {
+	for _, phase := range []string{"flush-first", "compaction-first"} {
+		t.Run(phase, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			s := &coordinationGateStore{gcStore: &gcStore{memoryStore: newStore()}, entered: make(chan struct{}), release: make(chan struct{})}
+			options := maintenanceOptions(t.TempDir(), true)
+			options.AppendOnlyAggregates = true
+			e, err := Open(ctx, s, options, testConfig, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer e.Close()
+			fillCompaction(t, e, 3)
+			job, err := e.reserveCompaction(ctx)
+			if err != nil || job.ID == "" {
+				t.Fatalf("reserve: %v", err)
+			}
+			defer func() { e.mu.Lock(); e.unpin(job.Generation); e.mu.Unlock() }()
+			replacements, packs, err := e.copyJob(ctx, job)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err = e.Ingest(ctx, "x", chunk(hta.Point{Time: 12100, Value: 7})); err != nil {
+				t.Fatal(err)
+			}
+			flushDone, compactDone := make(chan error, 1), make(chan error, 1)
+			releaseOnce := sync.Once{}
+			release := func() { releaseOnce.Do(func() { close(s.release) }) }
+			defer release()
+			if phase == "flush-first" {
+				s.prefix = "data/"
+				go func() { flushDone <- e.Flush(ctx) }()
+			} else {
+				s.prefix = "index/compact-"
+				go func() { compactDone <- e.applyCompaction(ctx, job, replacements, packs) }()
+			}
+			select {
+			case <-s.entered:
+			case <-ctx.Done():
+				t.Fatal("publication gate not reached")
+			}
+			if phase == "flush-first" {
+				go func() { compactDone <- e.applyCompaction(ctx, job, replacements, packs) }()
+				// The compactor must wait for publication, not discard its outputs.
+				select {
+				case err := <-compactDone:
+					t.Fatalf("compaction failed instead of waiting: %v", err)
+				case <-time.After(30 * time.Millisecond):
+				}
+			} else {
+				go func() { flushDone <- e.Flush(ctx) }()
+				admitted := make(chan error, 1)
+				go func() { admitted <- e.Ingest(ctx, "x", chunk(hta.Point{Time: 12200, Value: 8})) }()
+				select {
+				case err := <-admitted:
+					if err != nil {
+						t.Fatal(err)
+					}
+				case <-time.After(time.Second):
+					t.Fatal("metadata publication blocked WAL ACK")
+				}
+			}
+			release()
+			if err = <-compactDone; err != nil {
+				t.Fatal(err)
+			}
+			if err = <-flushDone; err != nil {
+				t.Fatal(err)
+			}
+			if e.compactionCompletions != 1 || e.state.CompactionJob.Key != "" {
+				t.Fatal("prepared job was discarded")
+			}
+			checkCatalog(t, e)
+			got := query(t, e, &metricq.HistoryRequest{Type: metricq.HistoryRequest_FLEX_TIMELINE, StartTime: 100, EndTime: 12300})
+			want := 121
+			if phase == "compaction-first" {
+				want = 122
+			}
+			if len(got.Value) != want {
+				t.Fatalf("samples=%d want=%d", len(got.Value), want)
+			}
+		})
+	}
 }

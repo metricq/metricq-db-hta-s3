@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/metricq/metricq-db-hta-go/hta"
@@ -95,6 +96,7 @@ func (e *Engine) reserveCompaction(ctx context.Context) (CompactionJob, error) {
 	snapshot := &Engine{store: e.preparationStore(), options: e.options, metrics: e.metrics, state: cloneManifest(e.committed), sharedNodes: e.sharedNodes, nodeCache: make(map[blob]indexNode), nodeReadLimit: 4096, catalogReadBudget: 32 << 20}
 	scanAfter := e.candidateCursor
 	seedObject, seedOffset := e.compactionSeedObject, e.compactionSeedOffset
+	evacuateObject := e.compactionEvacuateObject
 	e.pin(generation)
 	e.mu.Unlock()
 	keepPin := false
@@ -127,113 +129,133 @@ func (e *Engine) reserveCompaction(ctx context.Context) (CompactionJob, error) {
 		copied += b.Entry.Blob.Length
 		return true
 	}
-	cursor, err := snapshot.catalogScan(ctx, snapshot.state.Candidates, scanAfter, 256, func(candidate ObjectInfo) bool {
-		object, ok, err := snapshot.catalogGet(ctx, snapshot.state.Catalog, candidate.Target)
+	nextEvacuation := ""
+	if evacuateObject != "" {
+		o, ok, err := snapshot.catalogGet(ctx, snapshot.state.Catalog, evacuateObject)
 		if err != nil {
-			selectErr = err
-			return false
+			return CompactionJob{}, err
 		}
-		if !ok || object.Modified > cutoff || object.Size == 0 {
-			previousCandidate = candidate.Key
-			return true
-		}
-		dirty := float64(object.Size-object.LiveBytes)/float64(object.Size) >= options.DeadFraction
-		if dirty {
-			// Copy complete objects only: a partial copy increases storage without
-			// releasing the source. Oversized packs can still be consolidated by stream.
-			bytes := int64(0)
-			count := 0
-			for _, b := range object.Blocks {
-				if !selected[b.Entry.Blob] {
-					bytes += b.Entry.Blob.Length
-					count++
+		if ok && o.Modified <= cutoff && float64(o.Size-o.LiveBytes)/float64(o.Size) >= options.DeadFraction {
+			for _, b := range o.Blocks {
+				if !add(b) {
+					break
 				}
 			}
-			if count <= options.MaxBlocks-len(inputs) && bytes <= options.MaxJobBytes-copied {
+			if len(inputs) < len(o.Blocks) && len(inputs) > 0 {
+				nextEvacuation = o.Key
+			}
+		}
+	}
+	cursor := scanAfter
+	var err error
+	if len(inputs) == 0 {
+		cursor, err = snapshot.catalogScan(ctx, snapshot.state.Candidates, scanAfter, 256, func(candidate ObjectInfo) bool {
+			object, ok, err := snapshot.catalogGet(ctx, snapshot.state.Catalog, candidate.Target)
+			if err != nil {
+				selectErr = err
+				return false
+			}
+			if !ok || object.Modified > cutoff || object.Size == 0 {
+				previousCandidate = candidate.Key
+				return true
+			}
+			dirty := float64(object.Size-object.LiveBytes)/float64(object.Size) >= options.DeadFraction
+			if dirty {
+				// Partial evacuation is required for mixed packs larger than a job.
+				// Retain the source key across passes until its last live block moves.
+				remaining := 0
 				for _, b := range object.Blocks {
-					add(b)
-				}
-			}
-		}
-		if options.MergeSmallBlocks {
-			beginSeed := 0
-			if candidate.Key == seedObject {
-				beginSeed = min(seedOffset, len(object.Blocks))
-			}
-			for seedIndex := beginSeed; seedIndex < len(object.Blocks); seedIndex++ {
-				seed := object.Blocks[seedIndex]
-				if seed.Index || seed.Entry.Records <= 0 || seed.Entry.Records >= maxDataBlockRecords {
-					continue
-				}
-				stream := fmt.Sprintf("%s/%020d", seed.Metric, seed.Level)
-				if tried[stream] {
-					continue
-				}
-				tried[stream] = true
-				root := snapshot.state.Roots[seed.Metric][seed.Level]
-				begin := seed.Entry.First
-				prior, err := snapshot.indexNeighborEntry(ctx, root, begin, true)
-				if err != nil {
-					selectErr = err
-					return false
-				}
-				if prior.Records > 0 && prior.Records+seed.Entry.Records <= maxDataBlockRecords {
-					begin = prior.First
-				}
-				entries, err := snapshot.indexEntriesAfter(ctx, root, begin, options.MaxBlocks-len(inputs))
-				if err != nil {
-					selectErr = err
-					return false
-				}
-				var group []BlockInfo
-				records := 0
-				bytes := int64(0)
-				for _, entry := range entries {
-					if entry.Records <= 0 || entry.Records >= maxDataBlockRecords || records+entry.Records > maxDataBlockRecords {
-						break
+					if !add(b) {
+						remaining++
 					}
-					o, ok, err := snapshot.catalogGet(ctx, snapshot.state.Catalog, entry.Blob.Key)
+				}
+				if remaining > 0 && len(inputs) > 0 {
+					nextEvacuation = object.Key
+					return false
+				}
+			}
+
+			if options.MergeSmallBlocks {
+				beginSeed := 0
+				if candidate.Key == seedObject {
+					beginSeed = min(seedOffset, len(object.Blocks))
+				}
+				for seedIndex := beginSeed; seedIndex < len(object.Blocks); seedIndex++ {
+					seed := object.Blocks[seedIndex]
+					if seed.Index || seed.Entry.Records <= 0 || seed.Entry.Records > maxDataBlockRecords/2 {
+						continue
+					}
+					stream := fmt.Sprintf("%s/%020d", seed.Metric, seed.Level)
+					if tried[stream] {
+						continue
+					}
+					tried[stream] = true
+					root := snapshot.state.Roots[seed.Metric][seed.Level]
+					begin := seed.Entry.First
+					prior, err := snapshot.indexNeighborEntry(ctx, root, begin, true)
 					if err != nil {
 						selectErr = err
 						return false
 					}
-					if !ok || o.Modified > cutoff {
-						break
+					if prior.Records > 0 && prior.Records+seed.Entry.Records <= maxDataBlockRecords {
+						begin = prior.First
 					}
-					if entry.Blob.Length > options.MaxJobBytes-copied-bytes {
-						break
+					entries, err := snapshot.indexEntriesAfter(ctx, root, begin, options.MaxBlocks-len(inputs))
+					if err != nil {
+						selectErr = err
+						return false
 					}
-					group = append(group, BlockInfo{Metric: seed.Metric, Level: seed.Level, Entry: entry})
-					records += entry.Records
-					if !selected[entry.Blob] {
-						bytes += entry.Blob.Length
+					var group []BlockInfo
+					records := 0
+					bytes := int64(0)
+					for _, entry := range entries {
+						if entry.Records <= 0 || entry.Records >= maxDataBlockRecords || records+entry.Records > maxDataBlockRecords {
+							break
+						}
+						o, ok, err := snapshot.catalogGet(ctx, snapshot.state.Catalog, entry.Blob.Key)
+						if err != nil {
+							selectErr = err
+							return false
+						}
+						if !ok || o.Modified > cutoff {
+							break
+						}
+						if entry.Blob.Length > options.MaxJobBytes-copied-bytes {
+							break
+						}
+						group = append(group, BlockInfo{Metric: seed.Metric, Level: seed.Level, Entry: entry})
+						records += entry.Records
+						if !selected[entry.Blob] {
+							bytes += entry.Blob.Length
+						}
 					}
-				}
-				if len(group) > 1 {
-					for _, b := range group {
-						add(b)
+					if len(group) > 1 {
+						for _, b := range group {
+							add(b)
+						}
 					}
-				}
-				if len(inputs) >= options.MaxBlocks || len(tried) >= 64 {
-					seedLimited = len(inputs) < options.MaxBlocks && len(tried) >= 64
-					resumeCandidate = previousCandidate
-					resumeObject = candidate.Key
-					resumeOffset = seedIndex + 1
-					return false
+					if len(inputs) >= options.MaxBlocks || len(tried) >= 64 {
+						seedLimited = len(inputs) < options.MaxBlocks && len(tried) >= 64
+						resumeCandidate = previousCandidate
+						resumeObject = candidate.Key
+						resumeOffset = seedIndex + 1
+						return false
+					}
 				}
 			}
-		}
-		previousCandidate = candidate.Key
-		return len(inputs) < options.MaxBlocks && copied < options.MaxJobBytes
-	})
+			previousCandidate = candidate.Key
+			return len(inputs) < options.MaxBlocks && copied < options.MaxJobBytes
+		})
+	}
 	e.mu.Lock()
+	e.compactionEvacuateObject = nextEvacuation
 	e.candidateCursor = cursor
 	e.compactionSeedObject = resumeObject
 	e.compactionSeedOffset = resumeOffset
 	if resumeObject != "" {
 		e.candidateCursor = resumeCandidate
 	}
-	e.compactionScanMore = len(inputs) == 0 && seedLimited
+	e.compactionScanMore = len(inputs) == 0 && (seedLimited || cursor != "")
 	if e.closed {
 		e.mu.Unlock()
 		return CompactionJob{}, fmt.Errorf("engine closed")
@@ -276,12 +298,14 @@ func (e *Engine) reserveCompaction(ctx context.Context) (CompactionJob, error) {
 	if err != nil {
 		return CompactionJob{}, err
 	}
+	e.publishMu.Lock()
+	defer e.publishMu.Unlock()
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	next := cloneManifest(e.committed)
 	next.Generation = e.state.Generation + 1
 	next.CompactionJob = ref
-	if err = e.publishMaintenance(ctx, next); err != nil {
+	if err = e.publishMaintenanceLocked(ctx, next); err != nil {
 		return CompactionJob{}, err
 	}
 	keepPin = true
@@ -358,6 +382,38 @@ func (e *Engine) preparationStore() storage.Store {
 		return e.store
 	}
 	return maintenanceStore{Store: e.store, budget: e.compactionBudget}
+}
+
+// Publication metadata is bounded by the job/page budgets. Account this short
+// burst after releasing publishMu so rate limiting cannot hold up a Flush.
+type publicationStore struct {
+	storage.Store
+	bytes atomic.Int64
+}
+
+func (s *publicationStore) Get(ctx context.Context, key string) ([]byte, string, error) {
+	b, version, err := s.Store.Get(ctx, key)
+	s.bytes.Add(int64(len(b)))
+	return b, version, err
+}
+func (s *publicationStore) Put(ctx context.Context, key string, b []byte, version *string) (string, error) {
+	s.bytes.Add(int64(len(b)))
+	return s.Store.Put(ctx, key, b, version)
+}
+func (s *publicationStore) GetRange(ctx context.Context, key string, offset, length int64) ([]byte, error) {
+	if ranged, ok := s.Store.(storage.RangeGetter); ok {
+		b, err := ranged.GetRange(ctx, key, offset, length)
+		s.bytes.Add(int64(len(b)))
+		return b, err
+	}
+	b, _, err := s.Get(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+	if offset < 0 || length < 0 || offset > int64(len(b)) || length > int64(len(b))-offset {
+		return nil, io.ErrUnexpectedEOF
+	}
+	return b[offset : offset+length], nil
 }
 
 func (e *Engine) copyJob(ctx context.Context, job CompactionJob) (map[blob]replacement, []*pack, error) {
@@ -837,8 +893,19 @@ func (e *Engine) prepareCompaction(ctx context.Context, job CompactionJob, repla
 }
 
 func (e *Engine) applyCompaction(ctx context.Context, job CompactionJob, replacements map[blob]replacement, packs []*pack) error {
-	var discarded []string
-	for attempt := 0; attempt < 2; attempt++ {
+	// Data copying is finished. Serialize only the bounded metadata rewrite
+	// against the newest roots, without holding the ingestion mutex during I/O.
+	e.publishMu.Lock()
+	publication := &publicationStore{Store: e.store}
+	defer func() {
+		e.publishMu.Unlock()
+		if e.compactionBudget != nil {
+			// A successful publication stays successful even if cancellation
+			// interrupts the subsequent pacing delay. The byte debt persists.
+			_ = e.compactionBudget.take(ctx, publication.bytes.Load())
+		}
+	}()
+	{
 		e.mu.Lock()
 		if e.closed {
 			e.mu.Unlock()
@@ -849,25 +916,14 @@ func (e *Engine) applyCompaction(ctx context.Context, job CompactionJob, replace
 			e.mu.Unlock()
 			return err
 		}
-		if e.wal.size >= e.options.WALHigh {
-			e.mu.Unlock()
-			return ErrPressure
-		}
-		version := e.version
-		snapshot := &Engine{store: e.preparationStore(), options: e.options, metrics: e.metrics, state: cloneManifest(e.committed), committed: cloneManifest(e.committed), sharedNodes: e.sharedNodes, activeMaintenance: job.ID, nodeReadLimit: 4096, catalogReadBudget: 32 << 20}
+		snapshot := &Engine{store: publication, options: e.options, metrics: e.metrics, state: cloneManifest(e.committed), committed: cloneManifest(e.committed), sharedNodes: e.sharedNodes, activeMaintenance: job.ID, nodeReadLimit: 4096, catalogReadBudget: 32 << 20}
 		e.mu.Unlock()
-		next, err := snapshot.prepareCompaction(ctx, job, replacements, packs, discarded)
+		next, err := snapshot.prepareCompaction(ctx, job, replacements, packs, nil)
 		if err != nil {
 			return err
 		}
 		e.mu.Lock()
-		if e.version != version {
-			e.mu.Unlock()
-			discarded = append(discarded, snapshot.stagingKeys...)
-			e.metrics.CompactionConflicts.Inc()
-			continue
-		}
-		err = e.publishMaintenance(ctx, next)
+		err = e.publishMaintenanceLocked(ctx, next)
 		e.mu.Unlock()
 		if err == nil {
 			e.mu.Lock()
@@ -885,20 +941,20 @@ func (e *Engine) applyCompaction(ctx context.Context, job CompactionJob, replace
 		}
 		return err
 	}
-	return fmt.Errorf("compaction publication changed concurrently; job rescheduled")
 }
 
 // Build maintenance metadata without the ingestion mutex. Generation pins keep
-// captured metadata alive until publication or discard. Flush wins on conflict.
+// captured metadata alive until publication or discard.
 var errMaintenanceNoop = fmt.Errorf("no maintenance change")
 
 func (e *Engine) editMaintenance(ctx context.Context, edit func(*Engine) (manifest, error)) error {
+	e.publishMu.Lock()
+	defer e.publishMu.Unlock()
 	e.mu.Lock()
 	if e.closed || e.fatal != nil {
 		e.mu.Unlock()
 		return fmt.Errorf("engine unavailable")
 	}
-	version := e.version
 	generation := e.committed.Generation
 	snapshot := &Engine{store: e.preparationStore(), options: e.options, metrics: e.metrics, state: cloneManifest(e.committed), committed: cloneManifest(e.committed)}
 	e.pin(generation)
@@ -913,10 +969,7 @@ func (e *Engine) editMaintenance(ctx context.Context, edit func(*Engine) (manife
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if e.version != version {
-		return ErrPressure
-	}
-	return e.publishMaintenance(ctx, next)
+	return e.publishMaintenanceLocked(ctx, next)
 }
 func (e *Engine) abortCompaction(ctx context.Context) error {
 	e.mu.Lock()

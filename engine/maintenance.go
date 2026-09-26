@@ -96,16 +96,22 @@ func (e *Engine) appendTrash(ctx context.Context, next *manifest, keys []string,
 // Caller holds mu. Compaction/GC publications retain committed HTA and WAL
 // sequence while the live series may already include newer fsynced samples.
 func (e *Engine) publishMaintenance(ctx context.Context, next manifest) error {
+	if !e.publishMu.TryLock() {
+		return ErrPressure
+	}
+	defer e.publishMu.Unlock()
+	return e.publishMaintenanceLocked(ctx, next)
+}
+
+// Caller holds publishMu, then mu. Immutable block copying happens before
+// acquiring publishMu; only metadata rebasing/publication serialize with Flush.
+func (e *Engine) publishMaintenanceLocked(ctx context.Context, next manifest) error {
 	if e.closed {
 		return fmt.Errorf("engine closed")
 	}
 	if e.fatal != nil {
 		return e.fatal
 	}
-	if !e.publishMu.TryLock() {
-		return ErrPressure
-	}
-	defer e.publishMu.Unlock()
 	next.Series = cloneManifest(e.committed).Series
 	next.Sequence = e.committed.Sequence
 	b, err := encode(next)

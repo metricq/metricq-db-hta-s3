@@ -117,6 +117,7 @@ func (e *Engine) reserveCompaction(ctx context.Context) (CompactionJob, error) {
 	cutoff := time.Now().Add(-time.Duration(options.CooldownSeconds) * time.Second).UnixNano()
 	var selectErr error
 	seedLimited := false
+	seedLimit := max(64, min(options.MaxBlocks, 512))
 	add := func(b BlockInfo) bool {
 		if selected[b.Entry.Blob] {
 			return true
@@ -177,7 +178,7 @@ func (e *Engine) reserveCompaction(ctx context.Context) (CompactionJob, error) {
 					}
 					root := snapshot.state.Roots[seed.Metric][seed.Level]
 					// An immutable single-block root cannot supply a merge partner.
-					// Known singleton tails must not consume the 64-stream search
+					// Known singleton tails must not consume the bounded stream-search
 					// budget on every pass. A flush changes the root/hash, so this
 					// shortcut cannot hide subsequently appended fragments.
 					if snapshot.sharedNodes != nil {
@@ -229,8 +230,9 @@ func (e *Engine) reserveCompaction(ctx context.Context) (CompactionJob, error) {
 							add(b)
 						}
 					}
-					if len(inputs) >= options.MaxBlocks || len(tried) >= 64 {
-						seedLimited = len(inputs) < options.MaxBlocks && len(tried) >= 64
+					searchLimited := len(tried) >= seedLimit || snapshot.nodeReads >= 2048
+					if len(inputs) >= options.MaxBlocks || searchLimited {
+						seedLimited = len(inputs) < options.MaxBlocks && searchLimited
 						resumeCandidate = previousCandidate
 						resumeObject = candidate.Key
 						resumeOffset = seedIndex + 1

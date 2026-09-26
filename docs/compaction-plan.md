@@ -1,5 +1,9 @@
 # Background compaction
 
+The [query/ingestion review](compaction-review.md) records known selection, index,
+locking and throughput limitations with reproductions. Read it before relying on
+compaction to repair append-only aggregate fragmentation.
+
 Implemented as one maintenance goroutine inside the DB process. It has its own
 schedule and limits; neither ingestion nor a history request triggers a job.
 `RunMaintenance` handles compaction, abandoned-job recovery and garbage collection.

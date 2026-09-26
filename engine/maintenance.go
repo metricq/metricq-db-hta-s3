@@ -13,6 +13,8 @@ import (
 )
 
 type CompactionOptions struct {
+	MaxDurationSeconds int64 `json:"max_duration_seconds"`
+
 	Enabled          bool    `json:"enabled"`
 	IntervalSeconds  int64   `json:"interval_seconds"`
 	CooldownSeconds  int64   `json:"cooldown_seconds"`
@@ -25,6 +27,9 @@ type CompactionOptions struct {
 }
 
 func (o CompactionOptions) defaults() CompactionOptions {
+	if o.MaxDurationSeconds == 0 {
+		o.MaxDurationSeconds = 60
+	}
 	if o.IntervalSeconds == 0 {
 		o.IntervalSeconds = 60
 	}
@@ -92,13 +97,19 @@ func (e *Engine) publishMaintenance(ctx context.Context, next manifest) error {
 	if e.fatal != nil {
 		return e.fatal
 	}
+	if !e.publishMu.TryLock() {
+		return ErrPressure
+	}
+	defer e.publishMu.Unlock()
 	next.Series = cloneManifest(e.committed).Series
 	next.Sequence = e.committed.Sequence
 	b, err := encode(next)
 	if err != nil {
 		return err
 	}
-	version, err := e.put(ctx, "manifest", b, &e.version)
+	expected := e.version
+	e.mu.Unlock()
+	version, err := e.put(ctx, "manifest", b, &expected)
 	if err != nil {
 		actual, v, getErr := e.get(ctx, "manifest")
 		if getErr == nil && bytes.Equal(actual, b) {
@@ -106,11 +117,15 @@ func (e *Engine) publishMaintenance(ctx context.Context, next manifest) error {
 			err = nil
 		} else {
 			if errors.Is(err, storage.ErrConflict) {
+				e.mu.Lock()
 				e.fatal = fmt.Errorf("maintenance publisher fenced: %w", err)
+				e.mu.Unlock()
 			}
+			e.mu.Lock()
 			return err
 		}
 	}
+	e.mu.Lock()
 	e.committed = cloneManifest(next)
 	live := e.state.Series
 	liveRoots := e.state.Roots
@@ -352,7 +367,11 @@ func (e *Engine) newMetadataPack(prefix string) (*pack, error) {
 	return p, err
 }
 func (e *Engine) updateMaintenanceMetrics(m manifest) {
-	e.metrics.GCPending.Set(float64(m.TrashObjects))
+	pending := m.TrashObjects
+	if m.TrashCleanup != "" {
+		pending++
+	}
+	e.metrics.GCPending.Set(float64(pending))
 	e.metrics.LiveObjectBytes.Set(float64(m.LiveObjectBytes))
 	e.metrics.DeadObjectBytes.Set(float64(m.StoredObjectBytes - m.LiveObjectBytes))
 }

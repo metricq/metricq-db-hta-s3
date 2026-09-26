@@ -90,7 +90,7 @@ func (e *Engine) reserveCompaction(ctx context.Context) (CompactionJob, error) {
 		return CompactionJob{}, nil
 	}
 	generation := e.state.Generation
-	snapshot := &Engine{store: e.store, options: e.options, metrics: e.metrics, state: manifest{Catalog: e.state.Catalog, Candidates: e.state.Candidates}}
+	snapshot := &Engine{store: e.store, options: e.options, metrics: e.metrics, state: manifest{Catalog: e.state.Catalog, Candidates: e.state.Candidates}, catalogReadBudget: 32 << 20}
 	scanAfter := e.candidateCursor
 	e.pin(generation)
 	e.mu.Unlock()
@@ -103,6 +103,7 @@ func (e *Engine) reserveCompaction(ctx context.Context) (CompactionJob, error) {
 		}
 	}()
 	var inputs []BlockInfo
+	dirtySources := make(map[string]bool)
 	var copied int64
 	cutoff := time.Now().Add(-time.Duration(options.CooldownSeconds) * time.Second).UnixNano()
 	var selectErr error
@@ -112,11 +113,19 @@ func (e *Engine) reserveCompaction(ctx context.Context) (CompactionJob, error) {
 			selectErr = err
 			return false
 		}
-		if !ok || object.Modified > cutoff || object.Size == 0 || float64(object.Size-object.LiveBytes)/float64(object.Size) < options.DeadFraction {
+		if !ok || object.Modified > cutoff || object.Size == 0 {
 			return true
 		}
-		// Select complete objects when they fit, otherwise a bounded evacuation.
+		dirty := float64(object.Size-object.LiveBytes)/float64(object.Size) >= options.DeadFraction
+		if !dirty && !options.MergeSmallBlocks {
+			return true
+		}
+		dirtySources[object.Key] = dirty
+		// Select complete dirty objects, or small raw blocks for consolidation.
 		for _, b := range object.Blocks {
+			if !dirty && (b.Index || b.Level != 0 || b.Entry.Records <= 0 || b.Entry.Records >= maxDataBlockRecords) {
+				continue
+			}
 			if b.Entry.Blob.Length > options.MaxJobBytes-copied || len(inputs) >= options.MaxBlocks {
 				continue
 			}
@@ -146,6 +155,26 @@ func (e *Engine) reserveCompaction(ctx context.Context) (CompactionJob, error) {
 	if selectErr != nil {
 		return CompactionJob{}, selectErr
 	}
+	groups := make(map[string][]int)
+	for _, b := range inputs {
+		if !b.Index && b.Level == 0 {
+			groups[b.Metric] = append(groups[b.Metric], b.Entry.Records)
+		}
+	}
+	mergeable := make(map[string]bool)
+	for metric, counts := range groups {
+		sort.Ints(counts)
+		if len(counts) > 1 && counts[0]+counts[1] <= maxDataBlockRecords {
+			mergeable[metric] = true
+		}
+	}
+	filtered := inputs[:0]
+	for _, b := range inputs {
+		if dirtySources[b.Entry.Blob.Key] || mergeable[b.Metric] {
+			filtered = append(filtered, b)
+		}
+	}
+	inputs = filtered
 	if len(inputs) == 0 {
 		return CompactionJob{}, nil
 	}
@@ -201,6 +230,7 @@ func (b *rateBudget) take(ctx context.Context, n int64) error {
 func (e *Engine) copyJob(ctx context.Context, job CompactionJob) (map[blob]replacement, []*pack, error) {
 	options := e.options.Compaction.defaults()
 	reader := &Engine{store: e.store, metrics: e.metrics, options: e.options}
+	indexReader := &Engine{store: e.store, metrics: e.metrics, options: e.options, sharedNodes: e.sharedNodes, nodeCache: make(map[blob]indexNode), nodeReadLimit: 4096}
 	budget := rateBudget{start: time.Now(), rate: options.BytesPerSecond}
 	replacements := make(map[blob]replacement)
 	inputs := append([]BlockInfo(nil), job.Inputs...)
@@ -277,15 +307,15 @@ func (e *Engine) copyJob(ctx context.Context, job CompactionJob) (map[blob]repla
 				e.mu.Lock()
 				root := e.state.Roots[b.Metric][b.Level]
 				e.mu.Unlock()
-				var refs []blob
-				err = reader.indexRange(ctx, root, inputs[i].Entry.First, inputs[end-1].Entry.Last, &refs)
-				if err != nil {
-					return nil, nil, err
-				}
-				consecutive := len(refs) == end-i
-				for j, ref := range refs {
-					if j >= end-i || ref != inputs[i+j].Entry.Blob {
+				consecutive := true
+				for j := i + 1; j < end; j++ {
+					next, err := indexReader.indexNeighbor(ctx, root, inputs[j-1].Entry.Last, false)
+					if err != nil {
+						return nil, nil, err
+					}
+					if next != inputs[j].Entry.Blob {
 						consecutive = false
+						break
 					}
 				}
 				if !consecutive {
@@ -582,7 +612,7 @@ func (e *Engine) applyCompaction(ctx context.Context, job CompactionJob, replace
 			return ErrPressure
 		}
 		version := e.version
-		snapshot := &Engine{store: e.store, options: e.options, metrics: e.metrics, state: cloneManifest(e.committed), committed: cloneManifest(e.committed), sharedNodes: e.sharedNodes, activeMaintenance: job.ID}
+		snapshot := &Engine{store: e.store, options: e.options, metrics: e.metrics, state: cloneManifest(e.committed), committed: cloneManifest(e.committed), sharedNodes: e.sharedNodes, activeMaintenance: job.ID, catalogReadBudget: 32 << 20}
 		e.mu.Unlock()
 		next, err := snapshot.prepareCompaction(ctx, job, replacements, packs, discarded)
 		if err != nil {
@@ -695,6 +725,8 @@ func (e *Engine) recoverCompaction(ctx context.Context) error {
 }
 
 func (e *Engine) CompactOnce(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, time.Duration(e.options.Compaction.defaults().MaxDurationSeconds)*time.Second)
+	defer cancel()
 	e.maintenanceMu.Lock()
 	defer e.maintenanceMu.Unlock()
 	e.mu.Lock()
@@ -710,6 +742,12 @@ func (e *Engine) CompactOnce(ctx context.Context) error {
 	if job.ID == "" {
 		return nil
 	}
+	start := time.Now()
+	e.metrics.CompactionActive.Set(1)
+	defer func() {
+		e.metrics.CompactionActive.Set(0)
+		e.metrics.CompactionDuration.Observe(time.Since(start).Seconds())
+	}()
 	defer func() { e.mu.Lock(); e.unpin(job.Generation); e.mu.Unlock() }()
 	replacements, packs, err := e.copyJob(ctx, job)
 	if err == nil {
@@ -758,27 +796,24 @@ func (e *Engine) Reclaim(ctx context.Context) error {
 		e.mu.Unlock()
 		return err
 	}
-	if e.state.TrashBatch.Key == "" {
+	batch := e.state.TrashBatch
+	ref := e.state.TrashPending
+	offset := e.state.TrashOffset
+	if batch.Key == "" {
 		if e.state.TrashHead == e.state.TrashComplete {
 			e.mu.Unlock()
 			return nil
 		}
-		next := cloneManifest(e.committed)
-		next.Generation = e.state.Generation + 1
-		next.TrashBatch = e.state.TrashHead
-		next.TrashPending = e.state.TrashHead
-		if err := e.publishMaintenance(ctx, next); err != nil {
-			e.mu.Unlock()
-			return err
-		}
+		batch = e.state.TrashHead
+		ref = batch
+		offset = 0
 	}
-	ref := e.state.TrashPending
-	offset := e.state.TrashOffset
+	e.mu.Unlock()
 	b, err := e.readBlob(ctx, ref)
 	if err != nil {
-		e.mu.Unlock()
 		return err
 	}
+	e.mu.Lock()
 	var page trashPage
 	if err = decode(b, &page); err != nil {
 		e.mu.Unlock()
@@ -819,6 +854,8 @@ func (e *Engine) Reclaim(ctx context.Context) error {
 	e.mu.Lock()
 	next := cloneManifest(e.committed)
 	next.Generation = e.state.Generation + 1
+	next.TrashBatch = batch
+	next.TrashPending = ref
 	next.TrashOffset = offset + done
 	next.TrashObjects -= int64(done)
 	finished := next.TrashOffset == len(page.Keys)

@@ -3,6 +3,8 @@ package engine
 import "github.com/prometheus/client_golang/prometheus"
 
 type Metrics struct {
+	CompactionActive                                                                        prometheus.Gauge
+	CompactionDuration                                                                      prometheus.Histogram
 	LiveObjectBytes, DeadObjectBytes                                                        prometheus.Gauge
 	CompactionReadBytes, CompactionWriteBytes                                               prometheus.Counter
 	Compactions, CompactionErrors, CompactionConflicts                                      prometheus.Counter
@@ -32,6 +34,8 @@ func NewMetrics(r prometheus.Registerer) *Metrics {
 		return v
 	}
 	return &Metrics{
+		CompactionActive:     gauge("compaction_active", "One while a background compaction job runs."),
+		CompactionDuration:   hist("compaction_seconds", "Background compaction job duration."),
 		CompactionConflicts:  counter("compaction_conflicts_total", "Metadata proposals rebuilt after concurrent publication."),
 		LiveObjectBytes:      gauge("live_object_bytes", "Referenced compressed data/index bytes in the maintenance catalog."),
 		DeadObjectBytes:      gauge("dead_object_bytes", "Unreferenced bytes inside partially live data/index objects."),

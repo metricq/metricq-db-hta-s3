@@ -181,3 +181,36 @@ func TestDeleteUsesPrefixAndSingleAttempt(t *testing.T) {
 		t.Fatalf("unexpected retry: %d requests", requests)
 	}
 }
+
+func TestStatAndPaginatedInventoryUseNamespace(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodHead {
+			if r.URL.Path != "/bucket/db/data/a" {
+				t.Error(r.URL.Path)
+			}
+			w.Header().Set("Content-Length", "123")
+			return
+		}
+		q := r.URL.Query()
+		if q.Get("prefix") != "db/data/" || q.Get("max-keys") != "2" || q.Get("continuation-token") != "opaque token" {
+			t.Errorf("inventory query: %v", q)
+		}
+		fmt.Fprint(w, `<ListBucketResult><Contents><Key>db/data/a</Key><Size>123</Size></Contents><NextContinuationToken>next</NextContinuationToken></ListBucketResult>`)
+	}))
+	defer server.Close()
+	cfg := aws.Config{Region: "us-east-1", Credentials: aws.NewCredentialsCache(credentials.NewStaticCredentialsProvider("test", "test", ""))}
+	client := s3.NewFromConfig(cfg, func(o *s3.Options) {
+		o.BaseEndpoint = aws.String(server.URL)
+		o.UsePathStyle = true
+		o.RetryMaxAttempts = 1
+	})
+	store := &S3{client: client, bucket: "bucket", prefix: "db/"}
+	size, err := store.Stat(context.Background(), "data/a")
+	if err != nil || size != 123 {
+		t.Fatalf("stat %d %v", size, err)
+	}
+	keys, next, err := store.List(context.Background(), "data/", "opaque token", 2)
+	if err != nil || len(keys) != 1 || keys[0] != "data/a" || next != "next" {
+		t.Fatalf("inventory %v %s %v", keys, next, err)
+	}
+}

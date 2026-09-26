@@ -415,3 +415,97 @@ func TestMaintenanceGoroutineCompactsAndStops(t *testing.T) {
 	}
 	t.Fatal("background goroutine did not compact")
 }
+
+type manifestGateStore struct {
+	*gcStore
+	gate    bool
+	started chan struct{}
+	resume  chan struct{}
+}
+
+func (s *manifestGateStore) Put(ctx context.Context, key string, bytes []byte, version *string) (string, error) {
+	if key == "manifest" && s.gate {
+		close(s.started)
+		select {
+		case <-s.resume:
+		case <-ctx.Done():
+			return "", ctx.Err()
+		}
+	}
+	return s.memoryStore.Put(ctx, key, bytes, version)
+}
+func TestMaintenancePublicationDoesNotHoldIngestLock(t *testing.T) {
+	ctx := context.Background()
+	s := &manifestGateStore{gcStore: &gcStore{memoryStore: newStore()}, started: make(chan struct{}), resume: make(chan struct{})}
+	options := maintenanceOptions(t.TempDir(), false)
+	e, err := Open(ctx, s, options, testConfig, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer e.Close()
+	ingest(t, e, hta.Point{Time: 100, Value: 1})
+	if err := e.Flush(ctx); err != nil {
+		t.Fatal(err)
+	}
+	s.gate = true
+	done := make(chan error, 1)
+	go func() {
+		e.mu.Lock()
+		next := cloneManifest(e.committed)
+		next.Generation++
+		err := e.publishMaintenance(ctx, next)
+		e.mu.Unlock()
+		done <- err
+	}()
+	<-s.started
+	ack := make(chan error, 1)
+	go func() { ack <- e.Ingest(ctx, "x", chunk(hta.Point{Time: 200, Value: 2})) }()
+	select {
+	case err := <-ack:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		close(s.resume)
+		<-done
+		t.Fatal("maintenance PUT held ingest lock")
+	}
+	close(s.resume)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	s.gate = false
+	if e.state.Sequence != 1 || e.sequence != 2 || e.committed.Series["x"].Last.Time != 100 || e.state.Series["x"].Last.Time != 200 {
+		t.Fatal("maintenance published newer WAL state")
+	}
+}
+
+type quotaGCStore struct {
+	*gcStore
+	quota bool
+}
+
+func (s *quotaGCStore) Put(ctx context.Context, key string, bytes []byte, version *string) (string, error) {
+	if s.quota && key == "manifest" && len(s.deleted) == 0 {
+		return "", fmt.Errorf("storage quota reached")
+	}
+	return s.memoryStore.Put(ctx, key, bytes, version)
+}
+func TestReclaimCanFreeSpaceBeforeQuotaBlockedMetadataPUT(t *testing.T) {
+	ctx := context.Background()
+	s := &quotaGCStore{gcStore: &gcStore{memoryStore: newStore()}}
+	e, err := Open(ctx, s, maintenanceOptions(t.TempDir(), false), testConfig, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer e.Close()
+	fillCompaction(t, e, 3)
+	s.quota = true
+	if err := e.Reclaim(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(s.deleted) == 0 {
+		t.Fatal("quota prevented deletion of already authorized objects")
+	}
+	checkCatalog(t, e)
+}

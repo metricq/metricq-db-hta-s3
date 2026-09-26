@@ -41,6 +41,19 @@ type catalogWriter struct {
 
 func (w *catalogWriter) read(ref blob) (catalogNode, error) {
 	var n catalogNode
+	if err := w.ctx.Err(); err != nil {
+		return n, err
+	}
+	if cached, ok := w.e.catalogCache[ref]; ok {
+		return cached, nil
+	}
+	if ref.Length > 32<<20 {
+		return n, fmt.Errorf("catalog page too large")
+	}
+	if w.e.catalogReadBudget > 0 && w.e.catalogReadBytes+ref.Length > w.e.catalogReadBudget {
+		return n, fmt.Errorf("catalog metadata byte budget exceeded")
+	}
+	w.e.catalogReadBytes += ref.Length
 	b, err := w.e.readBlob(w.ctx, ref)
 	if err != nil {
 		return n, err
@@ -48,6 +61,23 @@ func (w *catalogWriter) read(ref blob) (catalogNode, error) {
 	err = decode(b, &n)
 	if err == nil && ((len(n.Items) == 0) == (len(n.Children) == 0) || len(n.Items) > catalogFanout || len(n.Children) > catalogFanout) {
 		err = fmt.Errorf("invalid catalog node")
+	}
+	if err == nil {
+		cost := int64(len(b))
+		for _, o := range n.Items {
+			cost += int64(len(o.Blocks))*192 + int64(len(o.Key))
+		}
+		if cost <= 32<<20 {
+			if w.e.catalogCache == nil {
+				w.e.catalogCache = make(map[blob]catalogNode)
+			}
+			if w.e.catalogCacheBytes+cost > 32<<20 {
+				w.e.catalogCache = make(map[blob]catalogNode)
+				w.e.catalogCacheBytes = 0
+			}
+			w.e.catalogCache[ref] = n
+			w.e.catalogCacheBytes += cost
+		}
 	}
 	return n, err
 }
@@ -59,6 +89,9 @@ func (w *catalogWriter) write(n catalogNode) (catalogEdge, error) {
 	b, err := encode(n)
 	if err != nil {
 		return catalogEdge{}, err
+	}
+	if len(b) > 32<<20 {
+		return catalogEdge{}, fmt.Errorf("catalog page exceeds memory budget")
 	}
 	ref := p.add(b)
 	absent := ""
@@ -244,7 +277,17 @@ func (e *Engine) catalogWalk(ctx context.Context, root blob, limit int, visit fu
 	return walk(root)
 }
 func candidateKey(o ObjectInfo) string {
-	if o.Size == 0 || o.LiveBytes >= o.Size || len(o.Blocks) == 0 {
+	if o.Size == 0 || len(o.Blocks) == 0 {
+		return ""
+	}
+	fragmented := false
+	for _, b := range o.Blocks {
+		if !b.Index && b.Level == 0 && b.Entry.Records > 0 && b.Entry.Records < maxDataBlockRecords {
+			fragmented = true
+			break
+		}
+	}
+	if o.LiveBytes >= o.Size && !fragmented {
 		return ""
 	}
 	rank := 999 - int(999*(o.Size-o.LiveBytes)/o.Size)

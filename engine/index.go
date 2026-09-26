@@ -91,6 +91,12 @@ func (e *Engine) readBlob(ctx context.Context, r blob) ([]byte, error) {
 }
 
 func (e *Engine) readNode(ctx context.Context, r blob) (indexNode, error) {
+	if e.nodeReadLimit > 0 {
+		e.nodeReads++
+		if e.nodeReads > e.nodeReadLimit {
+			return indexNode{}, fmt.Errorf("index operation budget exceeded")
+		}
+	}
 	if e.nodeCache != nil {
 		if n, ok := e.nodeCache[r]; ok {
 			return n, nil

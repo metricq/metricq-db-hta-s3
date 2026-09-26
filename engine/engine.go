@@ -99,9 +99,16 @@ func aggregationConfig(c hta.Config) hta.Config {
 type Engine struct {
 	mu                sync.Mutex
 	maintenanceMu     sync.Mutex
+	publishMu         sync.Mutex
 	activeMaintenance string
 	stagingKeys       []string
 	candidateCursor   string
+	catalogCache      map[blob]catalogNode
+	catalogCacheBytes int64
+	catalogReadBudget int64
+	catalogReadBytes  int64
+	nodeReadLimit     int
+	nodeReads         int
 	store             storage.Store
 	wal               *wal
 	options           Options
@@ -162,7 +169,7 @@ func Open(ctx context.Context, s storage.Store, o Options, configs map[string]ht
 	}
 	if o.BackgroundMaintenance {
 		c := o.Compaction
-		if c.IntervalSeconds < 1 || c.CooldownSeconds < 0 || c.MaxBlocks < 1 || c.MaxBlocks > 512 || c.MaxJobBytes < 1 || c.MaxJobBytes > 64<<20 || c.ObjectBytes < 1 || c.ObjectBytes > c.MaxJobBytes || c.BytesPerSecond < 1 || c.DeadFraction <= 0 || c.DeadFraction >= 1 {
+		if c.MaxDurationSeconds < 1 || c.MaxDurationSeconds > 3600 || c.IntervalSeconds < 1 || c.CooldownSeconds < 0 || c.MaxBlocks < 1 || c.MaxBlocks > 512 || c.MaxJobBytes < 1 || c.MaxJobBytes > 64<<20 || c.ObjectBytes < 1 || c.ObjectBytes > c.MaxJobBytes || c.BytesPerSecond < 1 || c.DeadFraction <= 0 || c.DeadFraction >= 1 {
 			return nil, fmt.Errorf("invalid compaction options")
 		}
 	}
@@ -422,6 +429,8 @@ func (e *Engine) NeedsFlush() bool {
 	return e.wal.size >= e.options.WALTarget || e.pendingBytes >= e.options.ObjectTarget
 }
 func (e *Engine) Flush(ctx context.Context) (err error) {
+	e.publishMu.Lock()
+	defer e.publishMu.Unlock()
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.closed {
@@ -665,6 +674,8 @@ func (e *Engine) RunFlush(ctx context.Context) {
 	}
 }
 func (e *Engine) Close() error {
+	e.publishMu.Lock()
+	defer e.publishMu.Unlock()
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.closed {

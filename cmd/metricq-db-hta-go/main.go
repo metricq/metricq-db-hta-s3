@@ -42,6 +42,7 @@ func run() error {
 	}
 	var cfg localConfig
 	cfg.Engine.Compaction.Enabled = true
+	cfg.Engine.Compaction.MergeSmallBlocks = true
 	cfg.Engine.Compaction.CooldownSeconds = 60
 	if err = json.Unmarshal(b, &cfg); err != nil {
 		return err

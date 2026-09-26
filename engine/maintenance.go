@@ -14,6 +14,7 @@ import (
 
 type CompactionOptions struct {
 	MaxDurationSeconds int64 `json:"max_duration_seconds"`
+	MaxCycleSeconds    int64 `json:"max_cycle_seconds"`
 
 	Enabled          bool    `json:"enabled"`
 	IntervalSeconds  int64   `json:"interval_seconds"`
@@ -27,6 +28,9 @@ type CompactionOptions struct {
 }
 
 func (o CompactionOptions) defaults() CompactionOptions {
+	if o.MaxCycleSeconds == 0 {
+		o.MaxCycleSeconds = 10
+	}
 	if o.MaxDurationSeconds == 0 {
 		o.MaxDurationSeconds = 60
 	}
@@ -108,10 +112,11 @@ func (e *Engine) publishMaintenance(ctx context.Context, next manifest) error {
 		return err
 	}
 	expected := e.version
+	publisher := &Engine{store: e.preparationStore(), metrics: e.metrics}
 	e.mu.Unlock()
-	version, err := e.put(ctx, "manifest", b, &expected)
+	version, err := publisher.put(ctx, "manifest", b, &expected)
 	if err != nil {
-		actual, v, getErr := e.get(ctx, "manifest")
+		actual, v, getErr := publisher.get(ctx, "manifest")
 		if getErr == nil && bytes.Equal(actual, b) {
 			version = v
 			err = nil
@@ -348,8 +353,32 @@ func (e *Engine) RunMaintenance(ctx context.Context) {
 			}
 		case <-compactTicker.C:
 			if options.Enabled {
-				if err := e.CompactOnce(ctx); err != nil && ctx.Err() == nil {
-					slog.Warn("background compaction failed", "error", err)
+				deadline := time.Now().Add(time.Duration(options.MaxCycleSeconds) * time.Second)
+				for ctx.Err() == nil && time.Now().Before(deadline) {
+					e.mu.Lock()
+					before := e.compactionCompletions
+					e.mu.Unlock()
+					err := e.CompactOnce(ctx)
+					if err != nil {
+						if ctx.Err() == nil {
+							slog.Warn("background compaction failed", "error", err)
+						}
+						break
+					}
+					if err = e.Reclaim(ctx); err != nil {
+						break
+					}
+					e.mu.Lock()
+					progress := e.compactionCompletions != before
+					pending := e.state.CompactionJob.Key != ""
+					e.mu.Unlock()
+					if !progress || pending {
+						break
+					}
+					select {
+					case <-ctx.Done():
+					case <-time.After(time.Millisecond):
+					}
 				}
 			}
 		}
@@ -372,6 +401,9 @@ func (e *Engine) updateMaintenanceMetrics(m manifest) {
 		pending++
 	}
 	e.metrics.GCPending.Set(float64(pending))
+	e.metrics.CandidateObjects.Set(float64(m.CandidateObjects))
+	e.metrics.SmallBlocks.Set(float64(m.SmallBlocks))
+	e.metrics.SmallBlockBytes.Set(float64(m.SmallBlockBytes))
 	e.metrics.LiveObjectBytes.Set(float64(m.LiveObjectBytes))
 	e.metrics.DeadObjectBytes.Set(float64(m.StoredObjectBytes - m.LiveObjectBytes))
 }

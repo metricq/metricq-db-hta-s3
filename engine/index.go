@@ -277,12 +277,17 @@ func (e *Engine) indexRange(ctx context.Context, ptr blob, begin, end int64, out
 }
 
 func (e *Engine) indexNeighbor(ctx context.Context, ptr blob, timePoint int64, before bool) (blob, error) {
+	entry, err := e.indexNeighborEntry(ctx, ptr, timePoint, before)
+	return entry.Blob, err
+}
+
+func (e *Engine) indexNeighborEntry(ctx context.Context, ptr blob, timePoint int64, before bool) (indexEntry, error) {
 	if ptr.Key == "" {
-		return blob{}, nil
+		return indexEntry{}, nil
 	}
 	n, err := e.readNode(ctx, ptr)
 	if err != nil {
-		return blob{}, err
+		return indexEntry{}, err
 	}
 	if before {
 		for i := len(n.Entries) - 1; i >= 0; i-- {
@@ -290,9 +295,9 @@ func (e *Engine) indexNeighbor(ctx context.Context, ptr blob, timePoint int64, b
 				continue
 			}
 			if n.Leaf {
-				return n.Entries[i].Blob, nil
+				return n.Entries[i], nil
 			}
-			if found, err := e.indexNeighbor(ctx, n.Entries[i].Blob, timePoint, before); err != nil || found.Key != "" {
+			if found, err := e.indexNeighborEntry(ctx, n.Entries[i].Blob, timePoint, before); err != nil || found.Blob.Key != "" {
 				return found, err
 			}
 		}
@@ -303,14 +308,51 @@ func (e *Engine) indexNeighbor(ctx context.Context, ptr blob, timePoint int64, b
 			}
 			if n.Leaf {
 				if edge.First > timePoint {
-					return edge.Blob, nil
+					return edge, nil
 				}
 				continue
 			}
-			if found, err := e.indexNeighbor(ctx, edge.Blob, timePoint, before); err != nil || found.Key != "" {
+			if found, err := e.indexNeighborEntry(ctx, edge.Blob, timePoint, before); err != nil || found.Blob.Key != "" {
 				return found, err
 			}
 		}
 	}
-	return blob{}, nil
+	return indexEntry{}, nil
+}
+
+// indexEntriesAfter reads a bounded suffix of a stream, independent of objects.
+func (e *Engine) indexEntriesAfter(ctx context.Context, root blob, begin int64, limit int) ([]indexEntry, error) {
+	var out []indexEntry
+	var walk func(blob) error
+	walk = func(ref blob) error {
+		if ref.Key == "" || len(out) >= limit {
+			return nil
+		}
+		n, err := e.readNode(ctx, ref)
+		if err != nil {
+			return err
+		}
+		for _, entry := range n.Entries {
+			if entry.Last < begin {
+				continue
+			}
+			if n.Leaf {
+				if entry.First >= begin {
+					out = append(out, entry)
+				}
+			} else {
+				if err = walk(entry.Blob); err != nil {
+					return err
+				}
+			}
+			if len(out) >= limit {
+				break
+			}
+		}
+		return nil
+	}
+	if err := walk(root); err != nil {
+		return nil, err
+	}
+	return out, nil
 }

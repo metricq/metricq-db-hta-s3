@@ -41,13 +41,19 @@ func run() error {
 		return err
 	}
 	var cfg localConfig
+	cfg.Engine.AppendOnlyAggregates = true
 	cfg.Engine.Compaction.Enabled = true
 	cfg.Engine.Compaction.MergeSmallBlocks = true
 	cfg.Engine.Compaction.CooldownSeconds = 60
+	cfg.Engine.Compaction.MaxBlocks = 512
+	cfg.Engine.Compaction.MaxCycleSeconds = 30
 	if err = json.Unmarshal(b, &cfg); err != nil {
 		return err
 	}
 	cfg.Engine.BackgroundMaintenance = true
+	if !cfg.Engine.Compaction.Enabled || !cfg.Engine.Compaction.MergeSmallBlocks {
+		cfg.Engine.AppendOnlyAggregates = false
+	}
 	if cfg.Server == "" {
 		cfg.Server = "amqp://localhost/"
 	}

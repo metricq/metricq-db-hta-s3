@@ -4,10 +4,11 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"sync"
 	"time"
 )
 
-const catalogFanout = 16
+const catalogFanout = 64
 
 type BlockInfo struct {
 	Metric string
@@ -32,11 +33,13 @@ type catalogNode struct {
 }
 
 type catalogWriter struct {
-	e       *Engine
-	ctx     context.Context
-	prefix  string
-	retired []string
-	created []string
+	e            *Engine
+	ctx          context.Context
+	prefix       string
+	retired      []string
+	created      []string
+	pending      []*pack
+	pendingBytes int
 }
 
 func (w *catalogWriter) read(ref blob) (catalogNode, error) {
@@ -94,10 +97,13 @@ func (w *catalogWriter) write(n catalogNode) (catalogEdge, error) {
 		return catalogEdge{}, fmt.Errorf("catalog page exceeds memory budget")
 	}
 	ref := p.add(b)
-	absent := ""
-	if _, err = w.e.put(w.ctx, p.key, p.buf.Bytes(), &absent); err != nil {
-		return catalogEdge{}, err
+	if w.pendingBytes+len(b) > 4<<20 {
+		if err = w.flush(); err != nil {
+			return catalogEdge{}, err
+		}
 	}
+	w.pending = append(w.pending, p)
+	w.pendingBytes += len(b)
 	w.created = append(w.created, p.key)
 	edge := catalogEdge{Ref: ref}
 	if len(n.Items) > 0 {
@@ -109,6 +115,34 @@ func (w *catalogWriter) write(n catalogNode) (catalogEdge, error) {
 	}
 	return edge, nil
 }
+
+// Independent immutable pages upload concurrently with a bounded batch buffer.
+// Publication still waits for every PUT and never retries failed calls.
+func (w *catalogWriter) flush() error {
+	for begin := 0; begin < len(w.pending); begin += 8 {
+		batch := w.pending[begin:min(begin+8, len(w.pending))]
+		errs := make([]error, len(batch))
+		var wg sync.WaitGroup
+		for i, p := range batch {
+			wg.Add(1)
+			go func(i int, p *pack) {
+				defer wg.Done()
+				absent := ""
+				_, errs[i] = w.e.put(w.ctx, p.key, p.buf.Bytes(), &absent)
+			}(i, p)
+		}
+		wg.Wait()
+		for _, err := range errs {
+			if err != nil {
+				return err
+			}
+		}
+	}
+	w.pending = nil
+	w.pendingBytes = 0
+	return nil
+}
+
 func (w *catalogWriter) leaves(items []ObjectInfo) ([]catalogEdge, error) {
 	var edges []catalogEdge
 	for i := 0; i < len(items); i += catalogFanout {
@@ -217,6 +251,9 @@ func (e *Engine) updateCatalog(ctx context.Context, root blob, updates map[strin
 			return blob{}, nil, err
 		}
 	}
+	if err = w.flush(); err != nil {
+		return blob{}, nil, err
+	}
 	if len(edges) == 0 {
 		return blob{}, w.retired, nil
 	}
@@ -282,7 +319,7 @@ func candidateKey(o ObjectInfo) string {
 	}
 	fragmented := false
 	for _, b := range o.Blocks {
-		if !b.Index && b.Level == 0 && b.Entry.Records > 0 && b.Entry.Records < maxDataBlockRecords {
+		if !b.Index && b.Entry.Records > 0 && b.Entry.Records < maxDataBlockRecords {
 			fragmented = true
 			break
 		}
@@ -302,18 +339,32 @@ func (e *Engine) catalogChanges(ctx context.Context, next *manifest, changes map
 			return nil, err
 		}
 		if ok {
+			for _, b := range old.Blocks {
+				if !b.Index && b.Entry.Records > 0 && b.Entry.Records < maxDataBlockRecords {
+					next.SmallBlocks--
+					next.SmallBlockBytes -= b.Entry.Blob.Length
+				}
+			}
 			next.LiveObjectBytes -= old.LiveBytes
 			next.StoredObjectBytes -= old.Size
 			next.LiveObjects--
 			if candidate := candidateKey(old); candidate != "" {
 				candidates[candidate] = nil
+				next.CandidateObjects--
 			}
 		}
 		if value != nil {
+			for _, b := range value.Blocks {
+				if !b.Index && b.Entry.Records > 0 && b.Entry.Records < maxDataBlockRecords {
+					next.SmallBlocks++
+					next.SmallBlockBytes += b.Entry.Blob.Length
+				}
+			}
 			next.LiveObjectBytes += value.LiveBytes
 			next.StoredObjectBytes += value.Size
 			next.LiveObjects++
 			if candidate := candidateKey(*value); candidate != "" {
+				next.CandidateObjects++
 				candidates[candidate] = &ObjectInfo{Key: candidate, Target: key, Modified: time.Now().UnixNano()}
 			}
 		}

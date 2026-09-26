@@ -24,11 +24,13 @@
       "cooldown_seconds": 60,
       "max_duration_seconds": 60,
       "max_job_bytes": 33554432,
-      "max_blocks": 128,
+      "max_blocks": 512,
       "object_bytes": 4194304,
       "bytes_per_second": 8388608,
       "dead_fraction": 0.4,
-      "merge_small_blocks": true
-    }
+      "merge_small_blocks": true,
+      "max_cycle_seconds": 30
+    },
+    "append_only_aggregates": true
   }
 }

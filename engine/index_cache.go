@@ -16,18 +16,18 @@ type cachedPage struct {
 // A bounded shared cache avoids fetching the same roots for every request.
 type indexPageCache struct {
 	mu    sync.Mutex
-	pages map[blob]*list.Element
+	pages map[[32]byte]*list.Element
 	lru   list.List
 }
 
 func newIndexPageCache() *indexPageCache {
-	return &indexPageCache{pages: make(map[blob]*list.Element)}
+	return &indexPageCache{pages: make(map[[32]byte]*list.Element)}
 }
 
 func (c *indexPageCache) get(key blob) (indexNode, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if element := c.pages[key]; element != nil {
+	if element := c.pages[key.Hash]; element != nil {
 		c.lru.MoveToFront(element)
 		return element.Value.(cachedPage).node, true
 	}
@@ -37,14 +37,14 @@ func (c *indexPageCache) get(key blob) (indexNode, bool) {
 func (c *indexPageCache) add(key blob, node indexNode) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if element := c.pages[key]; element != nil {
+	if element := c.pages[key.Hash]; element != nil {
 		c.lru.MoveToFront(element)
 		return
 	}
-	c.pages[key] = c.lru.PushFront(cachedPage{key, node})
+	c.pages[key.Hash] = c.lru.PushFront(cachedPage{key, node})
 	if c.lru.Len() > indexCachePages {
 		oldest := c.lru.Back()
-		delete(c.pages, oldest.Value.(cachedPage).key)
+		delete(c.pages, oldest.Value.(cachedPage).key.Hash)
 		c.lru.Remove(oldest)
 	}
 }

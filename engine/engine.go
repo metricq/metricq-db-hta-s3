@@ -25,6 +25,7 @@ import (
 var ErrPressure = errors.New("WAL or builder high watermark reached")
 
 type Options struct {
+	AppendOnlyAggregates  bool              `json:"append_only_aggregates"`
 	BackgroundMaintenance bool              `json:"background_maintenance"`
 	Compaction            CompactionOptions `json:"compaction"`
 	WALDirectory          string            `json:"wal_directory"`
@@ -71,6 +72,7 @@ type manifest struct {
 	CatalogReady                                       bool
 	TrashHead, TrashComplete, TrashBatch, TrashPending blob
 	TrashObjects                                       int64
+	CandidateObjects, SmallBlocks, SmallBlockBytes     int64
 	CompactionJob                                      blob
 	LiveObjectBytes, StoredObjectBytes                 int64
 	LiveObjects                                        int64
@@ -97,38 +99,42 @@ func aggregationConfig(c hta.Config) hta.Config {
 }
 
 type Engine struct {
-	mu                sync.Mutex
-	maintenanceMu     sync.Mutex
-	publishMu         sync.Mutex
-	activeMaintenance string
-	stagingKeys       []string
-	candidateCursor   string
-	catalogCache      map[blob]catalogNode
-	catalogCacheBytes int64
-	catalogReadBudget int64
-	catalogReadBytes  int64
-	nodeReadLimit     int
-	nodeReads         int
-	store             storage.Store
-	wal               *wal
-	options           Options
-	metrics           *Metrics
-	nodeCache         map[blob]indexNode
-	sharedNodes       *indexPageCache
-	sharedBlocks      *dataBlockCache
-	state             manifest
-	committed         manifest
-	pins              map[uint64]int
-	version           string
-	sequence          uint64
-	pending           []entry
-	pendingBytes      int64
-	oldestWAL         int64
-	closed            bool
-	fatal             error
-	objectRefs        map[string]int64
-	garbage           map[string]bool
-	readers           int
+	mu                     sync.Mutex
+	maintenanceMu          sync.Mutex
+	publishMu              sync.Mutex
+	activeMaintenance      string
+	stagingKeys            []string
+	candidateCursor        string
+	compactionStreamCursor string
+	compactionBudget       *rateBudget
+	lastCompactionEnd      time.Time
+	compactionCompletions  uint64
+	catalogCache           map[blob]catalogNode
+	catalogCacheBytes      int64
+	catalogReadBudget      int64
+	catalogReadBytes       int64
+	nodeReadLimit          int
+	nodeReads              int
+	store                  storage.Store
+	wal                    *wal
+	options                Options
+	metrics                *Metrics
+	nodeCache              map[blob]indexNode
+	sharedNodes            *indexPageCache
+	sharedBlocks           *dataBlockCache
+	state                  manifest
+	committed              manifest
+	pins                   map[uint64]int
+	version                string
+	sequence               uint64
+	pending                []entry
+	pendingBytes           int64
+	oldestWAL              int64
+	closed                 bool
+	fatal                  error
+	objectRefs             map[string]int64
+	garbage                map[string]bool
+	readers                int
 }
 
 func encode(v any) ([]byte, error) {
@@ -167,9 +173,12 @@ func Open(ctx context.Context, s storage.Store, o Options, configs map[string]ht
 	if o.WALDirectory == "" || o.WALTarget <= 0 || o.WALTarget >= o.WALHigh || o.WALHigh >= o.WALHard || o.ObjectTarget <= 0 || o.BuilderHard < o.ObjectTarget || o.MaxQueryRows < 1 {
 		return nil, fmt.Errorf("invalid engine options")
 	}
+	if o.AppendOnlyAggregates && (!o.BackgroundMaintenance || !o.Compaction.Enabled || !o.Compaction.MergeSmallBlocks) {
+		return nil, fmt.Errorf("append-only aggregates require enabled background block consolidation")
+	}
 	if o.BackgroundMaintenance {
 		c := o.Compaction
-		if c.MaxDurationSeconds < 1 || c.MaxDurationSeconds > 3600 || c.IntervalSeconds < 1 || c.CooldownSeconds < 0 || c.MaxBlocks < 1 || c.MaxBlocks > 512 || c.MaxJobBytes < 1 || c.MaxJobBytes > 64<<20 || c.ObjectBytes < 1 || c.ObjectBytes > c.MaxJobBytes || c.BytesPerSecond < 1 || c.DeadFraction <= 0 || c.DeadFraction >= 1 {
+		if c.MaxCycleSeconds < 1 || c.MaxCycleSeconds > 3600 || c.MaxDurationSeconds < 1 || c.MaxDurationSeconds > 3600 || c.IntervalSeconds < 1 || c.CooldownSeconds < 0 || c.MaxBlocks < 1 || c.MaxBlocks > 512 || c.MaxJobBytes < 1 || c.MaxJobBytes > 64<<20 || c.ObjectBytes < 1 || c.ObjectBytes > c.MaxJobBytes || c.BytesPerSecond < 1 || c.DeadFraction <= 0 || c.DeadFraction >= 1 {
 			return nil, fmt.Errorf("invalid compaction options")
 		}
 	}
@@ -505,7 +514,7 @@ func (e *Engine) Flush(ctx context.Context) (err error) {
 			// Fill the last partial aggregate block across checkpoints. Reading
 			// only this bounded tail keeps coarse levels independent of flush
 			// frequency. Raw blocks are appended; published blobs remain immutable.
-			if level > 0 {
+			if level > 0 && !e.options.AppendOnlyAggregates {
 				tail, tailErr := e.lastIndexEntry(ctx, next.Roots[metric][level])
 				if tailErr != nil {
 					return tailErr

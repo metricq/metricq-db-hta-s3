@@ -18,22 +18,23 @@ type cachedBlock struct {
 // Data blocks are immutable once packed and often re-requested by overlapping
 // or auto-refreshing dashboard queries. A bounded, byte-budgeted shared cache
 // turns a repeat request for the same block into a memory hit instead of a
-// fresh store GET, gunzip and gob decode.
+// fresh store GET, gunzip and gob decode. Content hashes retain hits across
+// copy-only compaction without charging duplicate cache entries.
 type dataBlockCache struct {
 	mu    sync.Mutex
 	bytes int64
-	items map[blob]*list.Element
+	items map[[32]byte]*list.Element
 	lru   list.List
 }
 
 func newDataBlockCache() *dataBlockCache {
-	return &dataBlockCache{items: make(map[blob]*list.Element)}
+	return &dataBlockCache{items: make(map[[32]byte]*list.Element)}
 }
 
 func (c *dataBlockCache) get(key blob) ([]hta.Record, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if element := c.items[key]; element != nil {
+	if element := c.items[key.Hash]; element != nil {
 		c.lru.MoveToFront(element)
 		return element.Value.(cachedBlock).records, true
 	}
@@ -43,16 +44,16 @@ func (c *dataBlockCache) get(key blob) ([]hta.Record, bool) {
 func (c *dataBlockCache) add(key blob, records []hta.Record, cost int64) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if element := c.items[key]; element != nil {
+	if element := c.items[key.Hash]; element != nil {
 		c.lru.MoveToFront(element)
 		return
 	}
-	c.items[key] = c.lru.PushFront(cachedBlock{key, records, cost})
+	c.items[key.Hash] = c.lru.PushFront(cachedBlock{key, records, cost})
 	c.bytes += cost
 	for c.bytes > dataBlockCacheBytes && c.lru.Len() > 0 {
 		oldest := c.lru.Back()
 		c.bytes -= oldest.Value.(cachedBlock).cost
-		delete(c.items, oldest.Value.(cachedBlock).key)
+		delete(c.items, oldest.Value.(cachedBlock).key.Hash)
 		c.lru.Remove(oldest)
 	}
 }

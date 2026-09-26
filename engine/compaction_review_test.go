@@ -10,7 +10,9 @@ import (
 	"fmt"
 	"google.golang.org/protobuf/proto"
 	"math"
+	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -211,6 +213,7 @@ func TestReviewJobPutBlocksIngest(t *testing.T) {
 }
 
 type reviewCountStore struct {
+	countMu   sync.Mutex
 	reads     atomic.Int64
 	readBytes atomic.Int64
 	*gcStore
@@ -219,6 +222,7 @@ type reviewCountStore struct {
 }
 
 func (s *reviewCountStore) Put(ctx context.Context, k string, b []byte, v *string) (string, error) {
+	s.countMu.Lock()
 	s.puts++
 	if strings.HasPrefix(k, "data/") {
 		s.dataBytes += int64(len(b))
@@ -227,6 +231,7 @@ func (s *reviewCountStore) Put(ctx context.Context, k string, b []byte, v *strin
 	} else {
 		s.metaBytes += int64(len(b))
 	}
+	s.countMu.Unlock()
 	return s.gcStore.Put(ctx, k, b, v)
 }
 func (s *reviewCountStore) GetRange(ctx context.Context, k string, offset, length int64) ([]byte, error) {
@@ -242,7 +247,9 @@ func (s *reviewCountStore) GetRange(ctx context.Context, k string, offset, lengt
 func TestReviewTailCost(t *testing.T) {
 	ctx := context.Background()
 	s := &reviewCountStore{gcStore: &gcStore{memoryStore: newStore()}}
-	e, err := Open(ctx, s, maintenanceOptions(t.TempDir(), true), testConfig, nil)
+	options := maintenanceOptions(t.TempDir(), true)
+	options.AppendOnlyAggregates = os.Getenv("METRICQ_REVIEW_APPEND_ONLY") == "1"
+	e, err := Open(ctx, s, options, testConfig, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -277,6 +284,23 @@ func TestReviewTailCost(t *testing.T) {
 	responseBytes, _ := proto.Marshal(response)
 	t.Logf("cold FLEX level100: reads=%d compressedReadBytes=%d query=%v responseSHA256=%x", s.reads.Load(), s.readBytes.Load(), queryTime, sha256.Sum256(responseBytes))
 	t.Logf("100 flushes/1000 points: ingest=%v flush=%v dataWritten=%d indexWritten=%d metadataWritten=%d PUTs=%d level100blocks=%d responseTimes=%d", ingestTime, flushTime, s.dataBytes, s.indexBytes, s.metaBytes, s.puts, len(refs), len(response.TimeDelta))
+	if options.AppendOnlyAggregates {
+		for i := 0; i < 40; i++ {
+			if err = e.CompactOnce(ctx); err != nil {
+				t.Fatal(err)
+			}
+		}
+		e.sharedNodes = newIndexPageCache()
+		e.sharedBlocks = newDataBlockCache()
+		s.reads.Store(0)
+		s.readBytes.Store(0)
+		compacted := query(t, e, req)
+		if !proto.Equal(response, compacted) {
+			t.Fatal("compacted response changed")
+		}
+		t.Logf("after consolidation: reads=%d compressedReadBytes=%d level100blocks=%d", s.reads.Load(), s.readBytes.Load(), len(streamBlocks(t, e, "x", 100)))
+	}
+
 }
 
 func TestReviewCopyOnlyCache(t *testing.T) {

@@ -46,6 +46,10 @@ tests in `engine/compaction_optimization_test.go`.
   limit and an 8 MiB range target. At most eight requests run concurrently, in
   batches of at most 128 block references. Per-block SHA-256 checks and logical
   result order are preserved. Blocks larger than 8 MiB remain individual reads.
+  Blocks of one coalesced range verify and decode in parallel (at most eight at
+  a time). Serial decoding had made multi-block raw FLEX windows slower than
+  separate GETs; a cold raw FLEX over about eight blocks now takes 4.0 ms instead
+  of 9.9 ms (median of 200, in-memory store), still with one data range GET.
 - Aggregate queries skip neighboring blocks, while FLEX still includes the bucket
   containing an unaligned start. Raw queries keep boundary neighbors.
 - A committed flush keeps the decoded rightmost index path it wrote for each

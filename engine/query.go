@@ -180,6 +180,10 @@ func (q *reader) fetchRanges(refs []blob, misses []int, blocks [][]hta.Record) e
 		}
 		spans = append(spans, span{key: r.Key, begin: r.Offset, end: r.Offset + r.Length, indices: []int{i}})
 	}
+	// A coalesced range saves requests, but its blocks still verify and decode
+	// in parallel; serial decoding made multi-block raw windows slower.
+	blockErrs := make([]error, len(refs))
+	decoders := make(chan struct{}, maxParallelBlockFetches)
 	for start := 0; start < len(spans); start += maxParallelBlockFetches {
 		batch := spans[start:min(start+maxParallelBlockFetches, len(spans))]
 		errs := make([]error, len(batch))
@@ -194,16 +198,18 @@ func (q *reader) fetchRanges(refs []blob, misses []int, blocks [][]hta.Record) e
 					return
 				}
 				for _, i := range s.indices {
-					r := refs[i]
-					part := b[r.Offset-s.begin : r.Offset-s.begin+r.Length]
-					if sha256.Sum256(part) != r.Hash {
-						errs[k] = fmt.Errorf("object block checksum mismatch: %s@%d", r.Key, r.Offset)
-						return
-					}
-					if err = decode(part, &blocks[i]); err != nil {
-						errs[k] = fmt.Errorf("data block %s: %w", r.Key, err)
-						return
-					}
+					wg.Add(1)
+					decoders <- struct{}{}
+					go func(i int) {
+						defer func() { <-decoders; wg.Done() }()
+						r := refs[i]
+						part := b[r.Offset-s.begin : r.Offset-s.begin+r.Length]
+						if sha256.Sum256(part) != r.Hash {
+							blockErrs[i] = fmt.Errorf("object block checksum mismatch: %s@%d", r.Key, r.Offset)
+						} else if err := decode(part, &blocks[i]); err != nil {
+							blockErrs[i] = fmt.Errorf("data block %s: %w", r.Key, err)
+						}
+					}(i)
 				}
 			}(k, s)
 		}
@@ -211,6 +217,13 @@ func (q *reader) fetchRanges(refs []blob, misses []int, blocks [][]hta.Record) e
 		for _, err := range errs {
 			if err != nil {
 				return err
+			}
+		}
+		for _, s := range batch {
+			for _, i := range s.indices {
+				if blockErrs[i] != nil {
+					return blockErrs[i]
+				}
 			}
 		}
 	}

@@ -1,0 +1,7 @@
+/metricq-db-hta-go
+/config.json
+/wal/
+/coverage.out
+*.test
+__pycache__/
+.benchmark-artifacts/

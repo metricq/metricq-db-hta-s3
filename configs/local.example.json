@@ -1,0 +1,22 @@
+{
+  "server": "amqp://admin:admin@localhost/",
+  "token": "db-hta-go",
+  "listen": "127.0.0.1:9090",
+  "prefetch": 16,
+  "s3": {
+    "bucket": "metricq",
+    "prefix": "db-hta-go",
+    "endpoint": "http://localhost:9000",
+    "region": "us-east-1",
+    "path_style": true
+  },
+  "engine": {
+    "wal_directory": "./wal",
+    "wal_target_bytes": 33554432,
+    "wal_high_bytes": 67108864,
+    "wal_hard_bytes": 83886080,
+    "object_target_bytes": 4194304,
+    "builder_hard_bytes": 33554432,
+    "max_query_rows": 1000000
+  }
+}

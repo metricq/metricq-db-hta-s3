@@ -1,0 +1,11 @@
+goos: linux
+goarch: amd64
+pkg: github.com/metricq/metricq-db-hta-go/engine
+cpu: AMD Ryzen 7 PRO 4750U with Radeon Graphics
+BenchmarkIngest-16        	    1952	   1070513 ns/op	    467066 points/s	 1494452 B/op	      59 allocs/op
+BenchmarkIngest-16        	    2490	   1005284 ns/op	    497372 points/s	 1455507 B/op	      59 allocs/op
+BenchmarkIngest-16        	    2222	   1042247 ns/op	    479733 points/s	 1466805 B/op	      59 allocs/op
+BenchmarkCheckpoint-16    	       3	 839730600 ns/op	   4348976 data-bytes/op	    402679 index-bytes/op	529356794 B/op	  105847 allocs/op
+BenchmarkCheckpoint-16    	       3	 793719383 ns/op	   4348976 data-bytes/op	    402651 index-bytes/op	529352285 B/op	  105832 allocs/op
+BenchmarkCheckpoint-16    	       3	 783944069 ns/op	   4348976 data-bytes/op	    402700 index-bytes/op	529353789 B/op	  105844 allocs/op
+PASS

@@ -1,0 +1,10 @@
+{
+  "metrics": {
+    "dummy.source.go": {
+      "input": "dummy.source",
+      "interval_min": 400000000,
+      "interval_max": 400000000000000,
+      "interval_factor": 10
+    }
+  }
+}

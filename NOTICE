@@ -1,0 +1,4 @@
+The HTA aggregation and query semantics in hta/hta.go and engine/query.go
+are derived from metricq/hta, Copyright (c) 2018, ZIH, Technische Universitaet
+Dresden, Federal Republic of Germany. See HTA-LICENSE for the retained
+BSD license notice and conditions.

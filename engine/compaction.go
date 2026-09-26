@@ -189,8 +189,17 @@ func (e *Engine) reserveCompaction(ctx context.Context) (CompactionJob, error) {
 					if tried[stream] {
 						continue
 					}
-					tried[stream] = true
 					root := snapshot.state.Roots[seed.Metric][seed.Level]
+					// An immutable single-block root cannot supply a merge partner.
+					// Known singleton tails must not consume the 64-stream search
+					// budget on every pass. A flush changes the root/hash, so this
+					// shortcut cannot hide subsequently appended fragments.
+					if snapshot.sharedNodes != nil {
+						if node, ok := snapshot.sharedNodes.get(root); ok && node.Leaf && len(node.Entries) == 1 {
+							continue
+						}
+					}
+					tried[stream] = true
 					begin := seed.Entry.First
 					prior, err := snapshot.indexNeighborEntry(ctx, root, begin, true)
 					if err != nil {

@@ -520,6 +520,52 @@ func TestCompactionEvacuatesMixedObjectAcrossBoundedJobs(t *testing.T) {
 	}
 }
 
+func TestKnownSingletonsDoNotConsumeMergeSearchBudget(t *testing.T) {
+	ctx := context.Background()
+	s := &rangeGCStore{gcStore: &gcStore{memoryStore: newStore()}}
+	configs := map[string]hta.Config{}
+	for i := 0; i < 130; i++ {
+		configs[fmt.Sprintf("a%03d", i)] = hta.Config{IntervalMin: 1000000, IntervalMax: 10000000, IntervalFactor: 10}
+	}
+	configs["z"] = configs["a000"]
+	e, err := Open(ctx, s, maintenanceOptions(t.TempDir(), true), configs, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer e.Close()
+	for name := range configs {
+		if err = e.Ingest(ctx, name, chunk(hta.Point{Time: 1, Value: 1})); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err = e.Flush(ctx); err != nil {
+		t.Fatal(err)
+	}
+	source := streamBlocks(t, e, "a000", 0)[0].Key
+	for name := range configs {
+		streamBlocks(t, e, name, 0)
+	} // Known immutable singleton roots.
+	if err = e.Ingest(ctx, "z", chunk(hta.Point{Time: 2, Value: 2})); err != nil {
+		t.Fatal(err)
+	}
+	if err = e.Flush(ctx); err != nil {
+		t.Fatal(err)
+	}
+	o, _, err := e.catalogGet(ctx, e.state.Catalog, source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := candidateKey(o)
+	e.candidateCursor = key[:len(key)-1] // Start just before the mixed source pack.
+	if err = e.CompactOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(streamBlocks(t, e, "z", 0)) != 1 {
+		t.Fatal("known singleton roots exhausted the search budget")
+	}
+	checkCatalog(t, e)
+}
+
 func TestCompactionPublicationWaitsForFlushAndAllowsIngest(t *testing.T) {
 	for _, phase := range []string{"flush-first", "compaction-first"} {
 		t.Run(phase, func(t *testing.T) {

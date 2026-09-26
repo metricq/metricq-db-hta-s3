@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"sort"
 	"time"
 
@@ -316,6 +317,7 @@ func (e *Engine) bootstrapCatalog(ctx context.Context) error {
 	}
 	if e.version == "" {
 		e.state.CatalogReady = true
+		e.state.MaintenanceStatsReady = true
 		return nil
 	}
 	next := cloneManifest(e.committed)
@@ -371,8 +373,9 @@ func (e *Engine) RunMaintenance(ctx context.Context) {
 					e.mu.Lock()
 					progress := e.compactionCompletions != before
 					pending := e.state.CompactionJob.Key != ""
+					more := e.compactionScanMore
 					e.mu.Unlock()
-					if !progress || pending {
+					if (!progress && !more) || pending {
 						break
 					}
 					select {
@@ -404,18 +407,26 @@ func (e *Engine) updateMaintenanceMetrics(m manifest) {
 	e.metrics.CandidateObjects.Set(float64(m.CandidateObjects))
 	e.metrics.SmallBlocks.Set(float64(m.SmallBlocks))
 	e.metrics.SmallBlockBytes.Set(float64(m.SmallBlockBytes))
+	if !m.MaintenanceStatsReady {
+		e.metrics.CandidateObjects.Set(math.NaN())
+		e.metrics.SmallBlocks.Set(math.NaN())
+		e.metrics.SmallBlockBytes.Set(math.NaN())
+	}
 	e.metrics.LiveObjectBytes.Set(float64(m.LiveObjectBytes))
 	e.metrics.DeadObjectBytes.Set(float64(m.StoredObjectBytes - m.LiveObjectBytes))
 }
 
 type MaintenanceStatus struct {
-	Generation     uint64 `json:"generation"`
-	Checkpoint     uint64 `json:"checkpoint_sequence"`
-	WALHead        uint64 `json:"wal_head_sequence"`
-	PendingObjects int64  `json:"pending_objects"`
-	LiveBytes      int64  `json:"live_bytes"`
-	DeadBytes      int64  `json:"dead_bytes"`
-	JobPending     bool   `json:"job_pending"`
+	SmallBlockStatsAvailable bool   `json:"small_block_stats_available"`
+	SmallBlocks              int64  `json:"small_data_blocks"`
+	SmallBlockBytes          int64  `json:"small_data_block_bytes"`
+	Generation               uint64 `json:"generation"`
+	Checkpoint               uint64 `json:"checkpoint_sequence"`
+	WALHead                  uint64 `json:"wal_head_sequence"`
+	PendingObjects           int64  `json:"pending_objects"`
+	LiveBytes                int64  `json:"live_bytes"`
+	DeadBytes                int64  `json:"dead_bytes"`
+	JobPending               bool   `json:"job_pending"`
 }
 
 func (e *Engine) MaintenanceStatus() MaintenanceStatus {
@@ -425,5 +436,5 @@ func (e *Engine) MaintenanceStatus() MaintenanceStatus {
 	if e.state.TrashCleanup != "" {
 		pending++
 	}
-	return MaintenanceStatus{Generation: e.state.Generation, Checkpoint: e.state.Sequence, WALHead: e.sequence, PendingObjects: pending, LiveBytes: e.state.LiveObjectBytes, DeadBytes: e.state.StoredObjectBytes - e.state.LiveObjectBytes, JobPending: e.state.CompactionJob.Key != ""}
+	return MaintenanceStatus{SmallBlockStatsAvailable: e.state.MaintenanceStatsReady, SmallBlocks: e.state.SmallBlocks, SmallBlockBytes: e.state.SmallBlockBytes, Generation: e.state.Generation, Checkpoint: e.state.Sequence, WALHead: e.sequence, PendingObjects: pending, LiveBytes: e.state.LiveObjectBytes, DeadBytes: e.state.StoredObjectBytes - e.state.LiveObjectBytes, JobPending: e.state.CompactionJob.Key != ""}
 }

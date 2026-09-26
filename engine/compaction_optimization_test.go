@@ -3,6 +3,8 @@ package engine
 import (
 	"context"
 	"fmt"
+	"github.com/metricq/metricq-db-hta-go/storage"
+	"io"
 	"math"
 	"strings"
 	"sync"
@@ -23,13 +25,33 @@ func streamBlocks(t *testing.T, e *Engine, name string, level int64) []blob {
 	return refs
 }
 
+// Match production S3 range reads without copying the full mixed object for
+// every tiny source block; this keeps the 1500-metric race fixture practical.
+type rangeGCStore struct{ *gcStore }
+
+func (s *rangeGCStore) GetRange(ctx context.Context, key string, offset, length int64) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	b, ok := s.objects[key]
+	if !ok {
+		return nil, storage.ErrNotFound
+	}
+	if offset < 0 || length < 0 || offset > int64(len(b)) || length > int64(len(b))-offset {
+		return nil, io.ErrUnexpectedEOF
+	}
+	return append([]byte(nil), b[offset:offset+length]...), nil
+}
+
 func TestCompactionConvergesAcross1500Metrics(t *testing.T) {
 	ctx := context.Background()
 	configs := map[string]hta.Config{}
 	for i := 0; i < 1500; i++ {
 		configs[fmt.Sprintf("m%04d", i)] = hta.Config{IntervalMin: 1000000, IntervalMax: 10000000, IntervalFactor: 10}
 	}
-	s := &gcStore{memoryStore: newStore()}
+	s := &rangeGCStore{gcStore: &gcStore{memoryStore: newStore()}}
 	e, err := Open(ctx, s, maintenanceOptions(t.TempDir(), true), configs, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -369,6 +391,60 @@ func TestCompactionDoesNotRenewIngestCooldown(t *testing.T) {
 	for name := range configs {
 		if n := len(streamBlocks(t, e, name, 0)); n != 1 {
 			t.Fatalf("%s cooldown stalled with %d blocks", name, n)
+		}
+	}
+	checkCatalog(t, e)
+}
+
+func TestAppendOnlyMixedStreamsConvergePastSingletons(t *testing.T) {
+	ctx := context.Background()
+	s := &rangeGCStore{gcStore: &gcStore{memoryStore: newStore()}}
+	configs := map[string]hta.Config{}
+	for i := 0; i < 150; i++ {
+		configs[fmt.Sprintf("canonical.%05d", i)] = hta.Config{IntervalMin: int64(time.Second), IntervalMax: int64(1000 * time.Second), IntervalFactor: 10}
+	}
+	options := maintenanceOptions(t.TempDir(), true)
+	options.Compaction.MaxBlocks = 512
+	options.AppendOnlyAggregates = true
+	e, err := Open(ctx, s, options, configs, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer e.Close()
+	base := int64(1700000000) * int64(time.Second)
+	for batch := 0; batch < 8; batch++ {
+		for i := 0; i < 150; i++ {
+			var points []hta.Point
+			for j := 0; j < 16; j++ {
+				points = append(points, hta.Point{Time: base + int64(batch*16+j)*int64(time.Second), Value: float64(i + j%7)})
+			}
+			if err = e.Ingest(ctx, fmt.Sprintf("canonical.%05d", i), chunk(points...)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err = e.Flush(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := 0; i < 256 && e.MaintenanceStatus().SmallBlocks > 600; i++ {
+		if err = e.CompactOnce(ctx); err != nil {
+			t.Fatal(err)
+		}
+
+	}
+	for name, levels := range e.state.Roots {
+		for level, root := range levels {
+			if root.Key == "" {
+				continue
+			}
+			if n := len(streamBlocks(t, e, name, level)); n != 1 {
+				entries, _ := e.indexEntriesAfter(ctx, root, 0, 20)
+				for _, entry := range entries {
+					o, _, _ := e.catalogGet(ctx, e.state.Catalog, entry.Blob.Key)
+					t.Logf("entry first=%d last=%d records=%d sourceBlocks=%d modified=%d", entry.First, entry.Last, entry.Records, len(o.Blocks), o.Modified)
+				}
+				t.Fatalf("%s level %d retains %d blocks behind singleton candidates; small=%d", name, level, n, e.state.SmallBlocks)
+			}
 		}
 	}
 	checkCatalog(t, e)

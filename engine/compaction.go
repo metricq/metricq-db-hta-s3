@@ -94,7 +94,7 @@ func (e *Engine) reserveCompaction(ctx context.Context) (CompactionJob, error) {
 	generation := e.state.Generation
 	snapshot := &Engine{store: e.preparationStore(), options: e.options, metrics: e.metrics, state: cloneManifest(e.committed), sharedNodes: e.sharedNodes, nodeCache: make(map[blob]indexNode), nodeReadLimit: 4096, catalogReadBudget: 32 << 20}
 	scanAfter := e.candidateCursor
-	streamAfter := e.compactionStreamCursor
+	seedObject, seedOffset := e.compactionSeedObject, e.compactionSeedOffset
 	e.pin(generation)
 	e.mu.Unlock()
 	keepPin := false
@@ -109,9 +109,12 @@ func (e *Engine) reserveCompaction(ctx context.Context) (CompactionJob, error) {
 	selected := make(map[blob]bool)
 	tried := make(map[string]bool)
 	var copied int64
-	lastStream := streamAfter
+	previousCandidate := scanAfter
+	resumeCandidate, resumeObject := "", ""
+	resumeOffset := 0
 	cutoff := time.Now().Add(-time.Duration(options.CooldownSeconds) * time.Second).UnixNano()
 	var selectErr error
+	seedLimited := false
 	add := func(b BlockInfo) bool {
 		if selected[b.Entry.Blob] {
 			return true
@@ -131,6 +134,7 @@ func (e *Engine) reserveCompaction(ctx context.Context) (CompactionJob, error) {
 			return false
 		}
 		if !ok || object.Modified > cutoff || object.Size == 0 {
+			previousCandidate = candidate.Key
 			return true
 		}
 		dirty := float64(object.Size-object.LiveBytes)/float64(object.Size) >= options.DeadFraction
@@ -152,16 +156,20 @@ func (e *Engine) reserveCompaction(ctx context.Context) (CompactionJob, error) {
 			}
 		}
 		if options.MergeSmallBlocks {
-			for _, seed := range object.Blocks {
+			beginSeed := 0
+			if candidate.Key == seedObject {
+				beginSeed = min(seedOffset, len(object.Blocks))
+			}
+			for seedIndex := beginSeed; seedIndex < len(object.Blocks); seedIndex++ {
+				seed := object.Blocks[seedIndex]
 				if seed.Index || seed.Entry.Records <= 0 || seed.Entry.Records >= maxDataBlockRecords {
 					continue
 				}
 				stream := fmt.Sprintf("%s/%020d", seed.Metric, seed.Level)
-				if stream <= streamAfter || tried[stream] {
+				if tried[stream] {
 					continue
 				}
 				tried[stream] = true
-				lastStream = stream
 				root := snapshot.state.Roots[seed.Metric][seed.Level]
 				begin := seed.Entry.First
 				prior, err := snapshot.indexNeighborEntry(ctx, root, begin, true)
@@ -207,18 +215,25 @@ func (e *Engine) reserveCompaction(ctx context.Context) (CompactionJob, error) {
 					}
 				}
 				if len(inputs) >= options.MaxBlocks || len(tried) >= 64 {
+					seedLimited = len(inputs) < options.MaxBlocks && len(tried) >= 64
+					resumeCandidate = previousCandidate
+					resumeObject = candidate.Key
+					resumeOffset = seedIndex + 1
 					return false
 				}
 			}
 		}
+		previousCandidate = candidate.Key
 		return len(inputs) < options.MaxBlocks && copied < options.MaxJobBytes
 	})
 	e.mu.Lock()
 	e.candidateCursor = cursor
-	e.compactionStreamCursor = lastStream
-	if len(inputs) == 0 {
-		e.compactionStreamCursor = ""
+	e.compactionSeedObject = resumeObject
+	e.compactionSeedOffset = resumeOffset
+	if resumeObject != "" {
+		e.candidateCursor = resumeCandidate
 	}
+	e.compactionScanMore = len(inputs) == 0 && seedLimited
 	if e.closed {
 		e.mu.Unlock()
 		return CompactionJob{}, fmt.Errorf("engine closed")

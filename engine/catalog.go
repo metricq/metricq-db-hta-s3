@@ -340,7 +340,7 @@ func (e *Engine) catalogChanges(ctx context.Context, next *manifest, changes map
 		}
 		if ok {
 			for _, b := range old.Blocks {
-				if !b.Index && b.Entry.Records > 0 && b.Entry.Records < maxDataBlockRecords {
+				if next.MaintenanceStatsReady && !b.Index && b.Entry.Records > 0 && b.Entry.Records < maxDataBlockRecords {
 					next.SmallBlocks--
 					next.SmallBlockBytes -= b.Entry.Blob.Length
 				}
@@ -350,12 +350,14 @@ func (e *Engine) catalogChanges(ctx context.Context, next *manifest, changes map
 			next.LiveObjects--
 			if candidate := candidateKey(old); candidate != "" {
 				candidates[candidate] = nil
-				next.CandidateObjects--
+				if next.MaintenanceStatsReady {
+					next.CandidateObjects--
+				}
 			}
 		}
 		if value != nil {
 			for _, b := range value.Blocks {
-				if !b.Index && b.Entry.Records > 0 && b.Entry.Records < maxDataBlockRecords {
+				if next.MaintenanceStatsReady && !b.Index && b.Entry.Records > 0 && b.Entry.Records < maxDataBlockRecords {
 					next.SmallBlocks++
 					next.SmallBlockBytes += b.Entry.Blob.Length
 				}
@@ -364,7 +366,9 @@ func (e *Engine) catalogChanges(ctx context.Context, next *manifest, changes map
 			next.StoredObjectBytes += value.Size
 			next.LiveObjects++
 			if candidate := candidateKey(*value); candidate != "" {
-				next.CandidateObjects++
+				if next.MaintenanceStatsReady {
+					next.CandidateObjects++
+				}
 				candidates[candidate] = &ObjectInfo{Key: candidate, Target: key, Modified: time.Now().UnixNano()}
 			}
 		}

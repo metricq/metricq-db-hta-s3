@@ -9,6 +9,7 @@ import (
 )
 
 const catalogFanout = 64
+const catalogLeafTargetBytes = 256 << 10
 
 type BlockInfo struct {
 	Metric string
@@ -145,12 +146,26 @@ func (w *catalogWriter) flush() error {
 
 func (w *catalogWriter) leaves(items []ObjectInfo) ([]catalogEdge, error) {
 	var edges []catalogEdge
-	for i := 0; i < len(items); i += catalogFanout {
-		edge, err := w.write(catalogNode{Items: items[i:min(i+catalogFanout, len(items))]})
+	for i := 0; i < len(items); {
+		end, cost := i, 0
+		for end < len(items) && end-i < catalogFanout {
+			item := items[end]
+			// Descriptor counts vary widely between mixed packs. Isolate a
+			// large object's inventory instead of recompressing it whenever
+			// one of up to 63 unrelated neighboring objects changes.
+			next := 128 + len(item.Key) + len(item.Target) + 192*len(item.Blocks)
+			if end > i && next > catalogLeafTargetBytes-cost {
+				break
+			}
+			cost += next
+			end++
+		}
+		edge, err := w.write(catalogNode{Items: items[i:end]})
 		if err != nil {
 			return nil, err
 		}
 		edges = append(edges, edge)
+		i = end
 	}
 	return edges, nil
 }

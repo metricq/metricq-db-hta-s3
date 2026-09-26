@@ -397,7 +397,9 @@ func TestCompactionDoesNotRenewIngestCooldown(t *testing.T) {
 }
 
 func TestAppendOnlyMixedStreamsConvergePastSingletons(t *testing.T) {
-	const metricCount = 1500
+	// The S3 integration test runs this mixed-stream shape with 1500 metrics;
+	// keep the ordinary race suite small enough for routine development.
+	const metricCount = 150
 	ctx := context.Background()
 	s := &rangeGCStore{gcStore: &gcStore{memoryStore: newStore()}}
 	configs := map[string]hta.Config{}

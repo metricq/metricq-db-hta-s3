@@ -314,7 +314,7 @@ func (e *Engine) reserveCompaction(ctx context.Context) (CompactionJob, error) {
 	next := cloneManifest(e.committed)
 	next.Generation = e.state.Generation + 1
 	next.CompactionJob = ref
-	if err = e.publishMaintenanceLocked(ctx, next); err != nil {
+	if err = e.publishMaintenanceLocked(ctx, next, e.preparationStore()); err != nil {
 		return CompactionJob{}, err
 	}
 	keepPin = true
@@ -932,7 +932,7 @@ func (e *Engine) applyCompaction(ctx context.Context, job CompactionJob, replace
 			return err
 		}
 		e.mu.Lock()
-		err = e.publishMaintenanceLocked(ctx, next)
+		err = e.publishMaintenanceLocked(ctx, next, publication)
 		e.mu.Unlock()
 		if err == nil {
 			e.mu.Lock()
@@ -978,7 +978,7 @@ func (e *Engine) editMaintenance(ctx context.Context, edit func(*Engine) (manife
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	return e.publishMaintenanceLocked(ctx, next)
+	return e.publishMaintenanceLocked(ctx, next, e.preparationStore())
 }
 func (e *Engine) abortCompaction(ctx context.Context) error {
 	e.mu.Lock()

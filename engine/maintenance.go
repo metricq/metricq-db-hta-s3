@@ -100,12 +100,12 @@ func (e *Engine) publishMaintenance(ctx context.Context, next manifest) error {
 		return ErrPressure
 	}
 	defer e.publishMu.Unlock()
-	return e.publishMaintenanceLocked(ctx, next)
+	return e.publishMaintenanceLocked(ctx, next, e.preparationStore())
 }
 
 // Caller holds publishMu, then mu. Immutable block copying happens before
 // acquiring publishMu; only metadata rebasing/publication serialize with Flush.
-func (e *Engine) publishMaintenanceLocked(ctx context.Context, next manifest) error {
+func (e *Engine) publishMaintenanceLocked(ctx context.Context, next manifest, store storage.Store) error {
 	if e.closed {
 		return fmt.Errorf("engine closed")
 	}
@@ -119,7 +119,7 @@ func (e *Engine) publishMaintenanceLocked(ctx context.Context, next manifest) er
 		return err
 	}
 	expected := e.version
-	publisher := &Engine{store: e.preparationStore(), metrics: e.metrics}
+	publisher := &Engine{store: store, metrics: e.metrics}
 	e.mu.Unlock()
 	version, err := publisher.put(ctx, "manifest", b, &expected)
 	if err != nil {

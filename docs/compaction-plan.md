@@ -100,9 +100,13 @@ superseded objects and metadata as part of their publication.
 
 Trash entries carry retirement generations. Query pins protect snapshots that
 could reference them; later queries do not globally block old garbage. GC performs
-GET and DELETE outside the ingestion mutex. A pass deletes at most 16 entries
-within two seconds, then persists its progress. A durable cleanup field retains
-journal pages whose own deletion failed. Already authorized deletion can happen
+GET and DELETE outside the ingestion mutex. A pass deletes at most 256 entries
+from at most 64 journal pages, eight at a time within two seconds, then persists
+the longest successful prefix as progress. Finished journal pages are listed
+durably and deleted by the next pass, which folds their removal into its own
+publication; only an otherwise idle journal publishes to clear that list. The
+background worker reclaims when 256 entries are pending or ten seconds after the
+previous GC publication; explicit `Reclaim` calls are not paced. Already authorized deletion can happen
 before a metadata PUT, allowing GC to free space when quota blocks new writes.
 A crash between deletion and progress publication repeats an idempotent DELETE.
 

@@ -93,10 +93,11 @@ state, so samples ACKed during preparation remain in the WAL until normal flush.
 A durable linked trash journal authorizes deletion only after safe publication.
 Queries pin their manifest generation; a retired object remains protected while
 an older snapshot could reference it. Newer queries do not delay older garbage.
-GC reads journal pages and issues DELETE outside the ingestion lock, at most 16
-entries per pass with a two-second deletion budget. It can release space before
+GC reads journal pages and issues DELETE outside the ingestion lock: up to 256
+entries from up to 64 pages per pass, eight requests in flight, within a two-second
+deletion budget, followed by one manifest publication. It can release space before
 writing its progress, which helps recover from a full object-store quota. Durable
-page offsets and a pending journal-page cleanup key make interrupted deletion
+page offsets and a list of finished journal pages make interrupted deletion
 restartable. Repeating an already completed DELETE is safe.
 
 Registered compaction output namespaces are inventoried and reclaimed after an

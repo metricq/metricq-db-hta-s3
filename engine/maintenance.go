@@ -356,8 +356,10 @@ func (e *Engine) RunMaintenance(ctx context.Context) {
 			if err := e.recoverCompaction(ctx); err != nil && ctx.Err() == nil {
 				slog.Warn("compaction recovery failed", "error", err)
 			}
-			if err := e.Reclaim(ctx); err != nil && ctx.Err() == nil {
-				slog.Warn("background reclaim failed", "error", err)
+			if e.reclaimDue() {
+				if err := e.Reclaim(ctx); err != nil && ctx.Err() == nil {
+					slog.Warn("background reclaim failed", "error", err)
+				}
 			}
 		case <-compactTicker.C:
 			if options.Enabled {
@@ -373,8 +375,10 @@ func (e *Engine) RunMaintenance(ctx context.Context) {
 						}
 						break
 					}
-					if err = e.Reclaim(ctx); err != nil {
-						break
+					if e.reclaimDue() {
+						if err = e.Reclaim(ctx); err != nil {
+							break
+						}
 					}
 					e.mu.Lock()
 					progress := e.compactionCompletions != before
@@ -409,6 +413,7 @@ func (e *Engine) updateMaintenanceMetrics(m manifest) {
 	if m.TrashCleanup != "" {
 		pending++
 	}
+	pending += int64(len(m.TrashCleanups))
 	e.metrics.GCPending.Set(float64(pending))
 	e.metrics.CandidateObjects.Set(float64(m.CandidateObjects))
 	e.metrics.SmallBlocks.Set(float64(m.SmallBlocks))
@@ -442,5 +447,6 @@ func (e *Engine) MaintenanceStatus() MaintenanceStatus {
 	if e.state.TrashCleanup != "" {
 		pending++
 	}
+	pending += int64(len(e.state.TrashCleanups))
 	return MaintenanceStatus{SmallBlockStatsAvailable: e.state.MaintenanceStatsReady, SmallBlocks: e.state.SmallBlocks, SmallBlockBytes: e.state.SmallBlockBytes, Generation: e.state.Generation, Checkpoint: e.state.Sequence, WALHead: e.sequence, PendingObjects: pending, LiveBytes: e.state.LiveObjectBytes, DeadBytes: e.state.StoredObjectBytes - e.state.LiveObjectBytes, JobPending: e.state.CompactionJob.Key != ""}
 }

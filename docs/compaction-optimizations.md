@@ -33,7 +33,7 @@ tests in `engine/compaction_optimization_test.go`.
 - Consecutive jobs share one read/write byte limiter, including preparation
   metadata, rebuilt indexes and manifest publication. The bounded final metadata
   rewrite is charged after releasing the publication mutex; source reads prefetch at
-  most eight blocks. GC runs between jobs, and new jobs stop at the configured
+  most eight blocks. GC runs between jobs once a full batch is pending, and new jobs stop at the configured
   cycle-start window or on no progress, WAL pressure or error.
 - Compaction preserves logical ingestion timestamps. Repacking part of a large
   object does not postpone every remaining stream by another cooldown period.
@@ -58,6 +58,13 @@ tests in `engine/compaction_optimization_test.go`.
   singletons, independent of shared-cache warmth. `TestFlushReusesPinnedIndexTails`
   asserts zero index reads across leaf splits, and correctness after compaction
   and restart.
+- Reclamation publishes one manifest per batch of up to 256 deletions across up
+  to 64 journal pages, instead of one per 16 deletions plus one per finished page.
+  Finished pages are deleted by the next batch without a publication of their own,
+  and the background worker waits for a full batch or ten seconds. In the
+  1500-metric convergence fixture (20 append-only flushes, 512-block jobs, run to
+  one block per stream), maintenance manifest PUTs fell from 1570 (559 MB) to 570
+  (203 MB); the remaining ones are mostly job registration and publication.
 
 The executable defaults to `append_only_aggregates=true`, with 512 source blocks
 per job and a 30-second window for starting consecutive jobs every 60 seconds.

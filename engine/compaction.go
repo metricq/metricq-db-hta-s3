@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"math"
 	"sort"
 	"strings"
 	"sync"
@@ -1147,98 +1148,194 @@ func (e *Engine) Reclaim(ctx context.Context) error {
 		e.mu.Unlock()
 		return nil
 	}
-	if cleanup := e.state.TrashCleanup; cleanup != "" {
-		e.mu.Unlock()
-		if err := deleter.Delete(ctx, cleanup); err != nil {
-			e.metrics.GCErrors.Inc()
-			return err
-		}
-		e.mu.Lock()
-		next := cloneManifest(e.committed)
-		next.Generation++
-		next.TrashCleanup = ""
-		err := e.publishMaintenance(ctx, next)
-		e.mu.Unlock()
-		return err
+	// Journal pages finished by an earlier publication are no longer referenced.
+	cleanups := append([]string(nil), e.state.TrashCleanups...)
+	if e.state.TrashCleanup != "" {
+		cleanups = append(cleanups, e.state.TrashCleanup)
 	}
 	batch := e.state.TrashBatch
 	ref := e.state.TrashPending
 	offset := e.state.TrashOffset
-	if batch.Key == "" {
-		if e.state.TrashHead == e.state.TrashComplete {
-			e.mu.Unlock()
-			return nil
-		}
+	complete := e.state.TrashComplete
+	if batch.Key == "" && e.state.TrashHead != complete {
 		batch = e.state.TrashHead
 		ref = batch
 		offset = 0
 	}
-	e.mu.Unlock()
-	b, err := e.readBlob(ctx, ref)
-	if err != nil {
-		return err
-	}
-	e.mu.Lock()
-	var page trashPage
-	if err = decode(b, &page); err != nil {
-		e.mu.Unlock()
-		return err
-	}
-	if offset < 0 || offset >= len(page.Keys) {
-		e.mu.Unlock()
-		return fmt.Errorf("invalid trash cursor")
-	}
-	if time.Now().UnixNano() < page.NotBefore {
-		e.mu.Unlock()
-		return nil
-	}
+	// New pins always use the newest generation, so they cannot block a page
+	// that is already published; the oldest current pin is sufficient.
+	oldestPin := uint64(math.MaxUint64)
 	for generation, count := range e.pins {
-		if count > 0 && generation < page.Generation {
-			e.mu.Unlock()
-			return nil
+		if count > 0 && generation < oldestPin {
+			oldestPin = generation
 		}
 	}
 	e.mu.Unlock()
+	type segment struct {
+		ref, prev blob
+		offset    int
+		keys      []string
+		finishes  bool
+	}
+	var segments []segment
+	var keys []string
+	now := time.Now().UnixNano()
+	for ref.Key != "" && ref != complete && len(segments) < reclaimPages && len(keys) < reclaimKeys {
+		b, err := e.readBlob(ctx, ref)
+		if err != nil {
+			if len(segments) == 0 {
+				return err
+			}
+			break
+		}
+		var page trashPage
+		if err = decode(b, &page); err != nil {
+			return err
+		}
+		if offset < 0 || offset >= len(page.Keys) {
+			return fmt.Errorf("invalid trash cursor")
+		}
+		if now < page.NotBefore || oldestPin < page.Generation {
+			break
+		}
+		n := min(len(page.Keys)-offset, reclaimKeys-len(keys))
+		part := page.Keys[offset : offset+n]
+		segments = append(segments, segment{ref: ref, prev: page.Prev, offset: offset, keys: part, finishes: offset+n == len(page.Keys)})
+		keys = append(keys, part...)
+		if offset+n < len(page.Keys) {
+			break
+		}
+		ref, offset = page.Prev, 0
+	}
+	// Cleanups deleted by an unpublished pass are remembered in memory and
+	// removed from the manifest by the next publication instead of their own.
+	var toDelete []string
+	for _, key := range cleanups {
+		if !e.deletedCleanups[key] {
+			toDelete = append(toDelete, key)
+		}
+	}
+	journalEmpty := batch.Key == ""
+	if len(toDelete) == 0 && len(keys) == 0 && (!journalEmpty || len(cleanups) == 0) {
+		return nil
+	}
 	// The retirement journal is durable and addresses cannot be resurrected.
+	// Repeating a DELETE is safe, so only a successful prefix advances the cursor.
 	deleteCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-	done := 0
+	errs := deleteKeys(deleteCtx, deleter, append(append([]string(nil), toDelete...), keys...))
+	cancel()
 	var deleteErr error
-	for _, key := range page.Keys[offset:min(offset+16, len(page.Keys))] {
-		if err := deleter.Delete(deleteCtx, key); err != nil {
-			e.metrics.GCErrors.Inc()
-			deleteErr = err
+	if e.deletedCleanups == nil {
+		e.deletedCleanups = make(map[string]bool)
+	}
+	for i, key := range toDelete {
+		if errs[i] == nil {
+			e.deletedCleanups[key] = true
+		}
+	}
+	var remaining []string
+	for _, key := range cleanups {
+		if !e.deletedCleanups[key] {
+			remaining = append(remaining, key)
+		}
+	}
+	done := 0
+	for _, err := range errs[len(toDelete):] {
+		if err != nil {
 			break
 		}
 		done++
-		e.metrics.GCDeleted.Inc()
 	}
-	cancel()
-	if done == 0 {
+	for _, err := range errs {
+		if err == nil {
+			e.metrics.GCDeleted.Inc()
+		} else if deleteErr == nil {
+			deleteErr = err
+			e.metrics.GCErrors.Inc()
+		}
+	}
+	// Without cursor progress, publish only to clear the list of an idle journal.
+	if done == 0 && (!journalEmpty || len(remaining) == len(cleanups)) {
 		return deleteErr
 	}
 	e.mu.Lock()
 	next := cloneManifest(e.committed)
 	next.Generation = e.state.Generation + 1
-	next.TrashBatch = batch
-	next.TrashPending = ref
-	next.TrashOffset = offset + done
-	next.TrashObjects -= int64(done)
-	finished := next.TrashOffset == len(page.Keys)
-	if finished {
-		next.TrashCleanup = ref.Key
-		next.TrashPending = page.Prev
-		next.TrashOffset = 0
+	next.TrashCleanup = ""
+	next.TrashCleanups = remaining
+	if done > 0 {
+		pending, pendingOffset := segments[0].ref, segments[0].offset
+		consumed := done
+		for _, s := range segments {
+			if consumed < len(s.keys) {
+				pending, pendingOffset = s.ref, s.offset+consumed
+				break
+			}
+			consumed -= len(s.keys)
+			if s.finishes {
+				next.TrashCleanups = append(next.TrashCleanups, s.ref.Key)
+				pending, pendingOffset = s.prev, 0
+			} else {
+				pending, pendingOffset = s.ref, s.offset+len(s.keys)
+			}
+		}
+		next.TrashBatch = batch
+		next.TrashPending = pending
+		next.TrashOffset = pendingOffset
+		next.TrashObjects -= int64(done)
+		if next.TrashPending == next.TrashComplete {
+			next.TrashComplete = next.TrashBatch
+			next.TrashBatch = blob{}
+			next.TrashPending = blob{}
+			next.TrashOffset = 0
+		}
 	}
-	if next.TrashPending == next.TrashComplete {
-		next.TrashComplete = next.TrashBatch
-		next.TrashBatch = blob{}
-		next.TrashPending = blob{}
-	}
-	err = e.publishMaintenance(ctx, next)
+	err := e.publishMaintenance(ctx, next)
 	e.mu.Unlock()
 	if err != nil {
 		return err
 	}
-
+	e.deletedCleanups = nil
+	e.lastReclaim = time.Now()
 	return deleteErr
+}
+
+// reclaimDue paces background reclamation: a full batch publishes at once,
+// smaller amounts wait so one manifest covers many retired objects.
+func (e *Engine) reclaimDue() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.state.TrashObjects >= reclaimKeys || time.Since(e.lastReclaim) >= reclaimInterval
+}
+
+// Deletion batches bound one publication, not the retirement backlog.
+const (
+	reclaimKeys     = 256
+	reclaimPages    = 64
+	reclaimParallel = 8
+	reclaimInterval = 10 * time.Second
+)
+
+// deleteKeys issues bounded concurrent DELETEs; the result keeps key order.
+func deleteKeys(ctx context.Context, deleter storage.Deleter, keys []string) []error {
+	errs := make([]error, len(keys))
+	next := make(chan int)
+	var wg sync.WaitGroup
+	for w := 0; w < min(reclaimParallel, len(keys)); w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := range next {
+				if errs[i] = ctx.Err(); errs[i] == nil {
+					errs[i] = deleter.Delete(ctx, keys[i])
+				}
+			}
+		}()
+	}
+	for i := range keys {
+		next <- i
+	}
+	close(next)
+	wg.Wait()
+	return errs
 }

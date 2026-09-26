@@ -67,6 +67,8 @@ type entry struct {
 type manifest struct {
 	TrashOffset  int
 	TrashCleanup string
+	// Finished journal pages, deleted by the next reclamation pass.
+	TrashCleanups []string
 
 	Catalog, Candidates                                blob
 	CatalogReady                                       bool
@@ -113,6 +115,8 @@ type Engine struct {
 	lastCompactionEnd        time.Time
 	compactionCompletions    uint64
 	compactionScanMore       bool
+	lastReclaim              time.Time
+	deletedCleanups          map[string]bool
 	catalogCache             map[blob]catalogNode
 	catalogCacheBytes        int64
 	catalogReadBudget        int64

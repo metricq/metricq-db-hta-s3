@@ -50,7 +50,7 @@ func TestCompactionS3(t *testing.T) {
 			for i := 0; i < count; i++ {
 				configs[name(i)] = hta.Config{IntervalMin: int64(time.Second), IntervalMax: int64(1000 * time.Second), IntervalFactor: 10}
 			}
-			options := engine.Options{WALDirectory: t.TempDir(), ObjectTarget: 4 << 20, BuilderHard: 32 << 20, BackgroundMaintenance: true, Compaction: engine.CompactionOptions{Enabled: true, MaxBlocks: 512, DeadFraction: .05, BytesPerSecond: 64 << 20, MergeSmallBlocks: true}}
+			options := engine.Options{WALDirectory: t.TempDir(), ObjectTarget: 4 << 20, BuilderHard: 32 << 20, BackgroundMaintenance: true, AppendOnlyAggregates: true, Compaction: engine.CompactionOptions{Enabled: true, MaxBlocks: 512, DeadFraction: .05, BytesPerSecond: 64 << 20, MergeSmallBlocks: true}}
 			e, err := engine.Open(ctx, backend, options, configs, nil)
 			if err != nil {
 				t.Fatal(err)
@@ -132,11 +132,21 @@ func TestCompactionS3(t *testing.T) {
 				t.Fatal(err)
 			}
 			started := time.Now()
-			passes := 12
-			if count >= 1500 {
-				passes = 64
-			}
+			passes := 512
 			for i := 0; i < passes; i++ {
+				if err := e.CompactOnce(ctx); err != nil {
+					t.Fatal(err)
+				}
+				if e.MaintenanceStatus().SmallBlocks <= int64(count*4) {
+					t.Logf("converged after %d bounded passes", i+1)
+					break
+				}
+				if i%64 == 63 {
+					status := e.MaintenanceStatus()
+					t.Logf("pass=%d small_blocks=%d dead_bytes=%d", i+1, status.SmallBlocks, status.DeadBytes)
+				}
+			}
+			for i := 0; i < 32 && e.MaintenanceStatus().DeadBytes > 0; i++ {
 				if err := e.CompactOnce(ctx); err != nil {
 					t.Fatal(err)
 				}
@@ -155,7 +165,7 @@ func TestCompactionS3(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if after >= before || layoutAfter.rawBlocks >= layoutBefore.rawBlocks {
+			if after >= before || layoutAfter.rawBlocks != int64(count) {
 				t.Fatalf("no reclamation/consolidation: bytes %d -> %d blocks %d -> %d", before, after, layoutBefore.rawBlocks, layoutAfter.rawBlocks)
 			}
 			if layoutAfter.rawRecords != int64(count*128) {

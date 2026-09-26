@@ -1,0 +1,4 @@
+metrics,samples,data_index_bytes_before_gc,data_index_bytes_before,data_index_bytes_after,raw_blocks_before,raw_blocks_after,compaction_and_gc_s,response_comparisons
+6,768,147365,85075,25997,48,6,0.290649421,24
+150,19200,3727601,2159627,664966,1200,150,9.301351893,24
+1500,192000,37613571,21852165,6740213,12000,1500,162.957706669,24

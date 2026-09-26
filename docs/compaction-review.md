@@ -1,5 +1,9 @@
 # Compaction review: query layout and deferred ingestion work
 
+This is the historical review of the initial implementation. See
+[implemented fixes](compaction-optimizations.md) for the current behavior and
+regression coverage. Production changes landed after the measurements below.
+
 Review of `2af234d`, 2026-09-26. Production code was not changed. Reproductions
 are in `engine/compaction_review_test.go`, behind the `review` build tag. These
 are diagnostic probes, not assertions that the observed shortcomings are desired.

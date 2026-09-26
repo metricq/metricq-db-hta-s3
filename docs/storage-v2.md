@@ -21,14 +21,13 @@ an immutable `index/` object. Only the rightmost path for each changed stream
 is rewritten once per checkpoint batch; intermediate versions never enter
 the index pack. Older pages and root pointers stay valid for concurrent reads.
 
-For aggregate levels, the last partially filled block is read and combined
-with the next checkpoint's records until it reaches 1,024 physical records.
-The new block and its replacement index path are immutable additions; the
-manifest switches to them only after both packs have been uploaded. Thus a
-low-volume aggregate level does not accumulate one tiny block per flush.
-Each changed aggregate stream reads at most one previous data block, plus
-its rightmost index path. Raw blocks are appended without tail rewriting.
-An aggregate run counts as one physical record, regardless of its duration.
+The production executable writes only newly completed aggregate records on flush.
+Existing partial aggregate blocks remain immutable and independently queryable.
+Background compaction merges neighboring blocks at every HTA level, up to 1024
+physical records, without reaggregating or expanding compressed empty runs.
+`engine.append_only_aggregates=false` restores the older tail-extension behavior:
+flush reads and fills the last partially filled aggregate block. Raw blocks are
+always appended without tail rewriting.
 
 The commit order is data pack, index pack, conditional root manifest PUT,
 local WAL checkpoint, and WAL truncation. A failed tail read or PUT leaves
@@ -41,11 +40,14 @@ described below. Objects referenced by the current root or active queries
 must not be deleted.
 
 Queries traverse only index pages whose time bounds intersect the requested
-window, plus neighboring blocks for boundary semantics. The S3 backend uses
-byte-range GETs for individual index and data blocks and verifies each block
-hash. Bounded shared caches keep immutable index pages and up to 128 MiB of
-decoded data blocks. A stream reads at most eight missing data blocks in
-parallel; aggregate queries can also read independent HTA levels concurrently.
+window. Raw queries also read boundary neighbors; aggregate queries include the
+bucket containing the start without fetching extra neighbors. The S3 backend
+coalesces missing data blocks in the same object, bridging at most 64 KiB gaps
+with an 8 MiB range target, and verifies each block hash separately. Blocks larger
+than that target use individual reads. Bounded shared caches keep immutable index
+pages and up to 128 MiB of decoded data blocks. A stream processes batches of at
+most 128 block references with eight range requests in parallel; aggregate queries
+can also read independent HTA levels concurrently.
 Cache hits still count toward the per-query decoded-data budget. A backend
 without range support can use full-object GET as a functional
 fallback, but must implement `storage.Store`. Query cost grows with the
@@ -61,11 +63,11 @@ not change this choice. The client can derive `interval_max` from the query
 span and display width.
 
 This format keeps raw and completed aggregate records indefinitely, subject
-to the durability of the WAL and object store. Tail consolidation trades
-bounded reads and rewrites during ingestion for fewer historical query GETs.
+to the durability of the WAL and object store. Background consolidation trades maintenance reads/writes for fewer historical
+query GETs while keeping flush work proportional to newly completed records.
 Superseded tail versions are reclaimed by the background compactor. Checkpoint
 frequency still determines initial raw block sizes; compaction can merge adjacent
-small raw blocks without dropping samples. The root remains bounded by metric and
+small data blocks at every HTA level without dropping samples. The root remains bounded by metric and
 level count, although its open HTA state still scales with those counts.
 
 ## Catalog, compaction and object reclamation
@@ -73,16 +75,19 @@ level count, although its open HTA state still scales with those counts.
 The production DB starts a maintenance goroutine independently of ingestion and
 history requests. A persistent copy-on-write catalog records each live block's
 object, offset, length, hash, metric and level. A separate candidate tree indexes
-partly dead packs and eligible small raw blocks. The manifest contains only their
+partly dead packs and eligible small data blocks at every HTA level. The manifest contains only their
 root pointers and bounded maintenance state; it does not contain every object.
 Normal checkpoints update touched catalog paths. Existing namespaces without a
 catalog bootstrap it once from index trees; subsequent starts use persisted roots.
 
-Compaction copies live blocks into immutable packs and replaces the affected
-historical index paths. Optional raw-block merging preserves every record and
+Compaction selects adjacent blocks through each metric/level time index, copies
+live blocks into immutable packs, contracts sparse index paths and replaces the affected
+historical index paths. Optional data-block merging preserves every record and
 verifies adjacency through the index. Work prepares outside the ingestion lock.
-Publication validates source identities against the current committed roots and
-uses conditional manifest PUT. It retains the committed WAL sequence and HTA
+After copying, the bounded final metadata rewrite serializes with flush publication,
+validates source identities against the current committed roots and uses conditional
+manifest PUT. Ingest retains access to its mutex during this metadata I/O. The
+publication retains the committed WAL sequence and HTA
 state, so samples ACKed during preparation remain in the WAL until normal flush.
 
 A durable linked trash journal authorizes deletion only after safe publication.

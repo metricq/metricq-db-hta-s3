@@ -546,6 +546,13 @@ func TestCompactionEvacuatesMixedObjectAcrossBoundedJobs(t *testing.T) {
 }
 
 func TestKnownSingletonsDoNotConsumeMergeSearchBudget(t *testing.T) {
+	for _, warm := range []bool{false, true} {
+		t.Run(fmt.Sprintf("warm=%t", warm), func(t *testing.T) { singletonSearch(t, warm) })
+	}
+}
+
+func singletonSearch(t *testing.T, warm bool) {
+	t.Helper()
 	ctx := context.Background()
 	s := &rangeGCStore{gcStore: &gcStore{memoryStore: newStore()}}
 	configs := map[string]hta.Config{}
@@ -553,7 +560,11 @@ func TestKnownSingletonsDoNotConsumeMergeSearchBudget(t *testing.T) {
 		configs[fmt.Sprintf("a%03d", i)] = hta.Config{IntervalMin: 1000000, IntervalMax: 10000000, IntervalFactor: 10}
 	}
 	configs["z"] = configs["a000"]
-	e, err := Open(ctx, s, maintenanceOptions(t.TempDir(), true), configs, nil)
+	options := maintenanceOptions(t.TempDir(), true)
+	if !warm {
+		options.Compaction.MaxBlocks = 512
+	}
+	e, err := Open(ctx, s, options, configs, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -567,9 +578,11 @@ func TestKnownSingletonsDoNotConsumeMergeSearchBudget(t *testing.T) {
 		t.Fatal(err)
 	}
 	source := streamBlocks(t, e, "a000", 0)[0].Key
-	for name := range configs {
-		streamBlocks(t, e, name, 0)
-	} // Known immutable singleton roots.
+	if warm {
+		for name := range configs {
+			streamBlocks(t, e, name, 0)
+		}
+	}
 	if err = e.Ingest(ctx, "z", chunk(hta.Point{Time: 2, Value: 2})); err != nil {
 		t.Fatal(err)
 	}
@@ -586,7 +599,7 @@ func TestKnownSingletonsDoNotConsumeMergeSearchBudget(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(streamBlocks(t, e, "z", 0)) != 1 {
-		t.Fatal("known singleton roots exhausted the search budget")
+		t.Fatal("singleton roots exhausted the search budget")
 	}
 	checkCatalog(t, e)
 }

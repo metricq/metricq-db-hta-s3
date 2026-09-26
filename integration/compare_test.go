@@ -241,7 +241,7 @@ func TestLegacyRequestParity(t *testing.T) {
 		}
 		docker(t, "rm", "-f", id)
 	})
-	opts := engine.Options{WALDirectory: t.TempDir(), ObjectTarget: 4096, BuilderHard: 8 << 20, BackgroundMaintenance: true, Compaction: engine.CompactionOptions{Enabled: true, DeadFraction: .05, BytesPerSecond: 64 << 20, MaxBlocks: 512, MergeSmallBlocks: true}}
+	opts := engine.Options{WALDirectory: t.TempDir(), ObjectTarget: 4096, BuilderHard: 8 << 20, BackgroundMaintenance: true, AppendOnlyAggregates: true, Compaction: engine.CompactionOptions{Enabled: true, DeadFraction: .05, BytesPerSecond: 64 << 20, MaxBlocks: 512, MergeSmallBlocks: true}}
 	var current *engine.Engine
 	blocked := make(chan struct{})
 	var blockedOnce sync.Once

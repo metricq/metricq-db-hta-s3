@@ -1,8 +1,8 @@
 # Background compaction
 
-The [query/ingestion review](compaction-review.md) records known selection, index,
-locking and throughput limitations with reproductions. Read it before relying on
-compaction to repair append-only aggregate fragmentation.
+The [query/ingestion review](compaction-review.md) records the original findings.
+[Implemented fixes and measurements](compaction-optimizations.md) describe stream
+selection, index contraction, cache preservation and append-only aggregate flushes.
 
 Implemented as one maintenance goroutine inside the DB process. It has its own
 schedule and limits; neither ingestion nor a history request triggers a job.
@@ -20,20 +20,30 @@ The local `engine.compaction` configuration is shown in
 |---|---:|---|
 | enabled | true | Run compaction; disabling it leaves GC/recovery enabled |
 | interval_seconds | 60 | Compaction scheduling interval |
-| cooldown_seconds | 60 | Avoid recently modified candidate objects |
+| cooldown_seconds | 60 | Avoid recently ingested candidate objects |
 | max_duration_seconds | 60 | Context deadline per job |
+| max_cycle_seconds | 30 | Window for starting consecutive jobs (library default: 10) |
 | max_job_bytes | 33554432 | Input selection / index output budget |
-| max_blocks | 128 | Maximum selected source blocks |
+| max_blocks | 512 | Maximum selected source blocks (library default: 128) |
 | object_bytes | 4194304 | Target output pack size |
-| bytes_per_second | 8388608 | Combined copied data/index read and write rate |
+| bytes_per_second | 8388608 | Shared preparation/publication read and write byte rate |
 | dead_fraction | 0.4 | Dead-byte fraction qualifying a partly live object |
-| merge_small_blocks | true | Merge adjacent small raw blocks, at most 1024 records |
+| merge_small_blocks | true | Merge adjacent small data blocks at every HTA level, at most 1024 records |
 
-Coordination metadata is not included in the byte-rate limiter. Candidate scans
+Catalog, candidate, job and rebuilt-index bytes are included in the shared limiter.
+The bounded final metadata rewrite is charged after releasing the publication
+mutex, so byte pacing does not lengthen this critical section.
+GC DELETE calls remain governed by their separate pass limits. Candidate scans
 have bounded pages and a cursor. Preparation limits metadata reads to 32 MiB and
 index traversal to 4096 operations. The catalog cache is bounded separately.
-These bound buffers and work, not total Go heap usage. Jobs are skipped while WAL or pending-builder pressure is high. The worker is serial, so
-GC can wait behind a running job until that job finishes or reaches its deadline.
+Catalog leaves target 256 KiB of estimated descriptors as well as the 64-object
+fanout limit. An individually larger inventory gets its own leaf; the 32 MiB
+encoded-page limit still applies.
+These bound buffers and work, not total Go heap usage. Jobs are skipped while WAL
+or pending-builder pressure is high. The worker starts multiple jobs within each
+cycle and runs a GC pass between them. The cycle deadline controls new job starts;
+an already running job can extend the cycle by its own duration limit. Shutdown
+still cancels the running job. The worker is serial, so GC can wait behind one job.
 
 ## Publication and durability
 
@@ -41,17 +51,30 @@ The manifest has a generation separate from the committed WAL sequence, catalog
 and candidate roots, one pending job pointer and bounded trash-journal pointers.
 The catalog is a persistent B-tree recording live block descriptors per object;
 normal checkpoints update only affected paths. Candidate keys prioritize dead
-space; dense packs with eligible small raw blocks can also be consolidated.
+space; dense packs with eligible small blocks at every HTA level can also be
+consolidated. Selection expands seeds through bounded neighboring index reads in
+both time directions. A resumable cursor within each candidate object avoids spending the budget on
+unrelated single blocks. Compaction preserves ingestion-age cooldown timestamps.
+Merge seeds have at most 512 records; a larger neighbor can still participate if
+the combination fits in 1024. Dirty mixed packs larger than one job are evacuated
+over several jobs, retaining their source key until the last live block moves.
+This requires temporary storage headroom.
+Within candidate objects, merge selection precedes copy-only evacuation, preventing
+dead-space thresholds from repeatedly relocating still-fragmented streams.
 
 1. Select bounded inputs from the committed snapshot and pin its generation.
 2. Durably register the job and its unique output prefixes before uploading.
-3. Copy and checksum live encoded blocks into new immutable packs. Optional raw
+3. Copy and checksum live encoded blocks into new immutable packs with at most eight
+   source reads in flight. Optional data-block
    merging decodes adjacent blocks and preserves their records without aggregating.
-4. Build replacement historical index paths and catalog updates on a private
+4. Collapse redundant index roots and combine bounded sparse sibling leaves. Build
+   replacement historical index paths and catalog updates on a private
    snapshot outside the ingestion lock.
-5. Validate exact source identities against current committed state. Concurrent
-   flushes may require rebuilding metadata against newer roots, with at most two
-   preparation attempts. This is logical rebasing, not an HTTP retry.
+5. After data copying, acquire the publication mutex, validate exact source
+   identities against the newest committed state, and build the bounded metadata
+   rewrite. Flushes wait for this phase; WAL appends and query admission continue.
+   A flush that changed a selected source block can still invalidate the job.
+   Merely publishing a newer manifest does not discard already copied data.
 6. Publish with conditional manifest PUT. A separate publication mutex serializes
    root publication with flushes; maintenance releases the ingestion mutex during
    the PUT. The committed WAL sequence and HTA state do not advance.
@@ -89,14 +112,22 @@ inventory remains separate work. Versioned buckets require lifecycle rules to
 actually reclaim old versions. External reader processes are not covered by the
 in-process generation pins.
 
-Compaction reclaims dead space after tail rewriting; it does not remove ingestion's
-tail recompression cost and itself causes additional writes. Catalog updates also
-add checkpoint metadata I/O. Tune the limits against the real workload.
+The executable defaults to `engine.append_only_aggregates=true`: flush writes only
+new completed aggregates and the worker consolidates their immutable fragments.
+Setting it to false restores tail extension during flush. The executable disables
+append-only mode when compaction or block merging is disabled. Library callers
+must explicitly enable compatible background maintenance.
+
+Catalog fanout is 64, and immutable page PUTs upload in batches of at most eight
+with a 4 MiB queued-byte target. Pages remain separate objects for safe reclamation.
+Compaction adds its own reads/writes and CPU work. Under sustained overload, old
+fragment backlog can still grow; tune limits against the combined ingest/query workload.
 
 ## Introspection and verification
 
 Prometheus exports compaction activity, duration, completions, errors, conflicts,
-read/write bytes, live/dead object bytes and pending/deleted GC objects. These have
+read/write bytes, live/dead object bytes and pending/deleted GC objects. Additional counters expose input/replacement blocks and no-action scans; gauges
+expose candidate objects and small data blocks/bytes (including single tails). These have
 no labels per metric, object or job. Live/dead byte gauges describe catalog-tracked
 data/index objects, not the entire bucket including metadata and orphan uploads.
 

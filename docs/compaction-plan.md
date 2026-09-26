@@ -141,15 +141,16 @@ restart, plus the executable's Prometheus endpoint and shutdown.
 
 Run unit/race tests with `go test -race ./...`. With the development services and
 `compose.test.yml` running, use `go test -tags=integration ./integration`.
-[compaction-results.csv](compaction-results.csv) records the real-S3 bounded-pass
-experiment: 128 samples per metric delivered in eight flushes. Baseline GC runs
+[compaction-results.csv](compaction-results.csv) records the historical real-S3
+baseline before the [optimization fixes](compaction-optimizations.md): 128 samples
+per metric delivered in eight flushes. Baseline GC runs
 before compaction, so its storage benefit is reported separately. The experiment
 uses 12 passes for 6/150 metrics and 64 for 1500 metrics; it does not assert complete
 quiescence. Wall times are single-run observations, not a latency benchmark. These storage
 experiments instantiate the engine directly and do not run the Prometheus HTTP
 endpoint or scrape it. The executable endpoint is checked separately.
 
-Observed S3 results (decimal MB, after baseline GC):
+Historical S3 results (decimal MB, after baseline GC):
 
 | Metrics | Samples | Data/index before → after | Raw blocks before → after |
 |---:|---:|---:|---:|
@@ -159,5 +160,5 @@ Observed S3 results (decimal MB, after baseline GC):
 
 All raw records remained reachable, with 24 query-response comparisons after an
 S3-only restart for each size. The 1500-metric run shows limited raw consolidation
-in these passes: reclaiming dead packs has priority. It is not evidence that all
+in these passes: that implementation prioritized reclaiming dead packs. It is not evidence that all
 fragmentation has been eliminated or that ten-year storage performance is solved.

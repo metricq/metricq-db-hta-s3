@@ -33,7 +33,7 @@ type Options struct {
 	AppendOnlyAggregates bool `json:"append_only_aggregates"`
 	// HoldSeconds > 0 keeps streams in memory until they fill a block or their
 	// oldest record reaches this age; held records persist in held/ deltas.
-	HoldSeconds           int64             `json:"hold_seconds"`
+	HoldSeconds int64 `json:"hold_seconds"`
 	// HoldBytes bounds held records (estimated); above it the largest streams
 	// are written early. Zero means half of BuilderHard.
 	HoldBytes             int64             `json:"hold_bytes"`
@@ -133,6 +133,7 @@ type Engine struct {
 	lastCompactionEnd        time.Time
 	compactionCompletions    uint64
 	compactionScanMore       bool
+	compactionObjectLimit    int // source objects per job, adapted to the catalog budget
 	lastReclaim              time.Time
 	deletedCleanups          map[string]bool
 	catalogCache             map[blob]catalogNode

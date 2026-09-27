@@ -61,4 +61,7 @@ estimated bytes per record.
 
 Without holding, the same hour produced about one million small blocks, and
 compaction then stopped with `catalog metadata byte budget exceeded` because
-every checkpoint object carries thousands of block descriptors.
+every checkpoint object carries thousands of block descriptors. Compaction now
+adapts its selection to that budget instead of stalling, see
+[compaction improvements](compaction-optimizations.md); the fragment rate
+without holding still far exceeds its capacity.

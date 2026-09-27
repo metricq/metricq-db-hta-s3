@@ -62,6 +62,20 @@ tests in `engine/compaction_optimization_test.go`.
   singletons, independent of shared-cache warmth. `TestFlushReusesPinnedIndexTails`
   asserts zero index reads across leaf splits, and correctness after compaction
   and restart.
+- Mixed checkpoint packs carry one descriptor per stream, so their catalog
+  inventories are large. Selection previously read the inventory of every block
+  in a candidate group to check its cooldown and failed the whole call with
+  `catalog metadata byte budget exceeded`; the next call repeated the same
+  selection, so compaction stalled permanently (observed after one hour of 1500
+  metrics without holding). Selection now checks the cooldown from the newest
+  block of a group backwards, because a stream's newer blocks live in newer
+  objects, usually one inventory read per group. Reaching the budget stops
+  selection and resumes at the same seed next time. Publication, which re-reads
+  every source inventory plus index and catalog paths, gets four times the
+  selection budget. Jobs are limited to 256 source objects; a publication that
+  still exceeds its budget halves this limit, and successful jobs raise it again
+  by a quarter. `TestCompactionProgressesWithLargeCatalogInventories` converges
+  with a 64 KiB budget that previously failed every call.
 - Reclamation publishes one manifest per batch of up to 256 deletions across up
   to 64 journal pages, instead of one per 16 deletions plus one per finished page.
   Finished pages are deleted by the next batch without a publication of their own,

@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"sync"
@@ -9,6 +10,11 @@ import (
 )
 
 const catalogFanout = 64
+
+// errCatalogBudget marks an operation that needs more catalog metadata than
+// its bound allows; compaction shrinks later jobs instead of failing forever.
+var errCatalogBudget = errors.New("catalog metadata byte budget exceeded")
+
 const catalogLeafTargetBytes = 256 << 10
 
 type BlockInfo struct {
@@ -55,7 +61,7 @@ func (w *catalogWriter) read(ref blob) (catalogNode, error) {
 		return n, fmt.Errorf("catalog page too large")
 	}
 	if w.e.catalogReadBudget > 0 && w.e.catalogReadBytes+ref.Length > w.e.catalogReadBudget {
-		return n, fmt.Errorf("catalog metadata byte budget exceeded")
+		return n, errCatalogBudget
 	}
 	w.e.catalogReadBytes += ref.Length
 	b, err := w.e.readBlob(w.ctx, ref)

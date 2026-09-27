@@ -2,8 +2,10 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"math"
 	"sort"
 	"strings"
@@ -14,6 +16,19 @@ import (
 	"github.com/metricq/metricq-db-hta-go/hta"
 	"github.com/metricq/metricq-db-hta-go/storage"
 )
+
+// compactionCatalogBudget bounds catalog metadata read by one selection;
+// publication, which re-reads every source object's inventory plus index and
+// catalog paths, gets four times as much. A variable for tests.
+var compactionCatalogBudget int64 = 32 << 20
+
+// compactionAbortGrace delays sweeping an aborted job's staging namespace, so
+// a worker still uploading cannot race the deletion.
+var compactionAbortGrace = time.Minute
+
+// maxCompactionObjects is the initial and largest number of source objects
+// per job; the limit halves after a publication exceeds the catalog budget.
+const maxCompactionObjects = 256
 
 type CompactionJob struct {
 	CleanupAfter int64
@@ -94,10 +109,15 @@ func (e *Engine) reserveCompaction(ctx context.Context) (CompactionJob, error) {
 		return CompactionJob{}, nil
 	}
 	generation := e.state.Generation
-	snapshot := &Engine{store: e.preparationStore(), options: e.options, metrics: e.metrics, state: cloneManifest(e.committed), sharedNodes: e.sharedNodes, nodeCache: make(map[blob]indexNode), nodeReadLimit: 4096, catalogReadBudget: 32 << 20}
+	snapshot := &Engine{store: e.preparationStore(), options: e.options, metrics: e.metrics, state: cloneManifest(e.committed), sharedNodes: e.sharedNodes, nodeCache: make(map[blob]indexNode), nodeReadLimit: 4096, catalogReadBudget: compactionCatalogBudget}
 	scanAfter := e.candidateCursor
 	seedObject, seedOffset := e.compactionSeedObject, e.compactionSeedOffset
 	evacuateObject := e.compactionEvacuateObject
+	// Publication reads every source object's inventory; bound their number.
+	objectLimit := e.compactionObjectLimit
+	if objectLimit <= 0 {
+		objectLimit = maxCompactionObjects
+	}
 	singletons := e.singletonTailRoots()
 	e.pin(generation)
 	e.mu.Unlock()
@@ -120,6 +140,7 @@ func (e *Engine) reserveCompaction(ctx context.Context) (CompactionJob, error) {
 	var selectErr error
 	seedLimited := false
 	seedLimit := max(64, min(options.MaxBlocks, 512))
+	objects := make(map[string]bool)
 	add := func(b BlockInfo) bool {
 		if selected[b.Entry.Blob] {
 			return true
@@ -129,13 +150,14 @@ func (e *Engine) reserveCompaction(ctx context.Context) (CompactionJob, error) {
 		}
 		inputs = append(inputs, b)
 		selected[b.Entry.Blob] = true
+		objects[b.Entry.Blob.Key] = true
 		copied += b.Entry.Blob.Length
 		return true
 	}
 	nextEvacuation := ""
 	if evacuateObject != "" {
 		o, ok, err := snapshot.catalogGet(ctx, snapshot.state.Catalog, evacuateObject)
-		if err != nil {
+		if err != nil && !errors.Is(err, errCatalogBudget) {
 			return CompactionJob{}, err
 		}
 		if ok && o.Modified <= cutoff && float64(o.Size-o.LiveBytes)/float64(o.Size) >= options.DeadFraction {
@@ -152,8 +174,27 @@ func (e *Engine) reserveCompaction(ctx context.Context) (CompactionJob, error) {
 	cursor := scanAfter
 	var err error
 	if len(inputs) == 0 {
+		// Stop at the catalog share (once something is selected) or the hard
+		// budget, and resume at the interrupted candidate/seed next time.
+		stopAt := func(candidateKey string, offset int) bool {
+			resumeCandidate = previousCandidate
+			resumeObject = candidateKey
+			resumeOffset = offset
+			seedLimited = len(inputs) == 0
+			return false
+		}
 		cursor, err = snapshot.catalogScan(ctx, snapshot.state.Candidates, scanAfter, 256, func(candidate ObjectInfo) bool {
+			firstSeed := 0
+			if candidate.Key == seedObject {
+				firstSeed = seedOffset
+			}
+			if len(inputs) > 0 && len(objects) >= objectLimit {
+				return stopAt(candidate.Key, firstSeed)
+			}
 			object, ok, err := snapshot.catalogGet(ctx, snapshot.state.Catalog, candidate.Target)
+			if errors.Is(err, errCatalogBudget) {
+				return stopAt(candidate.Key, firstSeed)
+			}
 			if err != nil {
 				selectErr = err
 				return false
@@ -213,14 +254,6 @@ func (e *Engine) reserveCompaction(ctx context.Context) (CompactionJob, error) {
 						if entry.Records <= 0 || entry.Records >= maxDataBlockRecords || records+entry.Records > maxDataBlockRecords {
 							break
 						}
-						o, ok, err := snapshot.catalogGet(ctx, snapshot.state.Catalog, entry.Blob.Key)
-						if err != nil {
-							selectErr = err
-							return false
-						}
-						if !ok || o.Modified > cutoff {
-							break
-						}
 						if entry.Blob.Length > options.MaxJobBytes-copied-bytes {
 							break
 						}
@@ -230,12 +263,47 @@ func (e *Engine) reserveCompaction(ctx context.Context) (CompactionJob, error) {
 							bytes += entry.Blob.Length
 						}
 					}
+					// Keep the job's source objects within the adaptive limit.
+					fresh := make(map[string]bool)
+					for i, b := range group {
+						if !objects[b.Entry.Blob.Key] {
+							fresh[b.Entry.Blob.Key] = true
+						}
+						if i >= 2 && len(objects)+len(fresh) > objectLimit {
+							group = group[:i]
+							break
+						}
+					}
+					// A stream's newer blocks live in newer objects, so the cooldown
+					// only needs checking from the end: usually one inventory read.
+					budgetHit := false
+					for len(group) > 1 {
+						last := group[len(group)-1].Entry.Blob.Key
+						o, ok, err := snapshot.catalogGet(ctx, snapshot.state.Catalog, last)
+						if errors.Is(err, errCatalogBudget) {
+							budgetHit = true
+							group = nil
+							break
+						}
+						if err != nil {
+							selectErr = err
+							return false
+						}
+						if ok && o.Modified <= cutoff {
+							break
+						}
+						group = group[:len(group)-1]
+					}
 					if len(group) > 1 {
 						for _, b := range group {
 							add(b)
 						}
 					}
-					searchLimited := len(tried) >= seedLimit || snapshot.nodeReads >= 2048
+					if budgetHit {
+						// Retry this seed with a fresh budget.
+						return stopAt(candidate.Key, seedIndex)
+					}
+					searchLimited := len(tried) >= seedLimit || snapshot.nodeReads >= 2048 || len(objects) >= objectLimit
 					if len(inputs) >= options.MaxBlocks || searchLimited {
 						seedLimited = len(inputs) < options.MaxBlocks && searchLimited
 						resumeCandidate = previousCandidate
@@ -934,7 +1002,7 @@ func (e *Engine) applyCompaction(ctx context.Context, job CompactionJob, replace
 			e.mu.Unlock()
 			return err
 		}
-		snapshot := &Engine{store: publication, options: e.options, metrics: e.metrics, state: cloneManifest(e.committed), committed: cloneManifest(e.committed), sharedNodes: e.sharedNodes, activeMaintenance: job.ID, nodeReadLimit: 4096, catalogReadBudget: 32 << 20}
+		snapshot := &Engine{store: publication, options: e.options, metrics: e.metrics, state: cloneManifest(e.committed), committed: cloneManifest(e.committed), sharedNodes: e.sharedNodes, activeMaintenance: job.ID, nodeReadLimit: 4096, catalogReadBudget: 4 * compactionCatalogBudget}
 		e.mu.Unlock()
 		next, err := snapshot.prepareCompaction(ctx, job, replacements, packs, nil)
 		if err != nil {
@@ -1006,7 +1074,7 @@ func (e *Engine) abortCompaction(ctx context.Context) error {
 			return manifest{}, errMaintenanceNoop
 		}
 		job.Stage = "aborted"
-		job.CleanupAfter = time.Now().Add(time.Minute).UnixNano()
+		job.CleanupAfter = time.Now().Add(compactionAbortGrace).UnixNano()
 		ref, err := snapshot.writeJob(ctx, job)
 		if err != nil {
 			return manifest{}, err
@@ -1119,12 +1187,33 @@ func (e *Engine) CompactOnce(ctx context.Context) error {
 	if err == nil {
 		err = e.applyCompaction(ctx, job, replacements, packs)
 	}
+	// Publication needed more catalog metadata than allowed: use fewer source
+	// objects next time. A job over two objects always fits, so this converges;
+	// successful jobs let the limit grow back slowly, since each failed attempt
+	// wastes a copied job.
+	e.mu.Lock()
+	limit := e.compactionObjectLimit
+	if limit <= 0 {
+		limit = maxCompactionObjects
+	}
+	budgetExceeded := errors.Is(err, errCatalogBudget)
+	if budgetExceeded {
+		e.compactionObjectLimit = max(limit/2, 2)
+		e.compactionScanMore = true
+	} else if err == nil {
+		e.compactionObjectLimit = min(limit+max(1, limit/4), maxCompactionObjects)
+	}
+	e.mu.Unlock()
 	if err != nil {
 		e.metrics.CompactionErrors.Inc()
 		if ctx.Err() == nil {
 			if abortErr := e.abortCompaction(ctx); abortErr != nil {
 				return fmt.Errorf("compaction: %v; abort: %w", err, abortErr)
 			}
+		}
+		if budgetExceeded && ctx.Err() == nil {
+			slog.Info("compaction job exceeded the catalog budget; retrying with fewer source objects", "objects", max(limit/2, 2))
+			return nil
 		}
 	}
 	return err

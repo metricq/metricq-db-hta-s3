@@ -21,7 +21,7 @@ writing new objects and conditionally replacing `manifest`.
 ## Blocks
 
 A **block** holds up to 1024 records of one stream in time order, encoded
-with `encoding/gob` and compressed with gzip, and is addressed by
+with a versioned binary codec and compressed with gzip, and is addressed by
 `(object key, offset, length, SHA-256)`. It is the unit of reading: one block
 is one byte range of one object, verified by its hash. Several blocks are
 concatenated into one object ("pack") so a checkpoint needs few PUTs.
@@ -33,6 +33,35 @@ blocks (`first` and `last` time, record count, block address); inner entries
 describe child pages. Index pages are themselves blocks in `index/` objects.
 Appending to a stream rewrites only its rightmost path; old roots stay valid,
 so concurrent readers keep a consistent view.
+
+## Data/index block codec
+
+New data and index ranges begin with a six-byte envelope: ASCII `MQHB`, version
+byte `1`, and kind byte (`1` data, `2` index). An independent gzip BestSpeed
+stream follows. The range SHA-256 covers the envelope and compressed stream.
+Unknown versions/kinds, wrong destination types, truncation, invalid counts,
+invalid key IDs, gzip CRC errors and trailing payload bytes fail decoding.
+Legacy gzip/Gob data and index ranges remain readable; appending or compacting
+writes the new format. Mixed histories need no eager conversion.
+
+All fixed fields use little-endian order. Data payloads start with a `uint32`
+record count, bounded to 1024. Each 80-byte record contains, in order: Time,
+Level, Repeat, Value, Minimum, Maximum, Sum, Count, Integral, ActiveTime. Integer
+fields retain their full 64-bit representation; floating fields retain IEEE-754
+bits exactly, including signed zero. The decoder reads bounded chunks directly
+into records and validates the complete gzip stream before returning them.
+
+Index payloads contain a one-byte leaf flag, `uint16` entry count and `uint16`
+key count, each bounded by fan-out 64. Each dictionary key has a `uint16` byte
+length followed by its original bytes. Keys are shared within a page. Each
+70-byte entry contains First and Last (`int64`), key ID (`uint16`), Offset and
+Length (`int64`), SHA-256 (32 bytes), and Records (`uint32`). Keys are bounded to
+65535 bytes, and total decompressed size is bounded before allocation grows.
+Existing index ordering/reference validation remains in its callers.
+
+Metadata, checkpoint state, held deltas, compaction jobs and WAL batches retain
+their existing gzip/Gob representation. Manifest CAS publication and WAL fsync
+before acknowledgement are unchanged by the block codec.
 
 ## Paged metadata
 

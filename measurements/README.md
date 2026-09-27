@@ -30,3 +30,4 @@ output paths point into this directory.
 | [metadata-split.md](metadata-split.md) | Independent held metadata, hourly write costs and recovery tradeoffs |
 | [compaction-throughput.md](compaction-throughput.md) | Shared metadata caches, paged inventories and measured compaction throughput |
 | [inventory-upload-pipeline.md](inventory-upload-pipeline.md) | Bounded parallel inventory PUTs, publication barrier and fresh S3 comparison |
+| [binary-block-codec.md](binary-block-codec.md) | Versioned binary data/index codecs, CPU/allocation benchmarks and S3 compaction comparison |

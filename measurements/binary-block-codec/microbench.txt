@@ -1,0 +1,42 @@
+goos: linux
+goarch: amd64
+pkg: github.com/metricq/metricq-db-hta-s3/engine
+cpu: AMD Ryzen 7 PRO 4750U with Radeon Graphics
+BenchmarkBlockCodec/raw1024/gob/encode-16         	     279	   1214399 ns/op	     14011 wire_bytes	  147317 B/op	      41 allocs/op
+BenchmarkBlockCodec/raw1024/gob/encode-16         	     409	   1003805 ns/op	     14011 wire_bytes	  153182 B/op	      41 allocs/op
+BenchmarkBlockCodec/raw1024/gob/encode-16         	     175	   1219326 ns/op	     14011 wire_bytes	  154216 B/op	      41 allocs/op
+BenchmarkBlockCodec/raw1024/gob/decode-16         	     384	    719899 ns/op	     14011 wire_bytes	  161672 B/op	     236 allocs/op
+BenchmarkBlockCodec/raw1024/gob/decode-16         	     316	    730291 ns/op	     14011 wire_bytes	  161689 B/op	     236 allocs/op
+BenchmarkBlockCodec/raw1024/gob/decode-16         	     418	    657281 ns/op	     14011 wire_bytes	  161672 B/op	     236 allocs/op
+BenchmarkBlockCodec/raw1024/binary/encode-16      	     225	   1048314 ns/op	     14346 wire_bytes	  128224 B/op	      10 allocs/op
+BenchmarkBlockCodec/raw1024/binary/encode-16      	     225	    994527 ns/op	     14346 wire_bytes	  128224 B/op	      10 allocs/op
+BenchmarkBlockCodec/raw1024/binary/encode-16      	     241	    996124 ns/op	     14346 wire_bytes	  132888 B/op	      10 allocs/op
+BenchmarkBlockCodec/raw1024/binary/decode-16      	     596	    504716 ns/op	     14346 wire_bytes	  125016 B/op	      27 allocs/op
+BenchmarkBlockCodec/raw1024/binary/decode-16      	     402	    572743 ns/op	     14346 wire_bytes	  125016 B/op	      27 allocs/op
+BenchmarkBlockCodec/raw1024/binary/decode-16      	     390	    562794 ns/op	     14346 wire_bytes	  125016 B/op	      27 allocs/op
+BenchmarkBlockCodec/aggregate1024/gob/encode-16   	      97	   2644509 ns/op	     32020 wire_bytes	  352277 B/op	      45 allocs/op
+BenchmarkBlockCodec/aggregate1024/gob/encode-16   	      97	   2659840 ns/op	     32020 wire_bytes	  364771 B/op	      45 allocs/op
+BenchmarkBlockCodec/aggregate1024/gob/encode-16   	      85	   2443206 ns/op	     32020 wire_bytes	  352303 B/op	      45 allocs/op
+BenchmarkBlockCodec/aggregate1024/gob/decode-16   	     141	   1531922 ns/op	     32020 wire_bytes	  211074 B/op	     244 allocs/op
+BenchmarkBlockCodec/aggregate1024/gob/decode-16   	     144	   1748688 ns/op	     32020 wire_bytes	  211072 B/op	     244 allocs/op
+BenchmarkBlockCodec/aggregate1024/gob/decode-16   	     142	   1800075 ns/op	     32020 wire_bytes	  211074 B/op	     244 allocs/op
+BenchmarkBlockCodec/aggregate1024/binary/encode-16         	     158	   1470667 ns/op	     30728 wire_bytes	  170944 B/op	      11 allocs/op
+BenchmarkBlockCodec/aggregate1024/binary/encode-16         	     160	   1498686 ns/op	     30728 wire_bytes	  155662 B/op	      11 allocs/op
+BenchmarkBlockCodec/aggregate1024/binary/encode-16         	     136	   1560019 ns/op	     30728 wire_bytes	  164550 B/op	      11 allocs/op
+BenchmarkBlockCodec/aggregate1024/binary/decode-16         	     266	   1085346 ns/op	     30728 wire_bytes	  124976 B/op	      19 allocs/op
+BenchmarkBlockCodec/aggregate1024/binary/decode-16         	     248	    969834 ns/op	     30728 wire_bytes	  124977 B/op	      19 allocs/op
+BenchmarkBlockCodec/aggregate1024/binary/decode-16         	     298	    993109 ns/op	     30728 wire_bytes	  124977 B/op	      19 allocs/op
+BenchmarkBlockCodec/index64/gob/encode-16                  	     510	    432324 ns/op	      3651 wire_bytes	   34196 B/op	      37 allocs/op
+BenchmarkBlockCodec/index64/gob/encode-16                  	     534	    407370 ns/op	      3651 wire_bytes	   34199 B/op	      37 allocs/op
+BenchmarkBlockCodec/index64/gob/encode-16                  	     535	    388252 ns/op	      3651 wire_bytes	   36455 B/op	      37 allocs/op
+BenchmarkBlockCodec/index64/gob/decode-16                  	     702	    350031 ns/op	      3651 wire_bytes	   73856 B/op	     382 allocs/op
+BenchmarkBlockCodec/index64/gob/decode-16                  	     654	    318776 ns/op	      3651 wire_bytes	   73856 B/op	     382 allocs/op
+BenchmarkBlockCodec/index64/gob/decode-16                  	     858	    282622 ns/op	      3651 wire_bytes	   73856 B/op	     382 allocs/op
+BenchmarkBlockCodec/index64/binary/encode-16               	     951	    238055 ns/op	      3052 wire_bytes	   20120 B/op	      12 allocs/op
+BenchmarkBlockCodec/index64/binary/encode-16               	     860	    237870 ns/op	      3052 wire_bytes	   21792 B/op	      12 allocs/op
+BenchmarkBlockCodec/index64/binary/encode-16               	    2709	    219580 ns/op	      3052 wire_bytes	   18916 B/op	      12 allocs/op
+BenchmarkBlockCodec/index64/binary/decode-16               	    1755	    116396 ns/op	      3052 wire_bytes	   65448 B/op	      30 allocs/op
+BenchmarkBlockCodec/index64/binary/decode-16               	    2222	    112268 ns/op	      3052 wire_bytes	   65448 B/op	      30 allocs/op
+BenchmarkBlockCodec/index64/binary/decode-16               	    2028	    117962 ns/op	      3052 wire_bytes	   65448 B/op	      30 allocs/op
+PASS
+ok  	github.com/metricq/metricq-db-hta-s3/engine	12.856s

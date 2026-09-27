@@ -1,0 +1,13 @@
+case,ns_per_op,wire_bytes,allocated_bytes_per_op,allocations_per_op
+raw1024/gob/encode,1214399,14011,153182,41
+raw1024/gob/decode,719899,14011,161672,236
+raw1024/binary/encode,996124,14346,128224,10
+raw1024/binary/decode,562794,14346,125016,27
+aggregate1024/gob/encode,2644509,32020,352303,45
+aggregate1024/gob/decode,1748688,32020,211074,244
+aggregate1024/binary/encode,1498686,30728,164550,11
+aggregate1024/binary/decode,993109,30728,124977,19
+index64/gob/encode,407370,3651,34199,37
+index64/gob/decode,318776,3651,73856,382
+index64/binary/encode,237870,3052,20120,12
+index64/binary/decode,116396,3052,65448,30

@@ -15,7 +15,7 @@ func TestManifestPagesKeepMaintenanceSmallAndRecover(t *testing.T) {
 	ctx := context.Background()
 	s := &rangeGCStore{gcStore: &gcStore{memoryStore: newStore()}}
 	opts := maintenanceOptions(t.TempDir(), true)
-	opts.HoldSeconds = 3600
+	opts.HoldMaxAgeSeconds = 3600
 	configs := make(map[string]hta.Config)
 	for i := 0; i < 1500; i++ {
 		configs[fmt.Sprintf("canonical.%04d", i)] = hta.Config{IntervalMin: 100, IntervalMax: 10000, IntervalFactor: 10}
@@ -101,7 +101,7 @@ func TestMetadataFailureRetainsAcknowledgedWAL(t *testing.T) {
 			ctx := context.Background()
 			s := &prefixFailureStore{gcStore: &gcStore{memoryStore: newStore()}}
 			opts := maintenanceOptions(t.TempDir(), true)
-			opts.HoldSeconds = 3600
+			opts.HoldMaxAgeSeconds = 3600
 			e, err := Open(ctx, s, opts, testConfig, nil)
 			if err != nil {
 				t.Fatal(err)
@@ -188,8 +188,8 @@ func TestBackgroundHoldDeadlinesAreBatchedWithoutDelayingPressure(t *testing.T) 
 	ctx := context.Background()
 	s := &gcStore{memoryStore: newStore()}
 	opts := maintenanceOptions(t.TempDir(), true)
-	opts.HoldSeconds = 60
-	opts.HoldExpiryBatchSeconds = 30
+	opts.HoldMaxAgeSeconds = 60
+	opts.HoldExpiryIntervalSeconds = 30
 	e, err := Open(ctx, s, opts, testConfig, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -205,12 +205,12 @@ func TestBackgroundHoldDeadlinesAreBatchedWithoutDelayingPressure(t *testing.T) 
 	if !e.NeedsFlush() || e.needsScheduledFlush() {
 		t.Fatal("age-only deadline not batched")
 	}
-	e.options.ObjectTarget = 1
+	e.options.CheckpointUnsavedBytes = 1
 	ingest(t, e, hta.Point{Time: 200, Value: 2})
 	if !e.needsScheduledFlush() {
 		t.Fatal("pressure was delayed")
 	}
-	e.options.ObjectTarget = 1 << 20
+	e.options.CheckpointUnsavedBytes = 1 << 20
 	now = time.Unix(91, 0)
 	if !e.needsScheduledFlush() {
 		t.Fatal("batch deadline not honoured")
@@ -226,7 +226,7 @@ func TestMetadataGCProtectsSharedPages(t *testing.T) {
 	ctx := context.Background()
 	s := &rangeGCStore{gcStore: &gcStore{memoryStore: newStore()}}
 	opts := maintenanceOptions(t.TempDir(), true)
-	opts.Compaction.DisableLocality = true
+	opts.CompactionOptions.LocalityDisabled = true
 	configs := map[string]hta.Config{"a": {IntervalMin: 100, IntervalMax: 10000}, "b": {IntervalMin: 100, IntervalMax: 10000}}
 	if metadataShard("a") == metadataShard("b") {
 		t.Fatal("fixture shares a shard")

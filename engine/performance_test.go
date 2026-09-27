@@ -12,7 +12,7 @@ import (
 func benchmarkEngine(b *testing.B) (*Engine, *memoryStore) {
 	b.Helper()
 	s := newStore()
-	e, err := Open(context.Background(), s, Options{WALDirectory: b.TempDir(), ObjectTarget: 128 << 20, BuilderHard: 256 << 20, WALTarget: 256 << 20, WALHigh: 512 << 20, WALHard: 768 << 20}, map[string]hta.Config{"x": {IntervalMin: 500000000, IntervalMax: 10000000000000000, IntervalFactor: 10}}, nil)
+	e, err := Open(context.Background(), s, Options{WALDirectory: b.TempDir(), CheckpointUnsavedBytes: 128 << 20, IngestMemoryLimitBytes: 256 << 20, WALTarget: 256 << 20, WALHigh: 512 << 20, WALHard: 768 << 20}, map[string]hta.Config{"x": {IntervalMin: 500000000, IntervalMax: 10000000000000000, IntervalFactor: 10}}, nil)
 	if err != nil {
 		b.Fatal(err)
 	}

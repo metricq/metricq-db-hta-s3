@@ -29,7 +29,7 @@ func (s *gcStore) List(_ context.Context, prefix, token string, limit int32) ([]
 	return keys, "", nil
 }
 func maintenanceOptions(dir string, merge bool) Options {
-	return Options{WALDirectory: dir, ObjectTarget: 1 << 20, BuilderHard: 32 << 20, BackgroundMaintenance: true, Compaction: CompactionOptions{Enabled: true, DeadFraction: .05, MaxJobBytes: 4 << 20, MaxBlocks: 128, ObjectBytes: 64 << 10, BytesPerSecond: 1 << 30, MergeSmallBlocks: merge}}
+	return Options{WALDirectory: dir, CheckpointUnsavedBytes: 1 << 20, IngestMemoryLimitBytes: 32 << 20, MaintenanceEnabled: true, CompactionOptions: CompactionOptions{Enabled: true, ReclaimDeadFraction: .05, JobMaxBytes: 4 << 20, JobMaxBlocks: 128, OutputObjectBytes: 64 << 10, IOBytesPerSecond: 1 << 30, MergeEnabled: merge}}
 }
 func maintenanceEngine(t *testing.T, s *gcStore, dir string, merge bool) *Engine {
 	t.Helper()
@@ -392,7 +392,7 @@ func TestMaintenanceGoroutineCompactsAndStops(t *testing.T) {
 	s := &gcStore{memoryStore: newStore()}
 	e := maintenanceEngine(t, s, t.TempDir(), false)
 	fillCompaction(t, e, 4)
-	e.options.Compaction.IntervalSeconds = 1
+	e.options.CompactionOptions.CycleIntervalSeconds = 1
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan struct{})

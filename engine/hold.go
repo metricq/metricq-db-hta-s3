@@ -54,7 +54,7 @@ type holdPlan struct {
 	obsolete   []string
 }
 
-func (e *Engine) holding() bool { return e.options.HoldSeconds > 0 }
+func (e *Engine) holding() bool { return e.options.HoldMaxAgeSeconds > 0 }
 
 func (e *Engine) clock() time.Time {
 	if e.now != nil {
@@ -91,7 +91,7 @@ func (e *Engine) holdDue() bool {
 	if !e.holding() {
 		return false
 	}
-	limit := e.clock().Add(-time.Duration(e.options.HoldSeconds) * time.Second)
+	limit := e.clock().Add(-time.Duration(e.options.HoldMaxAgeSeconds) * time.Second)
 	for metric, levels := range e.pending.streams {
 		for level, records := range levels {
 			if h := e.held[streamKey(metric, level)]; len(records) > 0 && h != nil && h.since.Before(limit) {
@@ -104,7 +104,7 @@ func (e *Engine) holdDue() bool {
 
 // holdPressure reports held records above their memory budget. Caller holds mu.
 func (e *Engine) holdPressure() bool {
-	return e.holding() && e.pendingBytes > e.options.HoldBytes
+	return e.holding() && e.pendingBytes > e.options.HoldMemoryBytes
 }
 
 // unsavedBytes counts records neither written nor persisted in a delta.
@@ -150,7 +150,7 @@ func (e *Engine) planHold(deltaKey string) holdPlan {
 		}
 		return plan
 	}
-	limit := e.clock().Add(-time.Duration(e.options.HoldSeconds) * time.Second)
+	limit := e.clock().Add(-time.Duration(e.options.HoldMaxAgeSeconds) * time.Second)
 	// Above the hold budget, write the largest streams completely until the
 	// held remainder drops to half of it.
 	remaining := e.pendingBytes
@@ -158,7 +158,7 @@ func (e *Engine) planHold(deltaKey string) holdPlan {
 	for _, s := range streams {
 		h := e.heldStream(s.metric, s.level)
 		k := s.n - s.n%maxDataBlockRecords
-		if h.since.Before(limit) || (pressure && remaining > e.options.HoldBytes/2) {
+		if h.since.Before(limit) || (pressure && remaining > e.options.HoldMemoryBytes/2) {
 			k = s.n
 		}
 		remaining -= int64(k) * pendingRecordBytes
@@ -325,13 +325,13 @@ func (e *Engine) updateHoldMetrics() {
 func (e *Engine) needsScheduledFlush() bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if e.wal.size >= e.options.WALTarget || e.unsavedBytes() >= e.options.ObjectTarget || e.holdPressure() {
+	if e.wal.size >= e.options.WALTarget || e.unsavedBytes() >= e.options.CheckpointUnsavedBytes || e.holdPressure() {
 		return true
 	}
 	if !e.holding() {
 		return false
 	}
-	period := time.Duration(e.options.HoldExpiryBatchSeconds) * time.Second
+	period := time.Duration(e.options.HoldExpiryIntervalSeconds) * time.Second
 	now := e.clock()
 	for metric, levels := range e.pending.streams {
 		for level, records := range levels {
@@ -339,7 +339,7 @@ func (e *Engine) needsScheduledFlush() bool {
 			if len(records) == 0 || h == nil {
 				continue
 			}
-			due := h.since.Add(time.Duration(e.options.HoldSeconds) * time.Second)
+			due := h.since.Add(time.Duration(e.options.HoldMaxAgeSeconds) * time.Second)
 			rounded := due.Truncate(period)
 			if rounded.Before(due) {
 				rounded = rounded.Add(period)

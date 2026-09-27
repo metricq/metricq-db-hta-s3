@@ -29,7 +29,7 @@ and 16 MiB) and hands them to the engine as one batch. `IngestBatch`:
 1. decodes each chunk and runs the HTA aggregation on a copy of the metric's
    state (several deliveries of one metric chain their states);
 2. encodes one WAL frame per delivery with its own sequence number;
-3. checks WAL and builder limits cumulatively — if they are exceeded it stops
+3. checks WAL and ingest memory limits cumulatively — if they are exceeded it stops
    and returns the number of deliveries processed;
 4. writes all frames with one write and one fsync;
 5. only then publishes the new HTA states and records.
@@ -55,9 +55,9 @@ A checkpoint (`Flush`) runs when one of these is reached:
 | Trigger (`reason` label) | Condition |
 | --- | --- |
 | `wal` | active WAL segment ≥ `wal_target_bytes` |
-| `object_target` | records only in the WAL ≥ `object_target_bytes` (estimated) |
-| `hold_budget` | held records > `hold_bytes` |
-| `hold_age` | a stream's oldest held record is older than `hold_seconds` (checked every `hold_expiry_batch_seconds`) |
+| `object_target` | records only in the WAL ≥ `checkpoint_unsaved_bytes` (estimated) |
+| `hold_budget` | held records > `hold_memory_bytes` |
+| `hold_age` | a stream's oldest held record is older than `hold_max_age_seconds` (checked every `hold_expiry_interval_seconds`) |
 | `explicit` | backpressure during ingest, or shutdown |
 
 Steps:
@@ -80,12 +80,12 @@ the WAL segment stays for the next attempt.
 
 Writing every stream at every checkpoint creates tiny blocks for low-rate
 metrics and rewrites the index of every stream each time. With
-`hold_seconds > 0` (the default of the executable, one hour) a checkpoint
+`hold_max_age_seconds > 0` (the default of the executable, one hour) a checkpoint
 writes a stream only
 
 - in complete 1024-record blocks,
-- completely, once its oldest held record is older than `hold_seconds`,
-- completely, largest streams first, while held records exceed `hold_bytes`.
+- completely, once its oldest held record is older than `hold_max_age_seconds`,
+- completely, largest streams first, while held records exceed `hold_memory_bytes`.
 
 The remaining records stay in memory — queries read them there — and are
 persisted as one `held/` delta per checkpoint, containing only records not
@@ -101,7 +101,7 @@ to about 3 per second and object store writes from 4.3 GB to 0.46 GB per hour
 ## Append-only aggregates
 
 Checkpoints append new blocks and never rewrite the last partial block of a
-stream (`append_only_aggregates`, default on in the executable). Partial
+stream (`checkpoint_append_only_aggregates`, default on in the executable). Partial
 blocks are merged later by compaction. With compaction disabled the engine
 falls back to reading and extending the last aggregate block at each
 checkpoint.

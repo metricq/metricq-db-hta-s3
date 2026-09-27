@@ -230,7 +230,7 @@ func (s *countedRangeStore) GetRange(ctx context.Context, key string, offset, le
 func TestLargeCheckpointUsesSmallDataRanges(t *testing.T) {
 	const points = 70 * maxDataBlockRecords
 	s := &countedRangeStore{memoryStore: newStore()}
-	e, err := Open(context.Background(), s, Options{WALDirectory: t.TempDir(), BuilderHard: 64 << 20}, testConfig, nil)
+	e, err := Open(context.Background(), s, Options{WALDirectory: t.TempDir(), IngestMemoryLimitBytes: 64 << 20}, testConfig, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -274,7 +274,7 @@ func TestLargeCheckpointUsesSmallDataRanges(t *testing.T) {
 func TestSharedDataBlockCacheAvoidsRepeatFetches(t *testing.T) {
 	const points = 3 * maxDataBlockRecords
 	s := &countedRangeStore{memoryStore: newStore()}
-	e, err := Open(context.Background(), s, Options{WALDirectory: t.TempDir(), BuilderHard: 64 << 20}, testConfig, nil)
+	e, err := Open(context.Background(), s, Options{WALDirectory: t.TempDir(), IngestMemoryLimitBytes: 64 << 20}, testConfig, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

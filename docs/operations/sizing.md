@@ -58,21 +58,21 @@ size reflects the time since the last checkpoint and S3 outages.
 
 | Consumer | Bound |
 | --- | --- |
-| Held and pending records | `builder_hard_bytes` (estimated at 96 bytes per record); held records alone `hold_bytes` |
+| Held and pending records | `ingest_memory_limit_bytes` (estimated at 96 bytes per record); held records alone `hold_memory_bytes` |
 | Decoded data block cache | 128 MiB |
 | Index page cache | 8192 pages (tens of MB) |
 | Pinned index paths for checkpoints | 2¹⁹ entries (≈ 45 MB) |
 | Per query | up to 256 MiB decoded records; up to 8 history workers in parallel |
 | Checkpoint encoding | about the size of the checkpoint's data pack |
-| Compaction | `compaction.max_job_bytes` of input plus catalog pages (32 MiB read budget) |
+| Compaction | `compaction_job_max_bytes` of input plus catalog pages (32 MiB read budget) |
 
 Held records: a stream holds at most 1023 records plus what it receives within
-`hold_seconds`. For 1500 mixed-rate metrics (about 1930 samples/s) the held set
-was about 1.3 million records, 130 MB estimated. Set `hold_bytes` above the
+`hold_max_age_seconds`. For 1500 mixed-rate metrics (about 1930 samples/s) the held set
+was about 1.3 million records, 130 MB estimated. Set `hold_memory_bytes` above the
 expected held set, otherwise streams are written early as small blocks.
 
-A reasonable starting point for 1500 metrics at 1 Hz: `hold_bytes` 512 MiB,
-`builder_hard_bytes` 768 MiB, and 2 GiB of memory for the process.
+A reasonable starting point for 1500 metrics at 1 Hz: `hold_memory_bytes` 512 MiB,
+`ingest_memory_limit_bytes` 768 MiB, and 2 GiB of memory for the process.
 
 ## Throughput reference
 
@@ -84,6 +84,6 @@ A reasonable starting point for 1500 metrics at 1 Hz: `hold_bytes` 512 MiB,
 | Compaction | ≈ 100–250 source blocks/s, bounded by catalog metadata |
 | Cold `FLEX_TIMELINE`, compacted layout | 1 data range GET, ≈ 5 ms on local S3 |
 
-With holding, a stream needs merging at most about once per `hold_seconds`, so
-the compaction load is roughly *streams / hold_seconds* blocks per second
+With holding, a stream needs merging at most about once per `hold_max_age_seconds`, so
+the compaction load is roughly *streams / hold_max_age_seconds* blocks per second
 (≈ 3/s for 12 000 streams and one hour).

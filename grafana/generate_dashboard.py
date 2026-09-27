@@ -90,7 +90,7 @@ panel("Metrics", [(f"metricq_db_series{T}", "")], kind="stat", w=4, h=4,
 panel("Samples/s", [(f"sum(rate(metricq_db_samples_total{T}[$__rate_interval]))", "")], "short", kind="stat", w=4, h=4)
 panel("Backpressure", [(f"max(metricq_db_backpressure{T})", "")], kind="stat", w=4, h=4,
       thresholds=[{"color": GREEN, "value": None}, {"color": RED, "value": 1}],
-      description="1 while the WAL high watermark or builder limit refuses deliveries. See Operations → Tuning.")
+      description="1 while the WAL high watermark or ingest memory limit refuses deliveries. See Operations → Tuning.")
 panel("Last checkpoint", [(f"time() - (max(metricq_db_last_commit_timestamp_seconds{T}) > 0)", "")], "s", kind="stat", w=4, h=4,
       thresholds=[{"color": GREEN, "value": None}, {"color": AMBER, "value": 600}, {"color": RED, "value": 3600}],
       description="Seconds since the last published checkpoint (manifest).")
@@ -105,7 +105,7 @@ panel("Samples", [(f"sum(rate(metricq_db_samples_total{T}[$__rate_interval]))", 
 panel("Deliveries per fsync", [
     (f"histogram_quantile(0.5, sum by (le) (rate(metricq_db_ingest_batch_deliveries_bucket{T}[$__rate_interval])))", "p50"),
     (f"histogram_quantile(0.95, sum by (le) (rate(metricq_db_ingest_batch_deliveries_bucket{T}[$__rate_interval])))", "p95"),
-    (cfg("prefetch"), "prefetch")], "short",
+    (cfg("ingest_prefetch"), "ingest_prefetch")], "short",
     description="Group commit: AMQP deliveries made durable by one WAL fsync. Bounded by prefetch.")
 panel("WAL fsync latency", [
     (f"histogram_quantile(0.5, sum by (le) (rate(metricq_db_wal_sync_seconds_bucket{T}[$__rate_interval])))", "p50"),
@@ -117,7 +117,7 @@ panel("WAL segments and pending frames", [(f"max(metricq_db_wal_segments{T})", "
                                           (f"max(metricq_db_wal_pending_frames{T})", "frames")], "short",
       description="More than a few segments means checkpoints fail or cannot keep up.")
 panel("Backpressure events", [(f"sum(rate(metricq_db_backpressure_events_total{T}[$__rate_interval]))", "refused")], "short",
-      description="Ingest attempts refused by WAL high watermark or builder limit; each triggers an inline checkpoint.")
+      description="Ingest attempts refused by WAL high watermark or ingest memory limit; each triggers an inline checkpoint.")
 
 newrow("Checkpoints")
 panel("Checkpoints by trigger", [(f"sum by (reason) (rate(metricq_db_checkpoints_total{T}[$__rate_interval]))", "{{reason}}")],
@@ -129,16 +129,16 @@ panel("Checkpoint duration", [
 panel("Blocks written", [(f"sum by (size) (rate(metricq_db_checkpoint_blocks_total{T}[$__rate_interval]))", "{{size}}")],
       "short", stack=True,
       description="Partial blocks (below 1024 records) become compaction work. Holding keeps this low.")
-panel("Unsaved bytes", [(f"max(metricq_db_unsaved_bytes{T})", "unsaved"), (cfg("object_target_bytes"), "object target")], "bytes",
+panel("Unsaved bytes", [(f"max(metricq_db_unsaved_bytes{T})", "unsaved"), (cfg("checkpoint_unsaved_bytes"), "object target")], "bytes",
       description="Records only in the WAL. A checkpoint starts at the object target.")
 panel("Checkpoint errors", [(f"sum(rate(metricq_db_commit_errors_total{T}[$__rate_interval]))", "errors")], "short")
 panel("Records written", [(f"sum(rate(metricq_db_checkpoint_records_total{T}[$__rate_interval]))", "records")], "short")
 
 newrow("Holding")
-panel("Held memory", [(f"max(metricq_db_builder_bytes{T})", "held and pending"), (cfg("hold_bytes"), "hold budget"),
-                      (cfg("builder_hard_bytes"), "builder limit")], "bytes",
+panel("Held memory", [(f"max(metricq_db_builder_bytes{T})", "held and pending"), (cfg("hold_memory_bytes"), "hold budget"),
+                      (cfg("ingest_memory_limit_bytes"), "ingest memory limit")], "bytes",
       description="Above the hold budget the largest streams are written early (partial blocks).")
-panel("Oldest held stream", [(f"max(metricq_db_held_oldest_age_seconds{T})", "age"), (cfg("hold_seconds"), "hold limit")], "s")
+panel("Oldest held stream", [(f"max(metricq_db_held_oldest_age_seconds{T})", "age"), (cfg("hold_max_age_seconds"), "hold limit")], "s")
 panel("Held streams and records", [(f"max(metricq_db_held_streams{T})", "streams"),
                                    (f"max(metricq_db_pending_records{T})", "records"),
                                    (f"max(metricq_db_held_covered_records{T})", "in deltas")], "short")
@@ -162,7 +162,7 @@ panel("Manifest size", [(f"max(metricq_db_manifest_bytes{T})", "manifest")], "by
 newrow("Storage and fragmentation")
 panel("Stored bytes", [(f"max(metricq_db_live_object_bytes{T})", "live"), (f"max(metricq_db_dead_object_bytes{T})", "dead")],
       "bytes", stack=True,
-      description="Dead bytes are unreferenced parts of partly live objects; compaction reclaims them above dead_fraction.")
+      description="Dead bytes are unreferenced parts of partly live objects; compaction reclaims them above compaction_reclaim_dead_fraction.")
 panel("Objects", [(f"max(metricq_db_live_objects{T})", "live objects"), (f"max(metricq_db_gc_pending_objects{T})", "awaiting deletion")], "short")
 panel("Fragmentation", [(f"max(metricq_db_small_data_blocks{T})", "blocks below 1024 records"),
                         (f"max(metricq_db_compaction_candidate_objects{T})", "candidate objects")], "short",
@@ -180,11 +180,11 @@ panel("Blocks in and out", [(f"sum(rate(metricq_db_compaction_input_blocks_total
       description="Input minus output is the rate at which fragments are merged away.")
 panel("Throughput", [(f"sum(rate(metricq_db_compaction_read_bytes_total{T}[$__rate_interval]))", "read"),
                      (f"sum(rate(metricq_db_compaction_write_bytes_total{T}[$__rate_interval]))", "write"),
-                     (cfg("compaction_bytes_per_second"), "rate limit")], "Bps")
+                     (cfg("compaction_io_bytes_per_second"), "rate limit")], "Bps")
 panel("Job duration", [
     (f"histogram_quantile(0.5, sum by (le) (rate(metricq_db_compaction_seconds_bucket{T}[$__rate_interval])))", "p50"),
     (f"histogram_quantile(0.95, sum by (le) (rate(metricq_db_compaction_seconds_bucket{T}[$__rate_interval])))", "p95"),
-    (cfg("compaction_max_duration_seconds"), "timeout")], "s")
+    (cfg("compaction_job_timeout_seconds"), "timeout")], "s")
 panel("Active and source-object limit", [(f"max(metricq_db_compaction_active{T})", "active"),
                                          (f"max(metricq_db_compaction_object_limit{T})", "object limit")], "short")
 panel("Level locality", [(f"sum(rate(metricq_db_compaction_locality_jobs_total{T}[$__rate_interval]))", "locality jobs/s"),

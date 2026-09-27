@@ -31,8 +31,8 @@ func buildHistory(t *testing.T, flushEveryCalls, totalPoints, pointsPerCall int)
 	t.Helper()
 	s := &countedRangeStore{memoryStore: newStore()}
 	e, err := Open(context.Background(), s, Options{
-		WALDirectory: t.TempDir(),
-		ObjectTarget: 256 << 20, BuilderHard: 512 << 20,
+		WALDirectory:           t.TempDir(),
+		CheckpointUnsavedBytes: 256 << 20, IngestMemoryLimitBytes: 512 << 20,
 		WALTarget: 256 << 20, WALHigh: 512 << 20, WALHard: 768 << 20,
 	}, profileConfig(), nil)
 	if err != nil {
@@ -93,8 +93,8 @@ func BenchmarkFlushMany(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		s := newStore()
 		e, err := Open(context.Background(), s, Options{
-			WALDirectory: b.TempDir(),
-			ObjectTarget: 256 << 20, BuilderHard: 512 << 20,
+			WALDirectory:           b.TempDir(),
+			CheckpointUnsavedBytes: 256 << 20, IngestMemoryLimitBytes: 512 << 20,
 			WALTarget: 256 << 20, WALHigh: 512 << 20, WALHard: 768 << 20,
 		}, cfg, nil)
 		if err != nil {

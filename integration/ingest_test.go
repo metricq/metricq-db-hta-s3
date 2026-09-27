@@ -107,7 +107,7 @@ func ingestRun(t *testing.T, ctx context.Context, mode string, prefetch, metricC
 	}
 	seed(t, "config", token, map[string]any{"metrics": configs})
 	registry := prometheus.NewRegistry()
-	e, err := engine.Open(ctx, backend, engine.Options{WALDirectory: walDir, ObjectTarget: objectTarget, BuilderHard: max(64<<20, objectTarget*2), WALTarget: walTarget, WALHigh: walTarget * 2, WALHard: walTarget * 3}, configs, engine.NewMetrics(registry))
+	e, err := engine.Open(ctx, backend, engine.Options{WALDirectory: walDir, CheckpointUnsavedBytes: objectTarget, IngestMemoryLimitBytes: max(64<<20, objectTarget*2), WALTarget: walTarget, WALHigh: walTarget * 2, WALHard: walTarget * 3}, configs, engine.NewMetrics(registry))
 	if err != nil {
 		t.Fatal(err)
 	}

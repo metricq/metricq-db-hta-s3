@@ -15,7 +15,7 @@ func TestMetricsCoverOperationalState(t *testing.T) {
 	ctx := context.Background()
 	registry := prometheus.NewRegistry()
 	options := maintenanceOptions(t.TempDir(), true)
-	options.HoldSeconds = 3600
+	options.HoldMaxAgeSeconds = 3600
 	e, err := Open(ctx, &gcStore{memoryStore: newStore()}, options, batchConfig, NewMetrics(prometheus.WrapRegistererWith(prometheus.Labels{"token": "db-test"}, registry)))
 	if err != nil {
 		t.Fatal(err)
@@ -52,7 +52,7 @@ func TestMetricsCoverOperationalState(t *testing.T) {
 		}
 	}
 	for name, want := range map[string][]string{
-		"metricq_db_config":                  {"token=db-test", "parameter=hold_seconds"},
+		"metricq_db_config":                  {"token=db-test", "parameter=hold_max_age_seconds"},
 		"metricq_db_checkpoints_total":       {"reason=hold_age"},
 		"metricq_db_checkpoint_blocks_total": {"size=partial"},
 		"metricq_db_store_requests_total":    {"op=put", "kind=data", "kind=manifest"},

@@ -99,11 +99,11 @@ func TestReviewFullBlockQueryLocality(t *testing.T) {
 		t.Run(fmt.Sprintf("flushes=%d", flushes), func(t *testing.T) {
 			s := &capacityReadStore{rangeGCStore: &rangeGCStore{gcStore: &gcStore{memoryStore: newStore()}}}
 			opts := maintenanceOptions(t.TempDir(), true)
-			opts.AppendOnlyAggregates = true
-			opts.HoldSeconds = 3600
-			opts.BuilderHard = 128 << 20
-			opts.HoldBytes = 64 << 20
-			opts.Compaction.MaxBlocks = 512
+			opts.CheckpointAppendOnlyAggregates = true
+			opts.HoldMaxAgeSeconds = 3600
+			opts.IngestMemoryLimitBytes = 128 << 20
+			opts.HoldMemoryBytes = 64 << 20
+			opts.CompactionOptions.JobMaxBlocks = 512
 			e, err := Open(ctx, s, opts, map[string]hta.Config{"x": {IntervalMin: int64(time.Second), IntervalMax: int64(100000 * time.Second), IntervalFactor: 10}}, nil)
 			if err != nil {
 				t.Fatal(err)
@@ -195,8 +195,8 @@ func TestReviewHoldExpiryPublications(t *testing.T) {
 			ctx := context.Background()
 			s := &capacityWriteStore{rangeGCStore: &rangeGCStore{gcStore: &gcStore{memoryStore: newStore()}}}
 			opts := maintenanceOptions(t.TempDir(), true)
-			opts.HoldSeconds = 3600
-			opts.AppendOnlyAggregates = true
+			opts.HoldMaxAgeSeconds = 3600
+			opts.CheckpointAppendOnlyAggregates = true
 			cfg := map[string]hta.Config{}
 			var deliveries []Delivery
 			for i := 0; i < 1500; i++ {

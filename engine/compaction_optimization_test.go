@@ -101,7 +101,7 @@ func TestAppendOnlyAggregatesConvergeAndRecover(t *testing.T) {
 	ctx := context.Background()
 	s := &gcStore{memoryStore: newStore()}
 	options := maintenanceOptions(t.TempDir(), true)
-	options.AppendOnlyAggregates = true
+	options.CheckpointAppendOnlyAggregates = true
 	e, err := Open(ctx, s, options, testConfig, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -244,10 +244,10 @@ func TestMaintenanceCoordinationAllowsIngestAndQueries(t *testing.T) {
 func TestCompactionWorkerDrainsMultipleJobsPerTick(t *testing.T) {
 	s := &gcStore{memoryStore: newStore()}
 	options := maintenanceOptions(t.TempDir(), true)
-	options.Compaction.IntervalSeconds = 1
-	options.Compaction.MaxBlocks = 8
-	options.Compaction.MaxCycleSeconds = 2
-	options.AppendOnlyAggregates = true
+	options.CompactionOptions.CycleIntervalSeconds = 1
+	options.CompactionOptions.JobMaxBlocks = 8
+	options.CompactionOptions.CycleMaxSeconds = 2
+	options.CheckpointAppendOnlyAggregates = true
 	e, err := Open(context.Background(), s, options, testConfig, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -275,7 +275,7 @@ func TestCompactionContractsIndexAndKeepsWarmBlocks(t *testing.T) {
 	ctx := context.Background()
 	s := &gcStore{memoryStore: newStore()}
 	e := maintenanceEngine(t, s, t.TempDir(), true)
-	e.options.Compaction.MaxBlocks = 512
+	e.options.CompactionOptions.JobMaxBlocks = 512
 	fillCompaction(t, e, 130)
 	req := &metricq.HistoryRequest{Type: metricq.HistoryRequest_FLEX_TIMELINE, StartTime: 100, EndTime: 520000}
 	want := query(t, e, req)
@@ -346,8 +346,8 @@ func TestCompactionDoesNotRenewIngestCooldown(t *testing.T) {
 		configs[fmt.Sprint(i)] = hta.Config{IntervalMin: 1000000, IntervalMax: 10000000, IntervalFactor: 10}
 	}
 	options := maintenanceOptions(t.TempDir(), true)
-	options.Compaction.MaxBlocks = 8
-	options.Compaction.CooldownSeconds = 60
+	options.CompactionOptions.JobMaxBlocks = 8
+	options.CompactionOptions.MergeCooldownSeconds = 60
 	e, err := Open(ctx, s, options, configs, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -407,8 +407,8 @@ func TestAppendOnlyMixedStreamsConvergePastSingletons(t *testing.T) {
 		configs[fmt.Sprintf("canonical.%05d", i)] = hta.Config{IntervalMin: int64(time.Second), IntervalMax: int64(1000 * time.Second), IntervalFactor: 10}
 	}
 	options := maintenanceOptions(t.TempDir(), true)
-	options.Compaction.MaxBlocks = 512
-	options.AppendOnlyAggregates = true
+	options.CompactionOptions.JobMaxBlocks = 512
+	options.CheckpointAppendOnlyAggregates = true
 	e, err := Open(ctx, s, options, configs, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -464,7 +464,7 @@ func mixedEvacuationFixture(t *testing.T, merge bool) (*Engine, *rangeGCStore, s
 		configs[fmt.Sprint(i)] = testConfig["x"]
 	}
 	options := maintenanceOptions(t.TempDir(), merge)
-	options.Compaction.MaxBlocks = 8
+	options.CompactionOptions.JobMaxBlocks = 8
 	e, err := Open(ctx, s, options, configs, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -489,7 +489,7 @@ func mixedEvacuationFixture(t *testing.T, merge bool) (*Engine, *rangeGCStore, s
 		}
 	}
 	o, found, err := e.catalogGet(ctx, e.state.Catalog, source)
-	if err != nil || !found || len(o.Blocks) <= options.Compaction.MaxBlocks || o.LiveBytes >= o.Size {
+	if err != nil || !found || len(o.Blocks) <= options.CompactionOptions.JobMaxBlocks || o.LiveBytes >= o.Size {
 		t.Fatalf("fixture lacks oversized dirty source: %+v %v", o, err)
 	}
 	return e, s, source
@@ -562,7 +562,7 @@ func singletonSearch(t *testing.T, warm bool) {
 	configs["z"] = configs["a000"]
 	options := maintenanceOptions(t.TempDir(), true)
 	if !warm {
-		options.Compaction.MaxBlocks = 512
+		options.CompactionOptions.JobMaxBlocks = 512
 	}
 	e, err := Open(ctx, s, options, configs, nil)
 	if err != nil {
@@ -611,7 +611,7 @@ func TestCompactionPublicationWaitsForFlushAndAllowsIngest(t *testing.T) {
 			defer cancel()
 			s := &coordinationGateStore{gcStore: &gcStore{memoryStore: newStore()}, entered: make(chan struct{}), release: make(chan struct{})}
 			options := maintenanceOptions(t.TempDir(), true)
-			options.AppendOnlyAggregates = true
+			options.CheckpointAppendOnlyAggregates = true
 			e, err := Open(ctx, s, options, testConfig, nil)
 			if err != nil {
 				t.Fatal(err)

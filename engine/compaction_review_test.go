@@ -57,7 +57,7 @@ func TestReviewCardinalitySelection(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	t.Logf("150 metrics, 4 flushes, MaxBlocks=128, 20 passes: m000 blocks %d -> %d, generation %d -> %d", before, count(), generation, e.state.Generation)
+	t.Logf("150 metrics, 4 flushes, JobMaxBlocks=128, 20 passes: m000 blocks %d -> %d, generation %d -> %d", before, count(), generation, e.state.Generation)
 }
 
 func TestReviewAggregateCandidate(t *testing.T) {
@@ -92,8 +92,8 @@ func reviewSynthetic(t *testing.T, n int) (*Engine, []indexEntry) {
 		t.Fatal(err)
 	}
 	e.state.Roots["x"][0] = root
-	e.options.Compaction.MergeSmallBlocks = true
-	e.options.Compaction.BytesPerSecond = 1 << 30
+	e.options.CompactionOptions.MergeEnabled = true
+	e.options.CompactionOptions.IOBytesPerSecond = 1 << 30
 	return e, items
 }
 
@@ -248,7 +248,7 @@ func TestReviewTailCost(t *testing.T) {
 	ctx := context.Background()
 	s := &reviewCountStore{gcStore: &gcStore{memoryStore: newStore()}}
 	options := maintenanceOptions(t.TempDir(), true)
-	options.AppendOnlyAggregates = os.Getenv("METRICQ_REVIEW_APPEND_ONLY") == "1"
+	options.CheckpointAppendOnlyAggregates = os.Getenv("METRICQ_REVIEW_APPEND_ONLY") == "1"
 	e, err := Open(ctx, s, options, testConfig, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -284,7 +284,7 @@ func TestReviewTailCost(t *testing.T) {
 	responseBytes, _ := proto.Marshal(response)
 	t.Logf("cold FLEX level100: reads=%d compressedReadBytes=%d query=%v responseSHA256=%x", s.reads.Load(), s.readBytes.Load(), queryTime, sha256.Sum256(responseBytes))
 	t.Logf("100 flushes/1000 points: ingest=%v flush=%v dataWritten=%d indexWritten=%d metadataWritten=%d PUTs=%d level100blocks=%d responseTimes=%d", ingestTime, flushTime, s.dataBytes, s.indexBytes, s.metaBytes, s.puts, len(refs), len(response.TimeDelta))
-	if options.AppendOnlyAggregates {
+	if options.CheckpointAppendOnlyAggregates {
 		for i := 0; i < 40; i++ {
 			if err = e.CompactOnce(ctx); err != nil {
 				t.Fatal(err)

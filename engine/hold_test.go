@@ -27,11 +27,11 @@ type holdFixture struct {
 func newHoldFixture(t *testing.T) *holdFixture {
 	f := &holdFixture{t: t, ctx: context.Background(), store: &gcStore{memoryStore: newStore()}, dir: t.TempDir(), now: time.Unix(1000, 0), next: map[string]int64{"x": 100, "y": 100}}
 	f.options = maintenanceOptions(f.dir, true)
-	f.options.HoldSeconds = 3600
-	f.options.BuilderHard = 64 << 20
+	f.options.HoldMaxAgeSeconds = 3600
+	f.options.IngestMemoryLimitBytes = 64 << 20
 	f.open()
 	var err error
-	f.reference, err = Open(f.ctx, newStore(), Options{WALDirectory: t.TempDir(), BuilderHard: 64 << 20}, batchConfig, nil)
+	f.reference, err = Open(f.ctx, newStore(), Options{WALDirectory: t.TempDir(), IngestMemoryLimitBytes: 64 << 20}, batchConfig, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -202,14 +202,14 @@ func TestHoldDeltaStillNeededSkipsWrittenRecords(t *testing.T) {
 
 func TestHoldWritesLargestStreamsUnderMemoryPressure(t *testing.T) {
 	f := newHoldFixture(t)
-	f.e.options.HoldBytes = 200 * pendingRecordBytes
+	f.e.options.HoldMemoryBytes = 200 * pendingRecordBytes
 	f.ingest("x", 300)
 	f.ingest("y", 40)
 	if !f.e.NeedsFlush() {
 		t.Fatal("memory pressure does not request a flush")
 	}
 	f.flush()
-	if len(f.blocks("x", 0)) != 1 || f.e.pendingBytes > f.e.options.HoldBytes {
+	if len(f.blocks("x", 0)) != 1 || f.e.pendingBytes > f.e.options.HoldMemoryBytes {
 		t.Fatalf("largest stream not written: blocks %d pending %d", len(f.blocks("x", 0)), f.e.pendingBytes)
 	}
 	f.check("after pressure flush")
@@ -239,7 +239,7 @@ func TestHoldFailedManifestKeepsDeltaStateConsistent(t *testing.T) {
 // large held set exceeds the object target.
 func TestHoldDoesNotBlockCompaction(t *testing.T) {
 	f := newHoldFixture(t)
-	f.e.options.ObjectTarget = 10 * pendingRecordBytes
+	f.e.options.CheckpointUnsavedBytes = 10 * pendingRecordBytes
 	for round := 0; round < 2; round++ {
 		f.ingest("y", 20)
 		f.now = f.now.Add(2 * time.Hour)
@@ -250,7 +250,7 @@ func TestHoldDoesNotBlockCompaction(t *testing.T) {
 	}
 	f.ingest("x", 200)
 	f.flush()
-	if f.e.pendingBytes < f.e.options.ObjectTarget || f.e.unsavedBytes() != 0 {
+	if f.e.pendingBytes < f.e.options.CheckpointUnsavedBytes || f.e.unsavedBytes() != 0 {
 		t.Fatalf("fixture pending %d unsaved %d", f.e.pendingBytes, f.e.unsavedBytes())
 	}
 	if err := f.e.CompactOnce(f.ctx); err != nil {

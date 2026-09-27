@@ -64,7 +64,7 @@ var testConfig = map[string]hta.Config{"x": {IntervalMin: 100, IntervalMax: 1000
 
 func openTest(t *testing.T, s storage.Store, dir string) *Engine {
 	t.Helper()
-	e, err := Open(context.Background(), s, Options{WALDirectory: dir, ObjectTarget: 300, BuilderHard: 100000}, testConfig, nil)
+	e, err := Open(context.Background(), s, Options{WALDirectory: dir, CheckpointUnsavedBytes: 300, IngestMemoryLimitBytes: 100000}, testConfig, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -179,7 +179,7 @@ func TestManifestFailureRetainsWAL(t *testing.T) {
 }
 func TestPressureAndRecovery(t *testing.T) {
 	s := newStore()
-	e, err := Open(context.Background(), s, Options{WALDirectory: t.TempDir(), WALTarget: 500, WALHigh: 1000, WALHard: 1500, ObjectTarget: 100, BuilderHard: 10000}, testConfig, nil)
+	e, err := Open(context.Background(), s, Options{WALDirectory: t.TempDir(), WALTarget: 500, WALHigh: 1000, WALHard: 1500, CheckpointUnsavedBytes: 100, IngestMemoryLimitBytes: 10000}, testConfig, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -317,14 +317,14 @@ func TestRejectedIngestPlanDoesNotChangeState(t *testing.T) {
 		before.Levels[k] = v
 	}
 	seq, size, pending, pendingBytes := e.sequence, e.wal.total(), e.pending.len(), e.pendingBytes
-	e.options.BuilderHard = pendingBytes + 1
+	e.options.IngestMemoryLimitBytes = pendingBytes + 1
 	if err := e.Ingest(context.Background(), "x", chunk(hta.Point{Time: 200, Value: 2})); err == nil {
 		t.Fatal("accepted over-capacity delivery")
 	}
 	if e.sequence != seq || e.wal.total() != size || e.pending.len() != pending || e.pendingBytes != pendingBytes || !reflect.DeepEqual(before, *e.state.Series["x"]) {
 		t.Fatal("rejected preparation changed live state")
 	}
-	e.options.BuilderHard = 100000
+	e.options.IngestMemoryLimitBytes = 100000
 	ingest(t, e, hta.Point{Time: 200, Value: 2})
 	if got := query(t, e, &metricq.HistoryRequest{Type: metricq.HistoryRequest_FLEX_TIMELINE, EndTime: 300}); len(got.Value) != 2 {
 		t.Fatal("rejected point could not be ingested later")
@@ -408,7 +408,7 @@ func TestLocksAndConcurrentWriter(t *testing.T) {
 func TestPrometheusAndQueryLimits(t *testing.T) {
 	r := prometheus.NewRegistry()
 	m := NewMetrics(r)
-	e, err := Open(context.Background(), newStore(), Options{WALDirectory: t.TempDir(), MaxQueryRows: 2}, testConfig, m)
+	e, err := Open(context.Background(), newStore(), Options{WALDirectory: t.TempDir(), QueryMaxRows: 2}, testConfig, m)
 	if err != nil {
 		t.Fatal(err)
 	}

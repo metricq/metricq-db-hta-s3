@@ -53,7 +53,7 @@ func TestCompactionS3(t *testing.T) {
 			for i := 0; i < count; i++ {
 				configs[name(i)] = hta.Config{IntervalMin: int64(time.Second), IntervalMax: int64(1000 * time.Second), IntervalFactor: 10}
 			}
-			options := engine.Options{WALDirectory: t.TempDir(), ObjectTarget: 4 << 20, BuilderHard: 32 << 20, BackgroundMaintenance: true, AppendOnlyAggregates: true, Compaction: engine.CompactionOptions{Enabled: true, MaxBlocks: 512, DeadFraction: .05, BytesPerSecond: 64 << 20, MergeSmallBlocks: true}}
+			options := engine.Options{WALDirectory: t.TempDir(), CheckpointUnsavedBytes: 4 << 20, IngestMemoryLimitBytes: 32 << 20, MaintenanceEnabled: true, CheckpointAppendOnlyAggregates: true, CompactionOptions: engine.CompactionOptions{Enabled: true, JobMaxBlocks: 512, ReclaimDeadFraction: .05, IOBytesPerSecond: 64 << 20, MergeEnabled: true}}
 			e, err := engine.Open(ctx, backend, options, configs, nil)
 			if err != nil {
 				t.Fatal(err)

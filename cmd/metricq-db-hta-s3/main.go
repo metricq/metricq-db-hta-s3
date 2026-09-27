@@ -67,7 +67,7 @@ func run() error {
 	labelled.MustRegister(buildInfo)
 	buildInfo.WithLabelValues(version, runtime.Version()).Set(1)
 	metrics := engine.NewMetrics(labelled)
-	metrics.Config.WithLabelValues("prefetch").Set(float64(cfg.Prefetch))
+	metrics.Config.WithLabelValues("ingest_prefetch").Set(float64(cfg.Prefetch))
 	var mu sync.RWMutex
 	var dbEngine *engine.Engine
 	mapping := map[string]string{}

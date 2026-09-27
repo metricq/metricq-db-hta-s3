@@ -97,7 +97,7 @@ func (e *Engine) reserveCompaction(ctx context.Context) (CompactionJob, error) {
 		e.mu.Unlock()
 		return CompactionJob{}, e.fatal
 	}
-	if !e.options.BackgroundMaintenance {
+	if !e.options.MaintenanceEnabled {
 		e.mu.Unlock()
 		return CompactionJob{}, fmt.Errorf("background maintenance not enabled")
 	}
@@ -109,10 +109,10 @@ func (e *Engine) reserveCompaction(ctx context.Context) (CompactionJob, error) {
 		e.mu.Unlock()
 		return CompactionJob{}, nil
 	}
-	options := e.options.Compaction.defaults()
+	options := e.options.CompactionOptions.defaults()
 	// Defer to a due checkpoint. Held records are not backlog: they may stay
 	// far above the object target for the whole hold interval.
-	if e.wal.total() >= e.options.WALHigh || e.unsavedBytes() >= e.options.ObjectTarget {
+	if e.wal.total() >= e.options.WALHigh || e.unsavedBytes() >= e.options.CheckpointUnsavedBytes {
 		e.mu.Unlock()
 		return CompactionJob{}, nil
 	}
@@ -145,16 +145,16 @@ func (e *Engine) reserveCompaction(ctx context.Context) (CompactionJob, error) {
 	previousCandidate := scanAfter
 	resumeCandidate, resumeObject := "", ""
 	resumeOffset := 0
-	cutoff := time.Now().Add(-time.Duration(options.CooldownSeconds) * time.Second).UnixNano()
+	cutoff := time.Now().Add(-time.Duration(options.MergeCooldownSeconds) * time.Second).UnixNano()
 	var selectErr error
 	seedLimited := false
-	seedLimit := max(64, min(options.MaxBlocks, 512))
+	seedLimit := max(64, min(options.JobMaxBlocks, 512))
 	objects := make(map[string]bool)
 	add := func(b BlockInfo) bool {
 		if selected[b.Entry.Blob] {
 			return true
 		}
-		if len(inputs) >= options.MaxBlocks || b.Entry.Blob.Length > options.MaxJobBytes-copied {
+		if len(inputs) >= options.JobMaxBlocks || b.Entry.Blob.Length > options.JobMaxBytes-copied {
 			return false
 		}
 		inputs = append(inputs, b)
@@ -173,7 +173,7 @@ func (e *Engine) reserveCompaction(ctx context.Context) (CompactionJob, error) {
 		reader := &Engine{store: snapshot.store, options: snapshot.options, metrics: snapshot.metrics, state: snapshot.state, sharedNodes: snapshot.sharedNodes, nodeCache: make(map[blob]indexNode), nodeReadLimit: 4096, catalogReadBudget: compactionCatalogBudget}
 		return e.selectLocality(ctx, reader, options, objectLimit)
 	}
-	if !options.DisableLocality && e.compactionCompletions%4 == 3 {
+	if !options.LocalityDisabled && e.compactionCompletions%4 == 3 {
 		var err error
 		inputs, localityMore, err = selectLocality()
 		if err != nil {
@@ -187,7 +187,7 @@ func (e *Engine) reserveCompaction(ctx context.Context) (CompactionJob, error) {
 		if err != nil && !errors.Is(err, errCatalogBudget) {
 			return CompactionJob{}, err
 		}
-		if ok && o.Modified <= cutoff && float64(o.Size-o.LiveBytes)/float64(o.Size) >= options.DeadFraction {
+		if ok && o.Modified <= cutoff && float64(o.Size-o.LiveBytes)/float64(o.Size) >= options.ReclaimDeadFraction {
 			for _, b := range o.Blocks {
 				if !add(b) {
 					break
@@ -230,9 +230,9 @@ func (e *Engine) reserveCompaction(ctx context.Context) (CompactionJob, error) {
 				previousCandidate = candidate.Key
 				return true
 			}
-			dirty := float64(object.Size-object.LiveBytes)/float64(object.Size) >= options.DeadFraction
+			dirty := float64(object.Size-object.LiveBytes)/float64(object.Size) >= options.ReclaimDeadFraction
 
-			if options.MergeSmallBlocks {
+			if options.MergeEnabled {
 				beginSeed := 0
 				if candidate.Key == seedObject {
 					beginSeed = min(seedOffset, len(object.Blocks))
@@ -269,7 +269,7 @@ func (e *Engine) reserveCompaction(ctx context.Context) (CompactionJob, error) {
 					if prior.Records > 0 && prior.Records+seed.Entry.Records <= maxDataBlockRecords {
 						begin = prior.First
 					}
-					entries, err := snapshot.indexEntriesAfter(ctx, root, begin, options.MaxBlocks-len(inputs))
+					entries, err := snapshot.indexEntriesAfter(ctx, root, begin, options.JobMaxBlocks-len(inputs))
 					if err != nil {
 						selectErr = err
 						return false
@@ -281,7 +281,7 @@ func (e *Engine) reserveCompaction(ctx context.Context) (CompactionJob, error) {
 						if entry.Records <= 0 || entry.Records >= maxDataBlockRecords || records+entry.Records > maxDataBlockRecords {
 							break
 						}
-						if entry.Blob.Length > options.MaxJobBytes-copied-bytes {
+						if entry.Blob.Length > options.JobMaxBytes-copied-bytes {
 							break
 						}
 						group = append(group, BlockInfo{Metric: seed.Metric, Level: seed.Level, Entry: entry})
@@ -334,8 +334,8 @@ func (e *Engine) reserveCompaction(ctx context.Context) (CompactionJob, error) {
 						return stopAt(candidate.Key, seedIndex)
 					}
 					searchLimited := len(tried) >= seedLimit || snapshot.nodeReads >= 2048 || len(objects) >= objectLimit
-					if len(inputs) >= options.MaxBlocks || searchLimited {
-						seedLimited = len(inputs) < options.MaxBlocks && searchLimited
+					if len(inputs) >= options.JobMaxBlocks || searchLimited {
+						seedLimited = len(inputs) < options.JobMaxBlocks && searchLimited
 						resumeCandidate = previousCandidate
 						resumeObject = candidate.Key
 						resumeOffset = seedIndex + 1
@@ -343,7 +343,7 @@ func (e *Engine) reserveCompaction(ctx context.Context) (CompactionJob, error) {
 					}
 				}
 			}
-			if dirty && (len(inputs) == 0 || !options.MergeSmallBlocks) {
+			if dirty && (len(inputs) == 0 || !options.MergeEnabled) {
 				// Consolidation retires source fragments naturally. Evacuating
 				// unrelated live blocks first repeatedly relocates growing mixed
 				// tails without improving queries. Use copy-only reclamation when
@@ -360,10 +360,10 @@ func (e *Engine) reserveCompaction(ctx context.Context) (CompactionJob, error) {
 				}
 			}
 			previousCandidate = candidate.Key
-			return len(inputs) < options.MaxBlocks && copied < options.MaxJobBytes
+			return len(inputs) < options.JobMaxBlocks && copied < options.JobMaxBytes
 		})
 	}
-	if len(inputs) == 0 && !options.DisableLocality && !localityChecked {
+	if len(inputs) == 0 && !options.LocalityDisabled && !localityChecked {
 		var localityErr error
 		inputs, localityMore, localityErr = selectLocality()
 		if localityErr != nil {
@@ -547,10 +547,10 @@ func (s *publicationStore) GetRange(ctx context.Context, key string, offset, len
 }
 
 func (e *Engine) copyJob(ctx context.Context, job CompactionJob) (map[blob]replacement, []*pack, error) {
-	options := e.options.Compaction.defaults()
+	options := e.options.CompactionOptions.defaults()
 	reader := &Engine{store: e.preparationStore(), metrics: e.metrics, options: e.options}
 	indexReader := &Engine{store: e.preparationStore(), metrics: e.metrics, options: e.options, sharedNodes: e.sharedNodes, nodeCache: make(map[blob]indexNode), nodeReadLimit: 4096}
-	budget := rateBudget{start: time.Now(), rate: options.BytesPerSecond}
+	budget := rateBudget{start: time.Now(), rate: options.IOBytesPerSecond}
 	take := func(n int64) error {
 		if e.compactionBudget != nil {
 			return ctx.Err()
@@ -612,7 +612,7 @@ func (e *Engine) copyJob(ctx context.Context, job CompactionJob) (map[blob]repla
 		if info.Index {
 			prefix = "index"
 		}
-		if current != nil && (!strings.HasPrefix(current.key, prefix+"/") || int64(current.buf.Len()+len(encoded)) > options.ObjectBytes) {
+		if current != nil && (!strings.HasPrefix(current.key, prefix+"/") || int64(current.buf.Len()+len(encoded)) > options.OutputObjectBytes) {
 			if err := upload(); err != nil {
 				return indexEntry{}, err
 			}
@@ -637,7 +637,7 @@ func (e *Engine) copyJob(ctx context.Context, job CompactionJob) (map[blob]repla
 		}
 		end := i + 1
 		// Only adjacent blocks proven consecutive in the pinned index may merge.
-		if options.MergeSmallBlocks && !b.Index && b.Entry.Records > 0 && b.Entry.Records < maxDataBlockRecords {
+		if options.MergeEnabled && !b.Index && b.Entry.Records > 0 && b.Entry.Records < maxDataBlockRecords {
 			for end < len(inputs) && !inputs[end].Index && inputs[end].Metric == b.Metric && inputs[end].Level == b.Level && inputs[end].Entry.Records > 0 && b.Entry.Records+inputs[end].Entry.Records <= maxDataBlockRecords {
 				b.Entry.Records += inputs[end].Entry.Records
 				end++
@@ -901,7 +901,7 @@ func (e *Engine) prepareCompaction(ctx context.Context, job CompactionJob, repla
 			next.Roots[metric][level] = edges[0].Blob
 		}
 	}
-	if int64(p.buf.Len()) > e.options.Compaction.MaxJobBytes {
+	if int64(p.buf.Len()) > e.options.CompactionOptions.JobMaxBytes {
 		return manifest{}, fmt.Errorf("compaction index output budget exceeded")
 	}
 	if p.buf.Len() > 0 {
@@ -1172,12 +1172,12 @@ func (e *Engine) recoverCompaction(ctx context.Context) error {
 // returns nil when there is nothing to do. A failed job is aborted; its
 // staging objects are removed by recovery after a grace period.
 func (e *Engine) CompactOnce(ctx context.Context) error {
-	ctx, cancel := context.WithTimeout(ctx, time.Duration(e.options.Compaction.defaults().MaxDurationSeconds)*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, time.Duration(e.options.CompactionOptions.defaults().JobTimeoutSeconds)*time.Second)
 	defer cancel()
 	e.maintenanceMu.Lock()
 	defer e.maintenanceMu.Unlock()
 	if e.compactionBudget == nil || time.Since(e.lastCompactionEnd) > time.Second {
-		e.compactionBudget = &rateBudget{start: time.Now(), rate: e.options.Compaction.BytesPerSecond}
+		e.compactionBudget = &rateBudget{start: time.Now(), rate: e.options.CompactionOptions.IOBytesPerSecond}
 	}
 	defer func() { e.lastCompactionEnd = time.Now() }()
 	e.mu.Lock()
@@ -1249,7 +1249,7 @@ func (e *Engine) Reclaim(ctx context.Context) error {
 	if !ok {
 		return nil
 	}
-	if !e.options.BackgroundMaintenance {
+	if !e.options.MaintenanceEnabled {
 		e.publishMu.Lock()
 		defer e.publishMu.Unlock()
 		e.mu.Lock()

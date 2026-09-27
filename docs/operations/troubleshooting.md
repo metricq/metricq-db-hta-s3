@@ -18,7 +18,7 @@ opened.
 | `changing HTA configuration for "…" requires migration` | `interval_min`, `interval_max` or `interval_factor` of an existing metric changed. Restore the old values; store differently aggregated data under a new metric name. |
 | `WAL aggregation config changed for "…"` / `WAL metric … missing from configuration` | The WAL contains data for a metric whose configuration changed or disappeared. Restore the configuration, let the database checkpoint, then change it. |
 | `recovered WAL exceeds configured limits` | WAL limits were reduced below the current WAL size. Restore the previous limits for one start. |
-| `invalid engine options` / `invalid compaction options` / `hold_bytes must be below builder_hard_bytes` | See constraints in [Configuration](configuration.md). |
+| `invalid engine options` / `invalid compaction options` / `hold_memory_bytes must be below ingest_memory_limit_bytes` | See constraints in [Configuration](configuration.md). |
 
 ## WAL does not replay
 
@@ -59,8 +59,8 @@ not repaired by the tool.
   be relieved by garbage collection, which deletes before it writes.
 - **Checkpoints too slow**: check *Checkpoint duration* and S3 latency; see
   [Tuning](tuning.md).
-- **Builder limit**: *Held memory* at `builder_hard_bytes` — raise it or lower
-  `hold_bytes`/`prefetch`.
+- **Ingest memory limit**: *Held memory* at `ingest_memory_limit_bytes` — raise it or lower
+  `hold_memory_bytes`/`ingest_prefetch`.
 
 ## Checkpoint errors: `another writer changed manifest`
 
@@ -74,19 +74,19 @@ the prefix, then restart.
   waits for cleanup (one minute), or cleanup fails — check logs for
   `compaction recovery failed` and object store errors.
 - *Jobs* shows only `no work` while *Fragmentation* rises: the fragments are in
-  objects younger than `cooldown_seconds`, or every stream has only its newest
+  objects younger than `compaction_merge_cooldown_seconds`, or every stream has only its newest
   partial block (not mergeable). Both are normal.
 - *Jobs* shows `catalog budget`: the job limit adapts; persistent occurrences
   indicate very large mixed objects (enable holding).
 - Throughput at the rate limit (*Throughput* touches *rate limit*): raise
-  `compaction.bytes_per_second`.
+  `compaction_io_bytes_per_second`.
 
 ## Slow queries
 
 - Many GETs per query: fragmented layout; compaction and level locality fix it
   over time. Check *Fragmentation* and *Jobs*.
 - `query exceeds maximum rows`: the client asked for too many raw points; raise
-  `max_query_rows` or request an aggregate level (larger `interval_max`).
+  `query_max_rows` or request an aggregate level (larger `interval_max`).
 - `query object memory budget exceeded`: a single query would decode more than
   256 MiB; narrow the time range.
 

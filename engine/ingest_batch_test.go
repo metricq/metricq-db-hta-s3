@@ -36,11 +36,11 @@ func TestIngestBatchUsesOneSyncAndReplaysLikeSingleDeliveries(t *testing.T) {
 	registry := prometheus.NewRegistry()
 	dir := t.TempDir()
 	s := newStore()
-	e, err := Open(ctx, s, Options{WALDirectory: dir, BuilderHard: 64 << 20}, batchConfig, NewMetrics(registry))
+	e, err := Open(ctx, s, Options{WALDirectory: dir, IngestMemoryLimitBytes: 64 << 20}, batchConfig, NewMetrics(registry))
 	if err != nil {
 		t.Fatal(err)
 	}
-	reference, err := Open(ctx, newStore(), Options{WALDirectory: t.TempDir(), BuilderHard: 64 << 20}, batchConfig, nil)
+	reference, err := Open(ctx, newStore(), Options{WALDirectory: t.TempDir(), IngestMemoryLimitBytes: 64 << 20}, batchConfig, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,7 +94,7 @@ func TestIngestBatchUsesOneSyncAndReplaysLikeSingleDeliveries(t *testing.T) {
 	check("batch", e)
 	// Crash without checkpoint: replay the batch's individual frames.
 	e.Close()
-	replayed, err := Open(ctx, s, Options{WALDirectory: dir, BuilderHard: 64 << 20}, batchConfig, nil)
+	replayed, err := Open(ctx, s, Options{WALDirectory: dir, IngestMemoryLimitBytes: 64 << 20}, batchConfig, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,7 +104,7 @@ func TestIngestBatchUsesOneSyncAndReplaysLikeSingleDeliveries(t *testing.T) {
 
 func TestIngestBatchStopsAtPressureAndInvalidDeliveries(t *testing.T) {
 	ctx := context.Background()
-	e, err := Open(ctx, newStore(), Options{WALDirectory: t.TempDir(), WALTarget: 500, WALHigh: 1000, WALHard: 1500, ObjectTarget: 100, BuilderHard: 10000}, batchConfig, nil)
+	e, err := Open(ctx, newStore(), Options{WALDirectory: t.TempDir(), WALTarget: 500, WALHigh: 1000, WALHard: 1500, CheckpointUnsavedBytes: 100, IngestMemoryLimitBytes: 10000}, batchConfig, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

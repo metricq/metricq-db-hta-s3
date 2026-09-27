@@ -20,7 +20,7 @@
 // in memory per stream (metric and HTA level). Flush freezes a WAL segment and
 // the records to write, uploads data blocks, index pages, held deltas and
 // metadata without holding the ingestion mutex, and commits by conditionally
-// replacing the manifest. With Options.HoldSeconds, streams are written only
+// replacing the manifest. With Options.HoldMaxAgeSeconds, streams are written only
 // in full blocks or after the hold interval; the rest is persisted as held
 // deltas so the WAL can still be released.
 //

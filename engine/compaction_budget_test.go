@@ -22,7 +22,7 @@ func TestCompactionProgressesWithLargeCatalogInventories(t *testing.T) {
 	}
 	s := &gcStore{memoryStore: newStore()}
 	options := maintenanceOptions(t.TempDir(), true)
-	options.Compaction.MaxBlocks = 512
+	options.CompactionOptions.JobMaxBlocks = 512
 	e, err := Open(ctx, s, options, configs, nil)
 	if err != nil {
 		t.Fatal(err)

@@ -434,7 +434,7 @@ func (e *Engine) Query(ctx context.Context, name string, req *metricq.HistoryReq
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if len(resp.TimeDelta) >= e.options.MaxQueryRows {
+		if len(resp.TimeDelta) >= e.options.QueryMaxRows {
 			return fmt.Errorf("query exceeds maximum rows")
 		}
 		resp.TimeDelta = append(resp.TimeDelta, t-previous)
@@ -511,7 +511,7 @@ func (e *Engine) Query(ctx context.Context, name string, req *metricq.HistoryReq
 		return resp, nil
 	}
 	rs = rs[first:last]
-	if len(rs) > e.options.MaxQueryRows {
+	if len(rs) > e.options.QueryMaxRows {
 		return resp, fmt.Errorf("query exceeds maximum rows")
 	}
 	if req.Type == metricq.HistoryRequest_FLEX_TIMELINE && req.IntervalMax > 0 && (req.EndTime-req.StartTime)/int64(len(rs)) < req.IntervalMax {

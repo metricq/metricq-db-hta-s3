@@ -293,7 +293,7 @@ func TestMetricCardinality(t *testing.T) {
 			for i := 0; i < count; i++ {
 				configs[name(i)] = hta.Config{IntervalMin: int64(time.Second), IntervalMax: int64(time.Hour) * 24 * 365, IntervalFactor: 10}
 			}
-			opts := engine.Options{WALDirectory: t.TempDir(), ObjectTarget: objectTarget, BuilderHard: builderHard, WALTarget: walTarget, WALHigh: walTarget * 2, WALHard: walTarget * 3}
+			opts := engine.Options{WALDirectory: t.TempDir(), CheckpointUnsavedBytes: objectTarget, IngestMemoryLimitBytes: builderHard, WALTarget: walTarget, WALHigh: walTarget * 2, WALHard: walTarget * 3}
 			e, err := engine.Open(ctx, store, opts, configs, metrics)
 			if err != nil {
 				t.Fatal(err)

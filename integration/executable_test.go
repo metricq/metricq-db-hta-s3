@@ -65,7 +65,7 @@ func TestExecutablePrometheusAndShutdown(t *testing.T) {
 	address := listener.Addr().String()
 	listener.Close()
 	configPath := filepath.Join(dir, "config.json")
-	b, err := json.Marshal(map[string]any{"server": server, "token": token, "listen": address, "s3": map[string]any{"bucket": id, "endpoint": env("METRICQ_TEST_S3", "http://localhost:19000"), "path_style": true}, "engine": map[string]any{"wal_directory": filepath.Join(dir, "wal")}})
+	b, err := json.Marshal(map[string]any{"server": server, "token": token, "metrics_listen": address, "s3": map[string]any{"bucket": id, "endpoint": env("METRICQ_TEST_S3", "http://localhost:19000"), "path_style": true}, "engine": map[string]any{"wal_directory": filepath.Join(dir, "wal")}})
 	if err != nil {
 		t.Fatal(err)
 	}

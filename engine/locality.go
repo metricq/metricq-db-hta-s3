@@ -60,7 +60,7 @@ func (e *Engine) selectLocality(ctx context.Context, snapshot *Engine, options C
 		start = 0
 		e.localityCursor = ""
 	}
-	cutoff := time.Now().Add(-time.Duration(options.CooldownSeconds) * time.Second).UnixNano()
+	cutoff := time.Now().Add(-time.Duration(options.MergeCooldownSeconds) * time.Second).UnixNano()
 	checked := 0
 	for i := start; i < len(streams); i++ {
 		s := streams[i]
@@ -76,7 +76,7 @@ func (e *Engine) selectLocality(ctx context.Context, snapshot *Engine, options C
 		}
 		checked++
 		cooldown := false
-		entries, err := snapshot.indexEntriesAfter(ctx, root, state.After, options.MaxBlocks)
+		entries, err := snapshot.indexEntriesAfter(ctx, root, state.After, options.JobMaxBlocks)
 		if err != nil {
 			return nil, false, err
 		}
@@ -107,7 +107,7 @@ func (e *Engine) selectLocality(ctx context.Context, snapshot *Engine, options C
 				continue
 			}
 			newObject := !objects[entry.Blob.Key]
-			if len(group) > 0 && (bytes+entry.Blob.Length > options.ObjectBytes || bytes+entry.Blob.Length > options.MaxJobBytes || (newObject && len(objects) >= objectLimit)) {
+			if len(group) > 0 && (bytes+entry.Blob.Length > options.OutputObjectBytes || bytes+entry.Blob.Length > options.JobMaxBytes || (newObject && len(objects) >= objectLimit)) {
 				if work, ok := flush(); ok {
 					e.localityScans[s.Key] = localityScan{After: group[0].Entry.First}
 					return work, true, nil
@@ -120,7 +120,7 @@ func (e *Engine) selectLocality(ctx context.Context, snapshot *Engine, options C
 				spans = 0
 				objects = make(map[string]bool)
 			}
-			if entry.Blob.Length > options.ObjectBytes || entry.Blob.Length > options.MaxJobBytes {
+			if entry.Blob.Length > options.OutputObjectBytes || entry.Blob.Length > options.JobMaxBytes {
 				advance = afterLocalityEntry(entry)
 				continue
 			}
@@ -141,7 +141,7 @@ func (e *Engine) selectLocality(ctx context.Context, snapshot *Engine, options C
 					if len(group) > 0 {
 						after = group[0].Entry.First
 					}
-					e.localityScans[s.Key] = localityScan{Root: root, After: after, RetryAt: o.Modified + int64(time.Duration(options.CooldownSeconds)*time.Second), ObjectLimit: objectLimit}
+					e.localityScans[s.Key] = localityScan{Root: root, After: after, RetryAt: o.Modified + int64(time.Duration(options.MergeCooldownSeconds)*time.Second), ObjectLimit: objectLimit}
 					cooldown = true
 					group = nil
 					break
@@ -168,7 +168,7 @@ func (e *Engine) selectLocality(ctx context.Context, snapshot *Engine, options C
 		}
 		// A complete scan can sleep until this stream root changes. If the batch
 		// was full, resume beyond it instead, retaining only its unfinished suffix.
-		if len(entries) < options.MaxBlocks {
+		if len(entries) < options.JobMaxBlocks {
 			if !cooldown {
 				e.localityScans[s.Key] = localityScan{Root: root, After: advance, ObjectLimit: objectLimit}
 			}

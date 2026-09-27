@@ -58,7 +58,7 @@ groups:
         expr: max by (token) (metricq_db_backpressure) == 1
         for: 5m
         annotations:
-          summary: "{{ $labels.token }} refuses deliveries (WAL or builder limit)"
+          summary: "{{ $labels.token }} refuses deliveries (WAL or ingest memory limit)"
       - alert: MetricQDBCheckpointsFailing
         expr: increase(metricq_db_commit_errors_total[15m]) > 0 and increase(metricq_db_commits_total[15m]) == 0
         annotations:
@@ -96,7 +96,7 @@ This table is generated from `engine/metrics.go` by
 | --- | --- | --- | --- |
 | **Ingest** | | | |
 | `metricq_db_backpressure` | gauge |  | One while WAL high watermark blocks ingestion. |
-| `metricq_db_backpressure_events_total` | counter |  | Ingest attempts refused because the WAL high watermark or builder limit was reached. |
+| `metricq_db_backpressure_events_total` | counter |  | Ingest attempts refused because the WAL high watermark or ingest memory limit was reached. |
 | `metricq_db_ingest_batch_deliveries` | histogram |  | AMQP deliveries made durable by one WAL fsync. |
 | `metricq_db_ingest_batches_total` | counter |  | Group-committed delivery batches (one WAL fsync each). |
 | `metricq_db_samples_dropped_total` | counter |  | Duplicate, out-of-order, nonpositive timestamp or nonfinite samples. |
@@ -116,7 +116,7 @@ This table is generated from `engine/metrics.go` by
 | `metricq_db_wal_sync_seconds` | histogram |  | WAL write and fsync latency. |
 | `metricq_db_wal_target_bytes` | gauge |  | WAL usage triggering an object-store checkpoint. |
 | **Checkpoints and holding** | | | |
-| `metricq_db_builder_bytes` | gauge |  | Estimated uncommitted record bytes. |
+| `metricq_db_builder_bytes` | gauge |  | Estimated memory of records not yet in blocks (pending, held, uploading); limited by ingest_memory_limit_bytes. |
 | `metricq_db_checkpoint_blocks_total` | counter | size | Data blocks written by checkpoints; partial blocks (below 1024 records) are future compaction work. |
 | `metricq_db_checkpoint_records_total` | counter |  | Aggregated records written to data blocks by checkpoints. |
 | `metricq_db_checkpoint_sequence` | gauge |  | Last durable object-store sequence. |
@@ -127,7 +127,7 @@ This table is generated from `engine/metrics.go` by
 | `metricq_db_held_covered_records` | gauge |  | Held records persisted in held/ deltas. |
 | `metricq_db_held_delta_bytes_total` | counter |  | Bytes of held/ delta objects written by checkpoints. |
 | `metricq_db_held_deltas` | gauge |  | held/ delta objects referenced by the manifest. |
-| `metricq_db_held_oldest_age_seconds` | gauge |  | Age of the oldest held stream; streams are written at hold_seconds. |
+| `metricq_db_held_oldest_age_seconds` | gauge |  | Age of the oldest held stream; streams are written at hold_max_age_seconds. |
 | `metricq_db_held_streams` | gauge |  | Streams (metric and HTA level) with records held in memory. |
 | `metricq_db_index_pinned_entries` | gauge |  | Index entries of rightmost paths kept in memory for checkpoints. |
 | `metricq_db_last_commit_timestamp_seconds` | gauge |  | Unix time of last successful object-store commit. |

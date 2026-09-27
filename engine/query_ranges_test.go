@@ -13,7 +13,7 @@ import (
 func TestColdFLEXCoalescesBlocksAndSkipsAggregateNeighbors(t *testing.T) {
 	ctx := context.Background()
 	s := &countedRangeStore{memoryStore: newStore()}
-	e, err := Open(ctx, s, Options{WALDirectory: t.TempDir(), BuilderHard: 64 << 20}, testConfig, nil)
+	e, err := Open(ctx, s, Options{WALDirectory: t.TempDir(), IngestMemoryLimitBytes: 64 << 20}, testConfig, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

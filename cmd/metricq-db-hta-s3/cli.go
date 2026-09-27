@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -25,8 +26,8 @@ var version = "dev"
 type localConfig struct {
 	Server   string           `json:"server"`
 	Token    string           `json:"token"`
-	Listen   string           `json:"listen"`
-	Prefetch int              `json:"prefetch"`
+	Listen   string           `json:"metrics_listen"`
+	Prefetch int              `json:"ingest_prefetch"`
 	S3       storage.S3Config `json:"s3"`
 	Engine   engine.Options   `json:"engine"`
 }
@@ -39,13 +40,13 @@ func defaultConfig() localConfig {
 	cfg.Listen = "127.0.0.1:9090"
 	cfg.Prefetch = 100
 	cfg.Engine.WALDirectory = "/var/lib/metricq-db-hta-s3/wal"
-	cfg.Engine.AppendOnlyAggregates = true
-	cfg.Engine.HoldSeconds = 3600
-	cfg.Engine.Compaction.Enabled = true
-	cfg.Engine.Compaction.MergeSmallBlocks = true
-	cfg.Engine.Compaction.CooldownSeconds = 60
-	cfg.Engine.Compaction.MaxBlocks = 512
-	cfg.Engine.Compaction.MaxCycleSeconds = 30
+	cfg.Engine.CheckpointAppendOnlyAggregates = true
+	cfg.Engine.HoldMaxAgeSeconds = 3600
+	cfg.Engine.CompactionOptions.Enabled = true
+	cfg.Engine.CompactionOptions.MergeEnabled = true
+	cfg.Engine.CompactionOptions.MergeCooldownSeconds = 60
+	cfg.Engine.CompactionOptions.JobMaxBlocks = 512
+	cfg.Engine.CompactionOptions.CycleMaxSeconds = 30
 	return cfg
 }
 
@@ -85,7 +86,7 @@ func parseOptions(args []string, getenv func(string) string, stderr io.Writer) (
 		return err
 	})
 	def("metrics-listen", "address of the Prometheus /metrics and /readyz endpoint (default 127.0.0.1:9090)", func(v string) error { cfg.Listen = v; return nil })
-	def("prefetch", "AMQP data prefetch; deliveries of one batch share a WAL fsync (default 100)", func(v string) error { return setInt(&cfg.Prefetch, v) })
+	def("ingest-prefetch", "AMQP data prefetch; deliveries of one batch share a WAL fsync (default 100)", func(v string) error { return setInt(&cfg.Prefetch, v) })
 	def("wal-dir", "local WAL directory on durable storage (default /var/lib/metricq-db-hta-s3/wal)", func(v string) error { cfg.Engine.WALDirectory = v; return nil })
 	def("s3-bucket", "S3 bucket", func(v string) error { cfg.S3.Bucket = v; return nil })
 	def("s3-prefix", "key prefix inside the bucket; one database per prefix", func(v string) error { cfg.S3.Prefix = v; return nil })
@@ -127,7 +128,11 @@ func parseOptions(args []string, getenv func(string) string, stderr io.Writer) (
 		if err != nil {
 			return o, err
 		}
-		if err = json.Unmarshal(b, cfg); err != nil {
+		// Unknown keys are errors, so renamed or misspelled options do not
+		// silently fall back to defaults.
+		decoder := json.NewDecoder(bytes.NewReader(b))
+		decoder.DisallowUnknownFields()
+		if err = decoder.Decode(cfg); err != nil {
 			return o, fmt.Errorf("%s: %w", path, err)
 		}
 	}
@@ -158,9 +163,9 @@ func parseOptions(args []string, getenv func(string) string, stderr io.Writer) (
 	}
 	// The executable always runs background maintenance; append-only
 	// aggregates depend on block consolidation.
-	cfg.Engine.BackgroundMaintenance = true
-	if !cfg.Engine.Compaction.Enabled || !cfg.Engine.Compaction.MergeSmallBlocks {
-		cfg.Engine.AppendOnlyAggregates = false
+	cfg.Engine.MaintenanceEnabled = true
+	if !cfg.Engine.CompactionOptions.Enabled || !cfg.Engine.CompactionOptions.MergeEnabled {
+		cfg.Engine.CheckpointAppendOnlyAggregates = false
 	}
 	return o, nil
 }

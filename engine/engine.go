@@ -33,21 +33,6 @@ const pendingRecordBytes = 96
 // Options configures an Engine. Zero values select the defaults documented in
 // docs/operations/configuration.md; Open validates the combination.
 type Options struct {
-	// AppendOnlyAggregates appends new aggregate blocks at checkpoints instead
-	// of extending the last partial block; compaction merges them later.
-	AppendOnlyAggregates bool `json:"append_only_aggregates"`
-	// HoldSeconds > 0 keeps streams in memory until they fill a block or their
-	// oldest record reaches this age; held records persist in held/ deltas.
-	HoldSeconds int64 `json:"hold_seconds"`
-	// Batch age-only background flushes; explicit Flush and pressure remain immediate.
-	HoldExpiryBatchSeconds int64 `json:"hold_expiry_batch_seconds"`
-	// HoldBytes bounds held records (estimated); above it the largest streams
-	// are written early. Zero means half of BuilderHard.
-	HoldBytes int64 `json:"hold_bytes"`
-	// BackgroundMaintenance enables the catalog, compaction and the trash
-	// journal (RunMaintenance); required for holding.
-	BackgroundMaintenance bool              `json:"background_maintenance"`
-	Compaction            CompactionOptions `json:"compaction"`
 	// WALDirectory holds the WAL segments; it must be on durable local storage.
 	WALDirectory string `json:"wal_directory"`
 	// WALTarget is the active segment size that triggers a checkpoint.
@@ -56,20 +41,44 @@ type Options struct {
 	WALHigh int64 `json:"wal_high_bytes"`
 	// WALHard is the absolute WAL limit; larger deliveries are rejected.
 	WALHard int64 `json:"wal_hard_bytes"`
-	// ObjectTarget is the estimated size of records only in the WAL that
-	// triggers a checkpoint.
-	ObjectTarget int64 `json:"object_target_bytes"`
-	// BuilderHard bounds the estimated memory of all records not yet in
-	// blocks (pending, held, uploading); deliveries are refused above it.
-	BuilderHard int64 `json:"builder_hard_bytes"`
-	// MaxQueryRows is the largest number of rows in one history response.
-	MaxQueryRows int `json:"max_query_rows"`
+
+	// CheckpointUnsavedBytes is the estimated size of records only in the WAL
+	// (neither in blocks nor in held deltas) that triggers a checkpoint.
+	CheckpointUnsavedBytes int64 `json:"checkpoint_unsaved_bytes"`
+	// CheckpointAppendOnlyAggregates appends new aggregate blocks at
+	// checkpoints instead of extending the last partial block; compaction
+	// merges them later.
+	CheckpointAppendOnlyAggregates bool `json:"checkpoint_append_only_aggregates"`
+
+	// IngestMemoryLimitBytes bounds the estimated memory of all records not yet
+	// in blocks (pending, held, uploading); deliveries are refused above it.
+	IngestMemoryLimitBytes int64 `json:"ingest_memory_limit_bytes"`
+
+	// HoldMaxAgeSeconds > 0 keeps streams in memory until they fill a block or
+	// their oldest record reaches this age; held records persist in held/ deltas.
+	HoldMaxAgeSeconds int64 `json:"hold_max_age_seconds"`
+	// HoldMemoryBytes bounds held records (estimated); above it the largest
+	// streams are written early. Zero means half of IngestMemoryLimitBytes.
+	HoldMemoryBytes int64 `json:"hold_memory_bytes"`
+	// HoldExpiryIntervalSeconds groups age-triggered checkpoints; explicit
+	// Flush and memory pressure remain immediate.
+	HoldExpiryIntervalSeconds int64 `json:"hold_expiry_interval_seconds"`
+
+	// QueryMaxRows is the largest number of rows in one history response.
+	QueryMaxRows int `json:"query_max_rows"`
+
+	// MaintenanceEnabled enables the catalog, compaction and the trash journal
+	// (RunMaintenance); required for holding.
+	MaintenanceEnabled bool `json:"maintenance_enabled"`
+	// CompactionOptions is embedded so its compaction_* options appear at the
+	// same level in JSON.
+	CompactionOptions
 }
 
 func (o Options) defaults() Options {
-	o.Compaction = o.Compaction.defaults()
-	if o.HoldExpiryBatchSeconds == 0 {
-		o.HoldExpiryBatchSeconds = 30
+	o.CompactionOptions = o.CompactionOptions.defaults()
+	if o.HoldExpiryIntervalSeconds == 0 {
+		o.HoldExpiryIntervalSeconds = 30
 	}
 	if o.WALTarget == 0 {
 		o.WALTarget = 32 << 20
@@ -80,17 +89,17 @@ func (o Options) defaults() Options {
 	if o.WALHard == 0 {
 		o.WALHard = 80 << 20
 	}
-	if o.ObjectTarget == 0 {
-		o.ObjectTarget = 4 << 20
+	if o.CheckpointUnsavedBytes == 0 {
+		o.CheckpointUnsavedBytes = 4 << 20
 	}
-	if o.BuilderHard == 0 {
-		o.BuilderHard = 32 << 20
+	if o.IngestMemoryLimitBytes == 0 {
+		o.IngestMemoryLimitBytes = 32 << 20
 	}
-	if o.MaxQueryRows == 0 {
-		o.MaxQueryRows = 1_000_000
+	if o.QueryMaxRows == 0 {
+		o.QueryMaxRows = 1_000_000
 	}
-	if o.HoldBytes == 0 {
-		o.HoldBytes = o.BuilderHard / 2
+	if o.HoldMemoryBytes == 0 {
+		o.HoldMemoryBytes = o.IngestMemoryLimitBytes / 2
 	}
 	return o
 }
@@ -241,24 +250,24 @@ func decode(b []byte, v any) error {
 // contradicts the stored configuration.
 func Open(ctx context.Context, s storage.Store, o Options, configs map[string]hta.Config, m *Metrics) (*Engine, error) {
 	o = o.defaults()
-	if o.WALDirectory == "" || o.WALTarget <= 0 || o.WALTarget >= o.WALHigh || o.WALHigh >= o.WALHard || o.ObjectTarget <= 0 || o.BuilderHard < o.ObjectTarget || o.MaxQueryRows < 1 {
+	if o.WALDirectory == "" || o.WALTarget <= 0 || o.WALTarget >= o.WALHigh || o.WALHigh >= o.WALHard || o.CheckpointUnsavedBytes <= 0 || o.IngestMemoryLimitBytes < o.CheckpointUnsavedBytes || o.QueryMaxRows < 1 {
 		return nil, fmt.Errorf("invalid engine options")
 	}
-	if o.HoldExpiryBatchSeconds < 1 || o.HoldExpiryBatchSeconds > 3600 {
+	if o.HoldExpiryIntervalSeconds < 1 || o.HoldExpiryIntervalSeconds > 3600 {
 		return nil, fmt.Errorf("invalid hold expiry batching")
 	}
-	if o.HoldSeconds < 0 || (o.HoldSeconds > 0 && !o.BackgroundMaintenance) {
+	if o.HoldMaxAgeSeconds < 0 || (o.HoldMaxAgeSeconds > 0 && !o.MaintenanceEnabled) {
 		return nil, fmt.Errorf("holding streams requires background maintenance")
 	}
-	if o.HoldBytes < 0 || o.HoldBytes >= o.BuilderHard {
-		return nil, fmt.Errorf("hold_bytes must be below builder_hard_bytes")
+	if o.HoldMemoryBytes < 0 || o.HoldMemoryBytes >= o.IngestMemoryLimitBytes {
+		return nil, fmt.Errorf("hold_memory_bytes must be below ingest_memory_limit_bytes")
 	}
-	if o.AppendOnlyAggregates && (!o.BackgroundMaintenance || !o.Compaction.Enabled || !o.Compaction.MergeSmallBlocks) {
+	if o.CheckpointAppendOnlyAggregates && (!o.MaintenanceEnabled || !o.CompactionOptions.Enabled || !o.CompactionOptions.MergeEnabled) {
 		return nil, fmt.Errorf("append-only aggregates require enabled background block consolidation")
 	}
-	if o.BackgroundMaintenance {
-		c := o.Compaction
-		if c.MaxCycleSeconds < 1 || c.MaxCycleSeconds > 3600 || c.MaxDurationSeconds < 1 || c.MaxDurationSeconds > 3600 || c.IntervalSeconds < 1 || c.CooldownSeconds < 0 || c.LocalityMinRanges < 2 || c.LocalityMinRanges > 512 || c.MaxBlocks < 1 || c.MaxBlocks > 512 || c.MaxJobBytes < 1 || c.MaxJobBytes > 64<<20 || c.ObjectBytes < 1 || c.ObjectBytes > c.MaxJobBytes || c.BytesPerSecond < 1 || c.DeadFraction <= 0 || c.DeadFraction >= 1 {
+	if o.MaintenanceEnabled {
+		c := o.CompactionOptions
+		if c.CycleMaxSeconds < 1 || c.CycleMaxSeconds > 3600 || c.JobTimeoutSeconds < 1 || c.JobTimeoutSeconds > 3600 || c.CycleIntervalSeconds < 1 || c.MergeCooldownSeconds < 0 || c.LocalityMinRanges < 2 || c.LocalityMinRanges > 512 || c.JobMaxBlocks < 1 || c.JobMaxBlocks > 512 || c.JobMaxBytes < 1 || c.JobMaxBytes > 64<<20 || c.OutputObjectBytes < 1 || c.OutputObjectBytes > c.JobMaxBytes || c.IOBytesPerSecond < 1 || c.ReclaimDeadFraction <= 0 || c.ReclaimDeadFraction >= 1 {
 			return nil, fmt.Errorf("invalid compaction options")
 		}
 	}
@@ -337,7 +346,7 @@ func Open(ctx context.Context, s storage.Store, o Options, configs map[string]ht
 	if err != nil {
 		return nil, err
 	}
-	if w.size > o.WALHard || e.pendingBytes > o.BuilderHard {
+	if w.size > o.WALHard || e.pendingBytes > o.IngestMemoryLimitBytes {
 		return nil, fmt.Errorf("recovered WAL exceeds configured limits; restore previous limits")
 	}
 	if err := e.initializeGC(ctx); err != nil {
@@ -377,7 +386,7 @@ func (e *Engine) Configure(configs map[string]hta.Config) error {
 	return e.configure(configs)
 }
 func (e *Engine) updateMetrics() {
-	if e.options.BackgroundMaintenance {
+	if e.options.MaintenanceEnabled {
 		e.updateMaintenanceMetrics(e.state)
 	}
 	e.metrics.WALTarget.Set(float64(e.options.WALTarget))
@@ -392,7 +401,7 @@ func (e *Engine) updateMetrics() {
 	e.metrics.Head.Set(float64(e.sequence))
 	e.metrics.Checkpoint.Set(float64(e.state.Sequence))
 	blocked := float64(0)
-	if e.wal.total() >= e.options.WALHigh || e.pendingBytes+e.flushingBytes >= e.options.BuilderHard {
+	if e.wal.total() >= e.options.WALHigh || e.pendingBytes+e.flushingBytes >= e.options.IngestMemoryLimitBytes {
 		blocked = 1
 	}
 	e.metrics.Backpressure.Set(blocked)
@@ -406,16 +415,16 @@ func (e *Engine) updateMetrics() {
 
 // setConfigMetrics publishes the effective limits once at startup.
 func (e *Engine) setConfigMetrics() {
-	o, c := e.options, e.options.Compaction.defaults()
+	o, c := e.options, e.options.CompactionOptions.defaults()
 	for name, v := range map[string]float64{
 		"wal_target_bytes": float64(o.WALTarget), "wal_high_bytes": float64(o.WALHigh), "wal_hard_bytes": float64(o.WALHard),
-		"object_target_bytes": float64(o.ObjectTarget), "builder_hard_bytes": float64(o.BuilderHard),
-		"hold_seconds": float64(o.HoldSeconds), "hold_expiry_batch_seconds": float64(o.HoldExpiryBatchSeconds), "hold_bytes": float64(o.HoldBytes), "max_query_rows": float64(o.MaxQueryRows),
-		"compaction_interval_seconds": float64(c.IntervalSeconds), "compaction_cooldown_seconds": float64(c.CooldownSeconds),
-		"compaction_max_duration_seconds": float64(c.MaxDurationSeconds), "compaction_max_cycle_seconds": float64(c.MaxCycleSeconds),
-		"compaction_max_job_bytes": float64(c.MaxJobBytes), "compaction_max_blocks": float64(c.MaxBlocks),
-		"compaction_object_bytes": float64(c.ObjectBytes), "compaction_bytes_per_second": float64(c.BytesPerSecond),
-		"compaction_dead_fraction": c.DeadFraction, "compaction_locality_min_ranges": float64(c.LocalityMinRanges),
+		"checkpoint_unsaved_bytes": float64(o.CheckpointUnsavedBytes), "ingest_memory_limit_bytes": float64(o.IngestMemoryLimitBytes),
+		"hold_max_age_seconds": float64(o.HoldMaxAgeSeconds), "hold_expiry_interval_seconds": float64(o.HoldExpiryIntervalSeconds), "hold_memory_bytes": float64(o.HoldMemoryBytes), "query_max_rows": float64(o.QueryMaxRows),
+		"compaction_cycle_interval_seconds": float64(c.CycleIntervalSeconds), "compaction_merge_cooldown_seconds": float64(c.MergeCooldownSeconds),
+		"compaction_job_timeout_seconds": float64(c.JobTimeoutSeconds), "compaction_cycle_max_seconds": float64(c.CycleMaxSeconds),
+		"compaction_job_max_bytes": float64(c.JobMaxBytes), "compaction_job_max_blocks": float64(c.JobMaxBlocks),
+		"compaction_output_object_bytes": float64(c.OutputObjectBytes), "compaction_io_bytes_per_second": float64(c.IOBytesPerSecond),
+		"compaction_reclaim_dead_fraction": c.ReclaimDeadFraction, "compaction_locality_min_ranges": float64(c.LocalityMinRanges),
 	} {
 		e.metrics.Config.WithLabelValues(name).Set(v)
 	}
@@ -528,7 +537,7 @@ func (e *Engine) IngestBatch(ctx context.Context, deliveries []Delivery) (int, e
 			clone.Levels[k] = v
 		}
 		plan := ingestPlan{metric: name, series: &clone, received: time.Now().UnixNano()}
-		available := e.options.BuilderHard - pendingBytes
+		available := e.options.IngestMemoryLimitBytes - pendingBytes
 		accepted := make([]hta.Point, 0, len(points[i]))
 		for _, p := range points[i] {
 			if clone.Insert(p, func(r hta.Record) {
@@ -558,11 +567,11 @@ func (e *Engine) IngestBatch(ctx context.Context, deliveries []Delivery) (int, e
 			stop = fmt.Errorf("DataChunk too large")
 			break
 		}
-		if int64(len(payload)+frameHeader) > e.options.WALHard || plan.extra > e.options.BuilderHard {
+		if int64(len(payload)+frameHeader) > e.options.WALHard || plan.extra > e.options.IngestMemoryLimitBytes {
 			stop = fmt.Errorf("delivery exceeds configured WAL/builder capacity")
 			break
 		}
-		if walSize >= e.options.WALHigh || walSize+int64(len(payload)+frameHeader) > e.options.WALHard || pendingBytes+plan.extra > e.options.BuilderHard {
+		if walSize >= e.options.WALHigh || walSize+int64(len(payload)+frameHeader) > e.options.WALHard || pendingBytes+plan.extra > e.options.IngestMemoryLimitBytes {
 			e.metrics.Backpressure.Set(1)
 			e.metrics.BackpressureEvents.Inc()
 			stop = ErrPressure
@@ -609,7 +618,7 @@ func (e *Engine) IngestBatch(ctx context.Context, deliveries []Delivery) (int, e
 	e.updateMetrics()
 	// Wake the flush loop as soon as a threshold is crossed, instead of letting
 	// the builder grow towards its hard limit until the next tick.
-	if e.wal.size >= e.options.WALTarget || e.unsavedBytes() >= e.options.ObjectTarget {
+	if e.wal.size >= e.options.WALTarget || e.unsavedBytes() >= e.options.CheckpointUnsavedBytes {
 		select {
 		case e.flushWanted <- struct{}{}:
 		default:
@@ -640,7 +649,7 @@ func (e *Engine) put(ctx context.Context, key string, b []byte, v *string) (stri
 func (e *Engine) NeedsFlush() bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	return e.wal.size >= e.options.WALTarget || e.unsavedBytes() >= e.options.ObjectTarget || e.holdDue() || e.holdPressure()
+	return e.wal.size >= e.options.WALTarget || e.unsavedBytes() >= e.options.CheckpointUnsavedBytes || e.holdDue() || e.holdPressure()
 }
 
 // Flush writes a checkpoint: it freezes the records to write and the active
@@ -663,7 +672,7 @@ func (e *Engine) Flush(ctx context.Context) (err error) {
 		return err
 	}
 	if e.sequence == e.state.Sequence && e.version != "" && !e.holdDue() && !e.holdPressure() {
-		if !e.options.BackgroundMaintenance {
+		if !e.options.MaintenanceEnabled {
 			e.collectGarbage(ctx)
 		}
 		e.mu.Unlock()
@@ -680,7 +689,7 @@ func (e *Engine) Flush(ctx context.Context) (err error) {
 	switch {
 	case e.wal.size >= e.options.WALTarget:
 		reason = "wal"
-	case e.unsavedBytes() >= e.options.ObjectTarget:
+	case e.unsavedBytes() >= e.options.CheckpointUnsavedBytes:
 		reason = "object_target"
 	case e.holdPressure():
 		reason = "hold_budget"
@@ -767,7 +776,7 @@ func (e *Engine) Flush(ctx context.Context) (err error) {
 				// Fill the last partial aggregate block across checkpoints. Reading
 				// only this bounded tail keeps coarse levels independent of flush
 				// frequency. Raw blocks are appended; published blobs remain immutable.
-				if level > 0 && !e.options.AppendOnlyAggregates {
+				if level > 0 && !e.options.CheckpointAppendOnlyAggregates {
 					tail, tailErr := e.lastIndexEntry(ctx, next.Roots[stream.metric][level])
 					if tailErr != nil {
 						return tailErr
@@ -876,7 +885,7 @@ func (e *Engine) Flush(ctx context.Context) (err error) {
 				}
 			}
 		}
-		if e.options.BackgroundMaintenance {
+		if e.options.MaintenanceEnabled {
 			if err = e.catalogCheckpoint(ctx, &next, publishedData, publishedIndex); err != nil {
 				return err
 			}
@@ -981,7 +990,7 @@ func (e *Engine) Flush(ctx context.Context) (err error) {
 	e.metrics.Commits.Inc()
 	e.metrics.LastCommit.SetToCurrentTime()
 	e.updateMetrics()
-	if !e.options.BackgroundMaintenance {
+	if !e.options.MaintenanceEnabled {
 		e.collectGarbage(ctx)
 	}
 	return nil
@@ -1012,7 +1021,7 @@ func (e *Engine) RunFlush(ctx context.Context) {
 				failed = time.Now()
 				slog.Error("object-store checkpoint failed; WAL retained", "error", err)
 			}
-		} else if !e.options.BackgroundMaintenance && e.publishMu.TryLock() {
+		} else if !e.options.MaintenanceEnabled && e.publishMu.TryLock() {
 			// Legacy GC edits reference state that an unlocked flush reads.
 			e.mu.Lock()
 			if !e.closed && e.fatal == nil {

@@ -166,7 +166,7 @@ func (e *Engine) encodeManifest(ctx context.Context, next *manifest, base manife
 			obsolete = append(obsolete, base.HeldState.Key)
 		}
 	}
-	if e.options.BackgroundMaintenance {
+	if e.options.MaintenanceEnabled {
 		// Use the registered job namespace for crash cleanup of publication objects.
 		publisher := &Engine{store: e.store, metrics: e.metrics, activeMaintenance: next.stagingNamespace}
 		if err = publisher.appendTrash(ctx, next, obsolete, 0); err != nil {

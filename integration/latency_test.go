@@ -271,7 +271,7 @@ func TestRequestLatency(t *testing.T) {
 		}
 		docker(t, "rm", "-f", id)
 	})
-	e, err := engine.Open(ctx, backend, engine.Options{WALDirectory: t.TempDir(), ObjectTarget: objectTarget, BuilderHard: max(64<<20, objectTarget*2), WALTarget: walTarget, WALHigh: walTarget * 2, WALHard: walTarget * 3}, newMetrics, nil)
+	e, err := engine.Open(ctx, backend, engine.Options{WALDirectory: t.TempDir(), CheckpointUnsavedBytes: objectTarget, IngestMemoryLimitBytes: max(64<<20, objectTarget*2), WALTarget: walTarget, WALHigh: walTarget * 2, WALHard: walTarget * 3}, newMetrics, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

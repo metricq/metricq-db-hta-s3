@@ -215,7 +215,7 @@
     {
       "type": "stat",
       "title": "Backpressure",
-      "description": "1 while the WAL high watermark or builder limit refuses deliveries. See Operations \u2192 Tuning.",
+      "description": "1 while the WAL high watermark or ingest memory limit refuses deliveries. See Operations \u2192 Tuning.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -486,8 +486,8 @@
           }
         },
         {
-          "expr": "max(metricq_db_config{token=\"$token\",parameter=\"prefetch\"})",
-          "legendFormat": "prefetch",
+          "expr": "max(metricq_db_config{token=\"$token\",parameter=\"ingest_prefetch\"})",
+          "legendFormat": "ingest_prefetch",
           "refId": "C",
           "datasource": {
             "type": "prometheus",
@@ -718,7 +718,7 @@
     {
       "type": "timeseries",
       "title": "Backpressure events",
-      "description": "Ingest attempts refused by WAL high watermark or builder limit; each triggers an inline checkpoint.",
+      "description": "Ingest attempts refused by WAL high watermark or ingest memory limit; each triggers an inline checkpoint.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -961,7 +961,7 @@
           }
         },
         {
-          "expr": "max(metricq_db_config{token=\"$token\",parameter=\"object_target_bytes\"})",
+          "expr": "max(metricq_db_config{token=\"$token\",parameter=\"checkpoint_unsaved_bytes\"})",
           "legendFormat": "object target",
           "refId": "B",
           "datasource": {
@@ -1132,7 +1132,7 @@
           }
         },
         {
-          "expr": "max(metricq_db_config{token=\"$token\",parameter=\"hold_bytes\"})",
+          "expr": "max(metricq_db_config{token=\"$token\",parameter=\"hold_memory_bytes\"})",
           "legendFormat": "hold budget",
           "refId": "B",
           "datasource": {
@@ -1141,8 +1141,8 @@
           }
         },
         {
-          "expr": "max(metricq_db_config{token=\"$token\",parameter=\"builder_hard_bytes\"})",
-          "legendFormat": "builder limit",
+          "expr": "max(metricq_db_config{token=\"$token\",parameter=\"ingest_memory_limit_bytes\"})",
+          "legendFormat": "ingest memory limit",
           "refId": "C",
           "datasource": {
             "type": "prometheus",
@@ -1200,7 +1200,7 @@
           }
         },
         {
-          "expr": "max(metricq_db_config{token=\"$token\",parameter=\"hold_seconds\"})",
+          "expr": "max(metricq_db_config{token=\"$token\",parameter=\"hold_max_age_seconds\"})",
           "legendFormat": "hold limit",
           "refId": "B",
           "datasource": {
@@ -1665,7 +1665,7 @@
     {
       "type": "timeseries",
       "title": "Stored bytes",
-      "description": "Dead bytes are unreferenced parts of partly live objects; compaction reclaims them above dead_fraction.",
+      "description": "Dead bytes are unreferenced parts of partly live objects; compaction reclaims them above compaction_reclaim_dead_fraction.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -2071,7 +2071,7 @@
           }
         },
         {
-          "expr": "max(metricq_db_config{token=\"$token\",parameter=\"compaction_bytes_per_second\"})",
+          "expr": "max(metricq_db_config{token=\"$token\",parameter=\"compaction_io_bytes_per_second\"})",
           "legendFormat": "rate limit",
           "refId": "C",
           "datasource": {
@@ -2139,7 +2139,7 @@
           }
         },
         {
-          "expr": "max(metricq_db_config{token=\"$token\",parameter=\"compaction_max_duration_seconds\"})",
+          "expr": "max(metricq_db_config{token=\"$token\",parameter=\"compaction_job_timeout_seconds\"})",
           "legendFormat": "timeout",
           "refId": "C",
           "datasource": {

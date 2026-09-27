@@ -46,8 +46,8 @@ func TestFlushReusesPinnedIndexTails(t *testing.T) {
 	}
 	s := &indexReadStore{gcStore: &gcStore{memoryStore: newStore()}}
 	options := maintenanceOptions(t.TempDir(), true)
-	options.AppendOnlyAggregates = true
-	options.Compaction.CooldownSeconds = 0
+	options.CheckpointAppendOnlyAggregates = true
+	options.CompactionOptions.MergeCooldownSeconds = 0
 	e, err := Open(ctx, s, options, configs, nil)
 	if err != nil {
 		t.Fatal(err)

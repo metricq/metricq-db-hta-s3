@@ -20,7 +20,7 @@ manager ([Deployment](deployment.md#2-register-the-database-with-the-manager)).
 | `--token` | `METRICQ_TOKEN` | `db-hta-s3` | Client token; the manager's configuration document id. |
 | `-v`, `--verbosity` | `METRICQ_VERBOSITY` | `warning` | `debug`, `info`, `warning`, `error` |
 | `--metrics-listen` | `METRICQ_METRICS_LISTEN` | `127.0.0.1:9090` | Address of `/metrics` and `/readyz` |
-| `--prefetch` | `METRICQ_PREFETCH` | `100` | AMQP data prefetch = largest group-commit batch |
+| `--ingest-prefetch` | `METRICQ_INGEST_PREFETCH` | `100` | AMQP data prefetch = largest group-commit batch |
 | `--wal-dir` | `METRICQ_WAL_DIR` | `/var/lib/metricq-db-hta-s3/wal` | WAL directory on durable local storage |
 | `--s3-bucket` | `METRICQ_S3_BUCKET` | — (required) | Bucket |
 | `--s3-prefix` | `METRICQ_S3_PREFIX` | empty | Key prefix of this database (exclusive) |
@@ -40,78 +40,96 @@ S3 credentials come from the AWS SDK chain (`AWS_ACCESS_KEY_ID`,
 
 ## Configuration file
 
-All keys are optional. Values in bytes are plain integers.
+All keys are optional; unknown keys are rejected. Values in bytes are plain
+integers. Option names start with the area they affect: `wal_`,
+`checkpoint_`, `ingest_`, `hold_`, `query_`, `maintenance_` and
+`compaction_` (then `cycle_`, `job_`, `output_`, `io_`, `merge_`, `reclaim_`,
+`locality_`). The same names label `metricq_db_config{parameter=…}`.
 
 ```json
 {
-  "server": "amqp://user:pass@rabbitmq/",
+  "server": "amqp://admin:admin@localhost/",
   "token": "db-hta-s3",
-  "listen": "127.0.0.1:9090",
-  "prefetch": 100,
-  "s3": {"bucket": "metricq", "prefix": "db-hta-s3", "endpoint": "https://s3.example.org", "region": "us-east-1", "path_style": true},
+  "metrics_listen": "127.0.0.1:9090",
+  "ingest_prefetch": 100,
+  "s3": {
+    "bucket": "metricq",
+    "prefix": "db-hta-s3",
+    "endpoint": "http://localhost:9000",
+    "region": "us-east-1",
+    "path_style": true
+  },
   "engine": {
-    "wal_directory": "/var/lib/metricq-db-hta-s3/wal",
+    "wal_directory": "./wal",
     "wal_target_bytes": 33554432,
     "wal_high_bytes": 67108864,
     "wal_hard_bytes": 83886080,
-    "object_target_bytes": 4194304,
-    "builder_hard_bytes": 805306368,
-    "hold_seconds": 3600,
-    "hold_bytes": 536870912,
-    "hold_expiry_batch_seconds": 30,
-    "max_query_rows": 1000000,
-    "append_only_aggregates": true,
-    "compaction": {
-      "enabled": true,
-      "merge_small_blocks": true,
-      "interval_seconds": 60,
-      "max_cycle_seconds": 30,
-      "max_duration_seconds": 60,
-      "cooldown_seconds": 60,
-      "max_blocks": 512,
-      "max_job_bytes": 33554432,
-      "object_bytes": 4194304,
-      "bytes_per_second": 8388608,
-      "dead_fraction": 0.4,
-      "locality_min_ranges": 4,
-      "disable_locality": false
-    }
+    "checkpoint_unsaved_bytes": 4194304,
+    "checkpoint_append_only_aggregates": true,
+    "ingest_memory_limit_bytes": 805306368,
+    "hold_max_age_seconds": 3600,
+    "hold_memory_bytes": 536870912,
+    "hold_expiry_interval_seconds": 30,
+    "query_max_rows": 1000000,
+    "compaction_enabled": true,
+    "compaction_cycle_interval_seconds": 60,
+    "compaction_cycle_max_seconds": 30,
+    "compaction_job_timeout_seconds": 60,
+    "compaction_job_max_blocks": 512,
+    "compaction_job_max_bytes": 33554432,
+    "compaction_output_object_bytes": 4194304,
+    "compaction_io_bytes_per_second": 8388608,
+    "compaction_merge_enabled": true,
+    "compaction_merge_cooldown_seconds": 60,
+    "compaction_reclaim_dead_fraction": 0.4,
+    "compaction_locality_min_ranges": 4,
+    "compaction_locality_disabled": false
   }
 }
 ```
+
+### Connection
+
+| Key | Flag | Meaning |
+| --- | --- | --- |
+| `server`, `token` | `--server`, `--token` | MetricQ connection |
+| `metrics_listen` | `--metrics-listen` | Prometheus endpoint address |
+| `ingest_prefetch` | `--ingest-prefetch` | AMQP data prefetch |
+| `s3.bucket`, `s3.prefix`, `s3.endpoint`, `s3.region`, `s3.path_style` | `--s3-*` | Object store location |
 
 ### Engine options
 
 | Key | Default | Constraint | Meaning |
 | --- | --- | --- | --- |
+| `wal_directory` | `/var/lib/metricq-db-hta-s3/wal` (executable) | required | WAL directory (`--wal-dir`) |
 | `wal_target_bytes` | 32 MiB | < `wal_high_bytes` | Active WAL segment size that triggers a checkpoint |
 | `wal_high_bytes` | 64 MiB | < `wal_hard_bytes` | WAL size (all segments) at which ingestion is refused |
 | `wal_hard_bytes` | 80 MiB | | Absolute WAL limit; a single delivery larger than this is rejected |
-| `object_target_bytes` | 4 MiB | ≤ `builder_hard_bytes` | Records only in the WAL (estimated) that trigger a checkpoint |
-| `builder_hard_bytes` | 32 MiB | | Memory limit for pending, held and uploading records; ingestion is refused above |
-| `hold_seconds` | 3600 (executable), 0 (library) | ≥ 0 | Hold streams in memory until a full block or this age; 0 disables holding |
-| `hold_bytes` | ½ `builder_hard_bytes` | < `builder_hard_bytes` | Held records above this are written early, largest streams first |
-| `hold_expiry_batch_seconds` | 30 | | Age-triggered checkpoints are grouped on this cadence |
-| `max_query_rows` | 1 000 000 | ≥ 1 | Largest history response |
-| `append_only_aggregates` | true (executable) | requires compaction with merging | Append new aggregate blocks instead of extending the last one |
-| `background_maintenance` | always on in the executable | | Catalog, compaction and GC |
+| `checkpoint_unsaved_bytes` | 4 MiB | ≤ `ingest_memory_limit_bytes` | Records only in the WAL (estimated) that trigger a checkpoint |
+| `checkpoint_append_only_aggregates` | true (executable) | requires `compaction_enabled` and `compaction_merge_enabled` | Append new aggregate blocks instead of extending the last one |
+| `ingest_memory_limit_bytes` | 32 MiB | | Memory limit for pending, held and uploading records; ingestion is refused above |
+| `hold_max_age_seconds` | 3600 (executable), 0 (library) | ≥ 0 | Hold streams in memory until a full block or this age; 0 disables holding |
+| `hold_memory_bytes` | ½ `ingest_memory_limit_bytes` | < `ingest_memory_limit_bytes` | Held records above this are written early, largest streams first |
+| `hold_expiry_interval_seconds` | 30 | | Age-triggered checkpoints are grouped on this cadence |
+| `query_max_rows` | 1 000 000 | ≥ 1 | Largest history response |
+| `maintenance_enabled` | always on in the executable | | Catalog, compaction and GC |
 
 ### Compaction options
 
 | Key | Default | Constraint | Meaning |
 | --- | --- | --- | --- |
-| `enabled` | true (executable) | | Run compaction |
-| `merge_small_blocks` | true (executable) | | Merge adjacent small blocks of a stream |
-| `interval_seconds` | 60 | ≥ 1 | Period of compaction cycles |
-| `max_cycle_seconds` | 30 (executable), 10 | 1–3600 | Consecutive jobs are started within this window per cycle |
-| `max_duration_seconds` | 60 | 1–3600 | Timeout of one job |
-| `cooldown_seconds` | 60 (executable), 0 | ≥ 0 | Objects younger than this are not merged |
-| `max_blocks` | 512 (executable), 128 | 1–512 | Source blocks per job |
-| `max_job_bytes` | 32 MiB | ≤ 64 MiB | Source bytes per job |
-| `object_bytes` | 4 MiB | ≤ `max_job_bytes` | Size of output packs |
-| `bytes_per_second` | 8 MiB | ≥ 1 | Rate limit for all maintenance reads and writes |
-| `dead_fraction` | 0.4 | 0 < x < 1 | Objects with more dead bytes are evacuated |
-| `locality_min_ranges` | 4 | | Lay out a metric level contiguously when it spans at least this many ranges |
-| `disable_locality` | false | | Turn off level locality |
+| `compaction_enabled` | true (executable) | | Run compaction |
+| `compaction_cycle_interval_seconds` | 60 | ≥ 1 | Period of compaction cycles |
+| `compaction_cycle_max_seconds` | 30 (executable), 10 | 1–3600 | Consecutive jobs are started within this window per cycle |
+| `compaction_job_timeout_seconds` | 60 | 1–3600 | Timeout of one job |
+| `compaction_job_max_blocks` | 512 (executable), 128 | 1–512 | Source blocks per job |
+| `compaction_job_max_bytes` | 32 MiB | ≤ 64 MiB | Source bytes per job |
+| `compaction_output_object_bytes` | 4 MiB | ≤ `compaction_job_max_bytes` | Size of output packs |
+| `compaction_io_bytes_per_second` | 8 MiB | ≥ 1 | Rate limit for all maintenance reads and writes |
+| `compaction_merge_enabled` | true (executable) | | Merge adjacent small blocks of a stream |
+| `compaction_merge_cooldown_seconds` | 60 (executable), 0 | ≥ 0 | Objects younger than this are not merged |
+| `compaction_reclaim_dead_fraction` | 0.4 | 0 < x < 1 | Objects with more dead bytes are evacuated |
+| `compaction_locality_min_ranges` | 4 | | Lay out a metric level contiguously when it spans at least this many ranges |
+| `compaction_locality_disabled` | false | | Turn off level locality |
 
 What to change when is described in [Tuning](tuning.md).

@@ -16,11 +16,11 @@ func TestLocalityPacksWholeLevelAcrossTimeGapsAndPreservesSealedPrefix(t *testin
 	ctx := context.Background()
 	s := &countedRangeGCStore{rangeGCStore: &rangeGCStore{gcStore: &gcStore{memoryStore: newStore()}}}
 	opts := maintenanceOptions(t.TempDir(), true)
-	opts.AppendOnlyAggregates = true
-	opts.HoldSeconds = 3600
-	opts.Compaction.ObjectBytes = 4 << 20
-	opts.Compaction.MaxJobBytes = 4 << 20
-	opts.Compaction.MaxBlocks = 512
+	opts.CheckpointAppendOnlyAggregates = true
+	opts.HoldMaxAgeSeconds = 3600
+	opts.CompactionOptions.OutputObjectBytes = 4 << 20
+	opts.CompactionOptions.JobMaxBytes = 4 << 20
+	opts.CompactionOptions.JobMaxBlocks = 512
 	e, err := Open(ctx, s, opts, map[string]hta.Config{"canonical.short": {IntervalMin: int64(time.Second), IntervalMax: int64(100000 * time.Second), IntervalFactor: 10}}, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -185,7 +185,7 @@ func TestFailedLocalityJobDoesNotLoseItsSelection(t *testing.T) {
 	ctx := context.Background()
 	s := &prefixFailureStore{gcStore: &gcStore{memoryStore: newStore()}}
 	opts := maintenanceOptions(t.TempDir(), true)
-	opts.Compaction.ObjectBytes = 4 << 20
+	opts.CompactionOptions.OutputObjectBytes = 4 << 20
 	e, err := Open(ctx, s, opts, testConfig, nil)
 	if err != nil {
 		t.Fatal(err)

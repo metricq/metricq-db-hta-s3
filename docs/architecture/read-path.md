@@ -18,7 +18,7 @@ the metric's unflushed records. The rest runs without locks.
 4. **Add unflushed records** (records being uploaded first, then pending ones)
    and build the response.
 
-Limits per request: `max_query_rows` output rows and 256 MiB of decoded
+Limits per request: `query_max_rows` output rows and 256 MiB of decoded
 records. A query does not hold the ingestion lock during I/O, and a running
 checkpoint does not block queries.
 

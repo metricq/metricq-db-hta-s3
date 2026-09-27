@@ -16,50 +16,62 @@ import (
 // CompactionOptions configures background compaction; see
 // docs/operations/tuning.md for the effect of each option.
 type CompactionOptions struct {
-	MaxDurationSeconds int64 `json:"max_duration_seconds"`
-	MaxCycleSeconds    int64 `json:"max_cycle_seconds"`
-
-	Enabled          bool    `json:"enabled"`
-	IntervalSeconds  int64   `json:"interval_seconds"`
-	CooldownSeconds  int64   `json:"cooldown_seconds"`
-	MaxJobBytes      int64   `json:"max_job_bytes"`
-	MaxBlocks        int     `json:"max_blocks"`
-	ObjectBytes      int64   `json:"object_bytes"`
-	BytesPerSecond   int64   `json:"bytes_per_second"`
-	DeadFraction     float64 `json:"dead_fraction"`
-	MergeSmallBlocks bool    `json:"merge_small_blocks"`
-	// Minimum input physical ranges for level-local packing; no temporal grouping.
-	LocalityMinRanges int  `json:"locality_min_ranges"`
-	DisableLocality   bool `json:"disable_locality"`
+	// Enabled runs compaction cycles.
+	Enabled bool `json:"compaction_enabled"`
+	// CycleIntervalSeconds is the period of compaction cycles.
+	CycleIntervalSeconds int64 `json:"compaction_cycle_interval_seconds"`
+	// CycleMaxSeconds is the window in which a cycle starts consecutive jobs.
+	CycleMaxSeconds int64 `json:"compaction_cycle_max_seconds"`
+	// JobTimeoutSeconds bounds one job.
+	JobTimeoutSeconds int64 `json:"compaction_job_timeout_seconds"`
+	// JobMaxBlocks bounds the source blocks of one job.
+	JobMaxBlocks int `json:"compaction_job_max_blocks"`
+	// JobMaxBytes bounds the source bytes of one job.
+	JobMaxBytes int64 `json:"compaction_job_max_bytes"`
+	// OutputObjectBytes is the target size of output packs.
+	OutputObjectBytes int64 `json:"compaction_output_object_bytes"`
+	// IOBytesPerSecond limits all maintenance reads and writes.
+	IOBytesPerSecond int64 `json:"compaction_io_bytes_per_second"`
+	// MergeEnabled merges adjacent small blocks of a stream.
+	MergeEnabled bool `json:"compaction_merge_enabled"`
+	// MergeCooldownSeconds excludes younger objects from merges.
+	MergeCooldownSeconds int64 `json:"compaction_merge_cooldown_seconds"`
+	// ReclaimDeadFraction is the dead-byte share at which objects are evacuated.
+	ReclaimDeadFraction float64 `json:"compaction_reclaim_dead_fraction"`
+	// LocalityMinRanges is the number of physical ranges a metric level must
+	// span before it is laid out contiguously; no temporal grouping.
+	LocalityMinRanges int `json:"compaction_locality_min_ranges"`
+	// LocalityDisabled turns level locality off.
+	LocalityDisabled bool `json:"compaction_locality_disabled"`
 }
 
 func (o CompactionOptions) defaults() CompactionOptions {
 	if o.LocalityMinRanges == 0 {
 		o.LocalityMinRanges = 4
 	}
-	if o.MaxCycleSeconds == 0 {
-		o.MaxCycleSeconds = 10
+	if o.CycleMaxSeconds == 0 {
+		o.CycleMaxSeconds = 10
 	}
-	if o.MaxDurationSeconds == 0 {
-		o.MaxDurationSeconds = 60
+	if o.JobTimeoutSeconds == 0 {
+		o.JobTimeoutSeconds = 60
 	}
-	if o.IntervalSeconds == 0 {
-		o.IntervalSeconds = 60
+	if o.CycleIntervalSeconds == 0 {
+		o.CycleIntervalSeconds = 60
 	}
-	if o.MaxJobBytes == 0 {
-		o.MaxJobBytes = 32 << 20
+	if o.JobMaxBytes == 0 {
+		o.JobMaxBytes = 32 << 20
 	}
-	if o.MaxBlocks == 0 {
-		o.MaxBlocks = 128
+	if o.JobMaxBlocks == 0 {
+		o.JobMaxBlocks = 128
 	}
-	if o.ObjectBytes == 0 {
-		o.ObjectBytes = 4 << 20
+	if o.OutputObjectBytes == 0 {
+		o.OutputObjectBytes = 4 << 20
 	}
-	if o.BytesPerSecond == 0 {
-		o.BytesPerSecond = 8 << 20
+	if o.IOBytesPerSecond == 0 {
+		o.IOBytesPerSecond = 8 << 20
 	}
-	if o.DeadFraction == 0 {
-		o.DeadFraction = .4
+	if o.ReclaimDeadFraction == 0 {
+		o.ReclaimDeadFraction = .4
 	}
 	return o
 }
@@ -335,8 +347,8 @@ func (e *Engine) bootstrapCatalog(ctx context.Context) error {
 func (e *Engine) RunMaintenance(ctx context.Context) {
 	gcTicker := time.NewTicker(time.Second)
 	defer gcTicker.Stop()
-	options := e.options.Compaction.defaults()
-	compactTicker := time.NewTicker(time.Duration(options.IntervalSeconds) * time.Second)
+	options := e.options.CompactionOptions.defaults()
+	compactTicker := time.NewTicker(time.Duration(options.CycleIntervalSeconds) * time.Second)
 	defer compactTicker.Stop()
 	for {
 		select {
@@ -353,7 +365,7 @@ func (e *Engine) RunMaintenance(ctx context.Context) {
 			}
 		case <-compactTicker.C:
 			if options.Enabled {
-				deadline := time.Now().Add(time.Duration(options.MaxCycleSeconds) * time.Second)
+				deadline := time.Now().Add(time.Duration(options.CycleMaxSeconds) * time.Second)
 				for ctx.Err() == nil && time.Now().Before(deadline) {
 					e.mu.Lock()
 					before := e.compactionCompletions

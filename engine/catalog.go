@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"sort"
@@ -27,6 +28,7 @@ type BlockInfo struct {
 
 // ObjectInfo is the catalog entry of one object: its live blocks and sizes.
 type ObjectInfo struct {
+	Inventory         []objectInventoryPage
 	Key               string
 	Size, LiveBytes   int64
 	Blocks            []BlockInfo
@@ -48,6 +50,7 @@ type catalogWriter struct {
 	prefix       string
 	retired      []string
 	created      []string
+	pendingNodes []catalogNode
 	pending      []*pack
 	pendingBytes int
 }
@@ -57,9 +60,16 @@ func (w *catalogWriter) read(ref blob) (catalogNode, error) {
 	if err := w.ctx.Err(); err != nil {
 		return n, err
 	}
+	if w.e.sharedCatalog != nil {
+		if cached, ok := w.e.sharedCatalog.get(ref); ok {
+			w.e.metrics.MetadataCache.WithLabelValues("catalog", "hit").Inc()
+			return cached, nil
+		}
+	}
 	if cached, ok := w.e.catalogCache[ref]; ok {
 		return cached, nil
 	}
+	w.e.metrics.MetadataCache.WithLabelValues("catalog", "miss").Inc()
 	if ref.Length > 32<<20 {
 		return n, fmt.Errorf("catalog page too large")
 	}
@@ -74,6 +84,17 @@ func (w *catalogWriter) read(ref blob) (catalogNode, error) {
 	err = decode(b, &n)
 	if err == nil && ((len(n.Items) == 0) == (len(n.Children) == 0) || len(n.Items) > catalogFanout || len(n.Children) > catalogFanout) {
 		err = fmt.Errorf("invalid catalog node")
+	}
+	if err == nil {
+		for i := range n.Items {
+			if err = w.e.loadObjectInventory(w.ctx, &n.Items[i]); err != nil {
+				return n, err
+			}
+		}
+	}
+	if err == nil && w.e.sharedCatalog != nil {
+		w.e.sharedCatalog.add(ref, n, len(b))
+		return n, nil
 	}
 	if err == nil {
 		cost := int64(len(b))
@@ -99,7 +120,7 @@ func (w *catalogWriter) write(n catalogNode) (catalogEdge, error) {
 	if err != nil {
 		return catalogEdge{}, err
 	}
-	b, err := encode(n)
+	b, err := encode(catalogWire(n))
 	if err != nil {
 		return catalogEdge{}, err
 	}
@@ -113,6 +134,7 @@ func (w *catalogWriter) write(n catalogNode) (catalogEdge, error) {
 		}
 	}
 	w.pending = append(w.pending, p)
+	w.pendingNodes = append(w.pendingNodes, n)
 	w.pendingBytes += len(b)
 	w.created = append(w.created, p.key)
 	edge := catalogEdge{Ref: ref}
@@ -142,13 +164,20 @@ func (w *catalogWriter) flush() error {
 			}(i, p)
 		}
 		wg.Wait()
-		for _, err := range errs {
+		for i, err := range errs {
+			if err == nil && w.e.sharedCatalog != nil {
+				p := batch[i]
+				data := p.buf.Bytes()
+				ref := blob{Key: p.key, Length: int64(len(data)), Hash: sha256.Sum256(data)}
+				w.e.sharedCatalog.add(ref, w.pendingNodes[begin+i], len(data))
+			}
 			if err != nil {
 				return err
 			}
 		}
 	}
 	w.pending = nil
+	w.pendingNodes = nil
 	w.pendingBytes = 0
 	return nil
 }
@@ -377,6 +406,17 @@ func (e *Engine) catalogChanges(ctx context.Context, next *manifest, changes map
 				if next.MaintenanceStatsReady {
 					next.CandidateObjects--
 				}
+			}
+		}
+		if value != nil {
+			retired, err := e.writeObjectInventory(ctx, value, old)
+			if err != nil {
+				return nil, err
+			}
+			trash = append(trash, retired...)
+		} else {
+			for key := range inventoryObjects(old.Inventory) {
+				trash = append(trash, key)
 			}
 		}
 		if value != nil {

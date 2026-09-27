@@ -121,12 +121,14 @@ func (e *Engine) readNode(ctx context.Context, r blob) (indexNode, error) {
 	}
 	if e.sharedNodes != nil {
 		if n, ok := e.sharedNodes.get(r); ok {
+			e.metrics.MetadataCache.WithLabelValues("index", "hit").Inc()
 			if e.nodeCache != nil {
 				e.nodeCache[r] = n
 			}
 			return n, nil
 		}
 	}
+	e.metrics.MetadataCache.WithLabelValues("index", "miss").Inc()
 	b, err := e.readBlob(ctx, r)
 	if err != nil {
 		return indexNode{}, err

@@ -16,6 +16,9 @@ import (
 // CompactionOptions configures background compaction; see
 // docs/operations/tuning.md for the effect of each option.
 type CompactionOptions struct {
+	// Continuous resumes a backlog immediately after the cycle start window,
+	// and wakes on successful checkpoints. I/O pacing and WAL pressure still apply.
+	Continuous bool `json:"compaction_continuous"`
 	// Enabled runs compaction cycles.
 	Enabled bool `json:"compaction_enabled"`
 	// CycleIntervalSeconds is the period of compaction cycles.
@@ -350,6 +353,51 @@ func (e *Engine) RunMaintenance(ctx context.Context) {
 	options := e.options.CompactionOptions.defaults()
 	compactTicker := time.NewTicker(time.Duration(options.CycleIntervalSeconds) * time.Second)
 	defer compactTicker.Stop()
+	cycle := func() {
+		if !options.Enabled {
+			return
+		}
+		deadline := time.Now().Add(time.Duration(options.CycleMaxSeconds) * time.Second)
+		continueWork := false
+		for ctx.Err() == nil && time.Now().Before(deadline) {
+			continueWork = false
+			e.mu.Lock()
+			before := e.compactionCompletions
+			e.mu.Unlock()
+			err := e.CompactOnce(ctx)
+			if err != nil {
+				if ctx.Err() == nil {
+					slog.Warn("background compaction failed", "error", err)
+				}
+				break
+			}
+			if e.reclaimDue() {
+				if err = e.Reclaim(ctx); err != nil {
+					break
+				}
+			}
+			e.mu.Lock()
+			progress := e.compactionCompletions != before
+			pending := e.state.CompactionJob.Key != ""
+			more := e.compactionScanMore
+			pressure := e.wal.total() >= e.options.WALHigh || e.unsavedBytes() >= e.options.CheckpointUnsavedBytes
+			e.mu.Unlock()
+			continueWork = (progress || more) && !pending && !pressure
+			if !continueWork {
+				break
+			}
+			select {
+			case <-ctx.Done():
+			case <-time.After(time.Millisecond):
+			}
+		}
+		if options.Continuous && continueWork && ctx.Err() == nil {
+			select {
+			case e.maintenanceWanted <- struct{}{}:
+			default:
+			}
+		}
+	}
 	for {
 		select {
 		case <-ctx.Done():
@@ -364,38 +412,9 @@ func (e *Engine) RunMaintenance(ctx context.Context) {
 				}
 			}
 		case <-compactTicker.C:
-			if options.Enabled {
-				deadline := time.Now().Add(time.Duration(options.CycleMaxSeconds) * time.Second)
-				for ctx.Err() == nil && time.Now().Before(deadline) {
-					e.mu.Lock()
-					before := e.compactionCompletions
-					e.mu.Unlock()
-					err := e.CompactOnce(ctx)
-					if err != nil {
-						if ctx.Err() == nil {
-							slog.Warn("background compaction failed", "error", err)
-						}
-						break
-					}
-					if e.reclaimDue() {
-						if err = e.Reclaim(ctx); err != nil {
-							break
-						}
-					}
-					e.mu.Lock()
-					progress := e.compactionCompletions != before
-					pending := e.state.CompactionJob.Key != ""
-					more := e.compactionScanMore
-					e.mu.Unlock()
-					if (!progress && !more) || pending {
-						break
-					}
-					select {
-					case <-ctx.Done():
-					case <-time.After(time.Millisecond):
-					}
-				}
-			}
+			cycle()
+		case <-e.maintenanceWanted:
+			cycle()
 		}
 	}
 }

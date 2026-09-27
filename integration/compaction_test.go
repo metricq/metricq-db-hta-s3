@@ -19,6 +19,7 @@ import (
 	"github.com/metricq/metricq-db-hta-s3/hta"
 	"github.com/metricq/metricq-db-hta-s3/storage"
 	metricq "github.com/metricq/metricq-go"
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 func TestCompactionS3(t *testing.T) {
@@ -54,7 +55,9 @@ func TestCompactionS3(t *testing.T) {
 				configs[name(i)] = hta.Config{IntervalMin: int64(time.Second), IntervalMax: int64(1000 * time.Second), IntervalFactor: 10}
 			}
 			options := engine.Options{WALDirectory: t.TempDir(), CheckpointUnsavedBytes: 4 << 20, IngestMemoryLimitBytes: 32 << 20, MaintenanceEnabled: true, CheckpointAppendOnlyAggregates: true, CompactionOptions: engine.CompactionOptions{Enabled: true, JobMaxBlocks: 512, ReclaimDeadFraction: .05, IOBytesPerSecond: 64 << 20, MergeEnabled: true}}
-			e, err := engine.Open(ctx, backend, options, configs, nil)
+			registry := prometheus.NewRegistry()
+			metrics := engine.NewMetrics(registry)
+			e, err := engine.Open(ctx, backend, options, configs, metrics)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -145,6 +148,9 @@ func TestCompactionS3(t *testing.T) {
 				}
 				defer pprof.StopCPUProfile()
 			}
+			metrics.CompactionPhases.Reset()
+			metrics.MetadataCache.Reset()
+			finishMetrics := measureCompactionMetrics(t, registry)
 			backend.reset()
 			started := time.Now()
 			passes := 512
@@ -179,6 +185,7 @@ func TestCompactionS3(t *testing.T) {
 				pprof.StopCPUProfile()
 			}
 			backend.report(t)
+			finishMetrics()
 			after := physical()
 			layoutAfter, err := auditLayout(ctx, backend)
 			if err != nil {

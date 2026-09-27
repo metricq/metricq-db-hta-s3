@@ -160,6 +160,8 @@ func aggregationConfig(c hta.Config) hta.Config {
 // Engine is one open database. All exported methods are safe for concurrent
 // use; only one Engine (one process) may own a WAL directory and store prefix.
 type Engine struct {
+	maintenanceWanted        chan struct{}
+	sharedCatalog            *catalogPageCache
 	dirtySeries              map[string]bool
 	mu                       sync.Mutex
 	maintenanceMu            sync.Mutex
@@ -282,7 +284,7 @@ func Open(ctx context.Context, s storage.Store, o Options, configs map[string]ht
 	if err != nil {
 		return nil, err
 	}
-	e := &Engine{store: s, wal: w, options: o, metrics: m, flushWanted: make(chan struct{}, 1), sharedNodes: newIndexPageCache(), sharedBlocks: newDataBlockCache(), state: manifest{Version: 2, Series: map[string]*hta.Series{}, Roots: map[string]map[int64]blob{}}}
+	e := &Engine{store: s, wal: w, options: o, metrics: m, flushWanted: make(chan struct{}, 1), maintenanceWanted: make(chan struct{}, 1), sharedNodes: newIndexPageCache(), sharedCatalog: newCatalogPageCache(), sharedBlocks: newDataBlockCache(), state: manifest{Version: 2, Series: map[string]*hta.Series{}, Roots: map[string]map[int64]blob{}}}
 	success := false
 	defer func() {
 		if !success {
@@ -1011,6 +1013,12 @@ func (e *Engine) Flush(ctx context.Context) (err error) {
 	e.updateMetrics()
 	if !e.options.MaintenanceEnabled {
 		e.collectGarbage(ctx)
+	}
+	if e.options.CompactionOptions.Continuous {
+		select {
+		case e.maintenanceWanted <- struct{}{}:
+		default:
+		}
 	}
 	return nil
 }

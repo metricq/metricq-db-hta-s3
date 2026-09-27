@@ -88,6 +88,7 @@ func (e *Engine) unpin(generation uint64) {
 // Each coordinator has one in-process worker. This mutex never guards ingestion.
 // Persist all possible data/index output names before uploading a job's blocks.
 func (e *Engine) reserveCompaction(ctx context.Context) (CompactionJob, error) {
+	defer e.metrics.phaseTimer("select")()
 	e.mu.Lock()
 	if e.closed {
 		e.mu.Unlock()
@@ -117,7 +118,7 @@ func (e *Engine) reserveCompaction(ctx context.Context) (CompactionJob, error) {
 		return CompactionJob{}, nil
 	}
 	generation := e.state.Generation
-	snapshot := &Engine{store: e.preparationStore(), options: e.options, metrics: e.metrics, state: cloneMaintenanceManifest(e.committed), sharedNodes: e.sharedNodes, nodeCache: make(map[blob]indexNode), nodeReadLimit: 4096, catalogReadBudget: compactionCatalogBudget}
+	snapshot := &Engine{store: e.preparationStore(), options: e.options, metrics: e.metrics, state: cloneMaintenanceManifest(e.committed), sharedNodes: e.sharedNodes, sharedCatalog: e.sharedCatalog, nodeCache: make(map[blob]indexNode), nodeReadLimit: 4096, catalogReadBudget: compactionCatalogBudget}
 	scanAfter := e.candidateCursor
 	seedObject, seedOffset := e.compactionSeedObject, e.compactionSeedOffset
 	evacuateObject := e.compactionEvacuateObject
@@ -170,7 +171,7 @@ func (e *Engine) reserveCompaction(ctx context.Context) (CompactionJob, error) {
 		// Locality search must not consume the merger's catalog budget: a layout
 		// needing more inventories than the limit must never starve merge progress.
 		localityChecked = true
-		reader := &Engine{store: snapshot.store, options: snapshot.options, metrics: snapshot.metrics, state: snapshot.state, sharedNodes: snapshot.sharedNodes, nodeCache: make(map[blob]indexNode), nodeReadLimit: 4096, catalogReadBudget: compactionCatalogBudget}
+		reader := &Engine{store: snapshot.store, options: snapshot.options, metrics: snapshot.metrics, state: snapshot.state, sharedNodes: snapshot.sharedNodes, sharedCatalog: snapshot.sharedCatalog, nodeCache: make(map[blob]indexNode), nodeReadLimit: 4096, catalogReadBudget: compactionCatalogBudget}
 		return e.selectLocality(ctx, reader, options, objectLimit)
 	}
 	if !options.LocalityDisabled && e.compactionCompletions%4 == 3 {
@@ -233,6 +234,25 @@ func (e *Engine) reserveCompaction(ctx context.Context) (CompactionJob, error) {
 			dirty := float64(object.Size-object.LiveBytes)/float64(object.Size) >= options.ReclaimDeadFraction
 
 			if options.MergeEnabled {
+				// Candidate inventories identify a bounded set of stream roots.
+				// Their pages often share a checkpoint pack: read ranges once.
+				var roots []blob
+				seenRoots := map[blob]bool{}
+				for _, b := range object.Blocks[min(firstSeed, len(object.Blocks)):] {
+					root := snapshot.state.Roots[b.Metric][b.Level]
+					if b.Index || b.Entry.Records <= 0 || b.Entry.Records > maxDataBlockRecords/2 || singletons[root] || seenRoots[root] {
+						continue
+					}
+					seenRoots[root] = true
+					roots = append(roots, root)
+					if len(roots) >= seedLimit {
+						break
+					}
+				}
+				if err := snapshot.prefetchNodes(ctx, roots); err != nil {
+					selectErr = err
+					return false
+				}
 				beginSeed := 0
 				if candidate.Key == seedObject {
 					beginSeed = min(seedOffset, len(object.Blocks))
@@ -304,6 +324,7 @@ func (e *Engine) reserveCompaction(ctx context.Context) (CompactionJob, error) {
 					// A stream's newer blocks live in newer objects, so the cooldown
 					// only needs checking from the end: usually one inventory read.
 					budgetHit := false
+					newestModified := int64(0)
 					for len(group) > 1 {
 						last := group[len(group)-1].Entry.Blob.Key
 						o, ok, err := snapshot.catalogGet(ctx, snapshot.state.Catalog, last)
@@ -317,9 +338,20 @@ func (e *Engine) reserveCompaction(ctx context.Context) (CompactionJob, error) {
 							return false
 						}
 						if ok && o.Modified <= cutoff {
+							newestModified = o.Modified
 							break
 						}
 						group = group[:len(group)-1]
+					}
+					if len(group) > 1 {
+						nextRecords := 0
+						if len(entries) > len(group) {
+							nextRecords = entries[len(group)].Records
+						}
+						if !mergeWorthwhile(group, nextRecords, newestModified, time.Now(), options.MergeCooldownSeconds) {
+							group = nil
+							e.metrics.CompactionDeferredMerges.Inc()
+						}
 					}
 					if len(group) > 1 {
 						for i := 1; i < len(group); i++ {
@@ -547,9 +579,10 @@ func (s *publicationStore) GetRange(ctx context.Context, key string, offset, len
 }
 
 func (e *Engine) copyJob(ctx context.Context, job CompactionJob) (map[blob]replacement, []*pack, error) {
+	defer e.metrics.phaseTimer("copy_merge")()
 	options := e.options.CompactionOptions.defaults()
 	reader := &Engine{store: e.preparationStore(), metrics: e.metrics, options: e.options}
-	indexReader := &Engine{store: e.preparationStore(), metrics: e.metrics, options: e.options, sharedNodes: e.sharedNodes, nodeCache: make(map[blob]indexNode), nodeReadLimit: 4096}
+	indexReader := &Engine{store: e.preparationStore(), metrics: e.metrics, options: e.options, sharedNodes: e.sharedNodes, sharedCatalog: e.sharedCatalog, nodeCache: make(map[blob]indexNode), nodeReadLimit: 4096}
 	budget := rateBudget{start: time.Now(), rate: options.IOBytesPerSecond}
 	take := func(n int64) error {
 		if e.compactionBudget != nil {
@@ -587,7 +620,7 @@ func (e *Engine) copyJob(ctx context.Context, job CompactionJob) (map[blob]repla
 	for _, b := range encodedInputs {
 		e.metrics.CompactionReadBytes.Add(float64(len(b)))
 	}
-	load := func(i int) ([]byte, error) { return encodedInputs[i], nil }
+
 	var packs []*pack
 	var current *pack
 	counts := map[string]int{"data": 0, "index": 0}
@@ -629,12 +662,16 @@ func (e *Engine) copyJob(ctx context.Context, job CompactionJob) (map[blob]repla
 		current.descriptors = append(current.descriptors, info)
 		return info.Entry, nil
 	}
+	type mergeGroup struct {
+		info       BlockInfo
+		start, end int
+		encoded    []byte
+		err        error
+	}
+	var groups []mergeGroup
 	for i := 0; i < len(inputs); {
 		b := inputs[i]
-		encoded, err := load(i)
-		if err != nil {
-			return nil, nil, err
-		}
+		encoded := encodedInputs[i]
 		end := i + 1
 		// Only adjacent blocks proven consecutive in the pinned index may merge.
 		if options.MergeEnabled && !b.Index && b.Entry.Records > 0 && b.Entry.Records < maxDataBlockRecords {
@@ -667,44 +704,68 @@ func (e *Engine) copyJob(ctx context.Context, job CompactionJob) (map[blob]repla
 			}
 		}
 		if end > i+1 {
-			var records []hta.Record
-			if err = decode(encoded, &records); err != nil {
-				return nil, nil, err
-			}
-			for j := i + 1; j < end; j++ {
-				bytes, err := load(j)
-				if err != nil {
-					return nil, nil, err
-				}
-				var extra []hta.Record
-				if err = decode(bytes, &extra); err != nil {
-					return nil, nil, err
-				}
-				records = append(records, extra...)
-			}
-			if len(records) != b.Entry.Records || len(records) > maxDataBlockRecords {
-				return nil, nil, fmt.Errorf("invalid consolidation record count")
-			}
-			for j, r := range records {
-				if r.Level != b.Level || (j > 0 && r.Time <= records[j-1].LastTime()) {
-					return nil, nil, fmt.Errorf("invalid consolidation order")
-				}
-			}
 			b.Entry.Last = inputs[end-1].Entry.Last
-			encoded, err = encode(records)
-			if err != nil {
-				return nil, nil, err
-			}
 		}
-		target, err := add(b, encoded)
+		groups = append(groups, mergeGroup{info: b, start: i, end: end, encoded: encoded})
+		i = end
+	}
+	// Independent stream groups decode/encode concurrently; ordered pack
+	// assembly below preserves contiguous metric/level sections and checksums.
+	work := make(chan int)
+	var wg sync.WaitGroup
+	for worker := 0; worker < min(maxParallelBlockFetches, len(groups)); worker++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := range work {
+				g := &groups[i]
+				if g.err = ctx.Err(); g.err != nil || g.end == g.start+1 {
+					continue
+				}
+				records := make([]hta.Record, 0, g.info.Entry.Records)
+				for j := g.start; j < g.end; j++ {
+					var part []hta.Record
+					if g.err = decode(encodedInputs[j], &part); g.err != nil {
+						break
+					}
+					records = append(records, part...)
+				}
+				if g.err != nil {
+					continue
+				}
+				if len(records) != g.info.Entry.Records || len(records) > maxDataBlockRecords {
+					g.err = fmt.Errorf("invalid consolidation record count")
+					continue
+				}
+				for j, r := range records {
+					if r.Level != g.info.Level || (j > 0 && r.Time <= records[j-1].LastTime()) {
+						g.err = fmt.Errorf("invalid consolidation order")
+						break
+					}
+				}
+				if g.err == nil {
+					g.encoded, g.err = encode(records)
+				}
+			}
+		}()
+	}
+	for i := range groups {
+		work <- i
+	}
+	close(work)
+	wg.Wait()
+	for _, g := range groups {
+		if g.err != nil {
+			return nil, nil, g.err
+		}
+		target, err := add(g.info, g.encoded)
 		if err != nil {
 			return nil, nil, err
 		}
-		replacements[inputs[i].Entry.Blob] = replacement{Entry: target, Index: b.Index}
-		for j := i + 1; j < end; j++ {
+		replacements[inputs[g.start].Entry.Blob] = replacement{Entry: target, Index: g.info.Index}
+		for j := g.start + 1; j < g.end; j++ {
 			replacements[inputs[j].Entry.Blob] = replacement{Drop: true, Entry: inputs[j].Entry}
 		}
-		i = end
 	}
 	if err := upload(); err != nil {
 		return nil, nil, err
@@ -724,6 +785,27 @@ func (e *Engine) replaceHistorical(ctx context.Context, root blob, replacements 
 	}
 	changed := false
 	var entries []indexEntry
+	if !n.Leaf {
+		var children []blob
+		for _, edge := range n.Entries {
+			relevant := false
+			if _, ok := replacements[edge.Blob]; ok {
+				relevant = true
+			}
+			for old, r := range replacements {
+				if old != root && ((r.Index && r.Entry.First >= edge.First && r.Entry.Last <= edge.Last) || (!r.Index && r.Entry.Last >= edge.First && r.Entry.First <= edge.Last)) {
+					relevant = true
+					break
+				}
+			}
+			if relevant {
+				children = append(children, edge.Blob)
+			}
+		}
+		if err := e.prefetchNodes(ctx, children); err != nil {
+			return nil, err
+		}
+	}
 	for _, edge := range n.Entries {
 		if n.Leaf {
 			if r, ok := replacements[edge.Blob]; ok {
@@ -782,7 +864,7 @@ func (e *Engine) replaceHistorical(ctx context.Context, root blob, replacements 
 				var child indexNode
 				var err error
 				if edge.Blob.Key == p.key {
-					child, err = decodeNode(p.buf.Bytes()[edge.Blob.Offset : edge.Blob.Offset+edge.Blob.Length])
+					child = p.nodes[edge.Blob]
 				} else {
 					child, err = e.readNode(ctx, edge.Blob)
 				}
@@ -819,6 +901,7 @@ func (e *Engine) replaceHistorical(ctx context.Context, root blob, replacements 
 }
 
 func (e *Engine) prepareCompaction(ctx context.Context, job CompactionJob, replacements map[blob]replacement, packs []*pack, discarded []string) (manifest, error) {
+	defer e.metrics.phaseTimer("prepare")()
 	active, err := e.readJob(ctx)
 	if err != nil {
 		return manifest{}, err
@@ -865,6 +948,7 @@ func (e *Engine) prepareCompaction(ctx context.Context, job CompactionJob, repla
 		return manifest{}, err
 	}
 	e.stagingKeys = append(e.stagingKeys, p.key)
+	p.nodes = make(map[blob]indexNode)
 	used := make(map[blob]bool)
 	affected := make(map[string]map[int64]map[blob]replacement)
 	for _, input := range job.Inputs {
@@ -875,6 +959,16 @@ func (e *Engine) prepareCompaction(ctx context.Context, job CompactionJob, repla
 			affected[input.Metric][input.Level] = make(map[blob]replacement)
 		}
 		affected[input.Metric][input.Level][input.Entry.Blob] = replacements[input.Entry.Blob]
+	}
+	indexDone := e.metrics.phaseTimer("index")
+	var rootsToRead []blob
+	for metric, levels := range affected {
+		for level := range levels {
+			rootsToRead = append(rootsToRead, next.Roots[metric][level])
+		}
+	}
+	if err := e.prefetchNodes(ctx, rootsToRead); err != nil {
+		return manifest{}, err
 	}
 	pages := 0
 	for metric, levels := range affected {
@@ -910,8 +1004,14 @@ func (e *Engine) prepareCompaction(ctx context.Context, job CompactionJob, repla
 			return manifest{}, err
 		}
 		e.metrics.CompactionWriteBytes.Add(float64(p.buf.Len()))
+		if e.sharedNodes != nil {
+			for ref, node := range p.nodes {
+				e.sharedNodes.add(ref, node)
+			}
+		}
 		packs = append(packs, p)
 	}
+	indexDone()
 	// Reachability excludes intermediate pages made obsolete by contraction.
 	outputPacks := make(map[string]*pack)
 	for _, output := range packs {
@@ -928,9 +1028,13 @@ func (e *Engine) prepareCompaction(ctx context.Context, job CompactionJob, repla
 		if !strings.HasPrefix(ref.Key, "index/") {
 			return nil
 		}
-		n, err := decodeNode(output.buf.Bytes()[ref.Offset : ref.Offset+ref.Length])
-		if err != nil {
-			return err
+		n, ok := output.nodes[ref]
+		if !ok {
+			var err error
+			n, err = decodeNode(output.buf.Bytes()[ref.Offset : ref.Offset+ref.Length])
+			if err != nil {
+				return err
+			}
 		}
 		for _, edge := range n.Entries {
 			if err = mark(edge.Blob); err != nil {
@@ -966,6 +1070,7 @@ func (e *Engine) prepareCompaction(ctx context.Context, job CompactionJob, repla
 		}
 		changes[o.Key] = o
 	}
+	catalogDone := e.metrics.phaseTimer("catalog")
 	if err := e.retireCatalogBlocks(ctx, changes, retired); err != nil {
 		return manifest{}, err
 	}
@@ -980,6 +1085,7 @@ func (e *Engine) prepareCompaction(ctx context.Context, job CompactionJob, repla
 	if err != nil {
 		return manifest{}, err
 	}
+	catalogDone()
 	trash = append(trash, metadataTrash...)
 	trash = append(trash, e.state.CompactionJob.Key)
 	next.CompactionJob = blob{}
@@ -992,14 +1098,20 @@ func (e *Engine) prepareCompaction(ctx context.Context, job CompactionJob, repla
 func (e *Engine) applyCompaction(ctx context.Context, job CompactionJob, replacements map[blob]replacement, packs []*pack) error {
 	// Data copying is finished. Serialize only the bounded metadata rewrite
 	// against the newest roots, without holding the ingestion mutex during I/O.
+	waitDone := e.metrics.phaseTimer("publish_wait")
 	e.publishMu.Lock()
+	waitDone()
+	lockedDone := e.metrics.phaseTimer("publish_locked")
 	publication := &publicationStore{Store: e.store}
 	defer func() {
 		e.publishMu.Unlock()
+		lockedDone()
 		if e.compactionBudget != nil {
 			// A successful publication stays successful even if cancellation
 			// interrupts the subsequent pacing delay. The byte debt persists.
+			done := e.metrics.phaseTimer("pace")
 			_ = e.compactionBudget.take(ctx, publication.bytes.Load())
+			done()
 		}
 	}()
 	{
@@ -1013,7 +1125,7 @@ func (e *Engine) applyCompaction(ctx context.Context, job CompactionJob, replace
 			e.mu.Unlock()
 			return err
 		}
-		snapshot := &Engine{store: publication, options: e.options, metrics: e.metrics, state: cloneMaintenanceManifest(e.committed), committed: cloneMaintenanceManifest(e.committed), sharedNodes: e.sharedNodes, activeMaintenance: job.ID, nodeReadLimit: 4096, catalogReadBudget: 4 * compactionCatalogBudget}
+		snapshot := &Engine{store: publication, options: e.options, metrics: e.metrics, state: cloneMaintenanceManifest(e.committed), committed: cloneMaintenanceManifest(e.committed), sharedNodes: e.sharedNodes, sharedCatalog: e.sharedCatalog, activeMaintenance: job.ID, nodeReadLimit: 4096, catalogReadBudget: 4 * compactionCatalogBudget}
 		e.mu.Unlock()
 		next, err := snapshot.prepareCompaction(ctx, job, replacements, packs, nil)
 		if err != nil {
@@ -1056,7 +1168,7 @@ func (e *Engine) editMaintenance(ctx context.Context, edit func(*Engine) (manife
 		return fmt.Errorf("engine unavailable")
 	}
 	generation := e.committed.Generation
-	snapshot := &Engine{store: e.preparationStore(), options: e.options, metrics: e.metrics, state: cloneMaintenanceManifest(e.committed), committed: cloneMaintenanceManifest(e.committed)}
+	snapshot := &Engine{store: e.preparationStore(), options: e.options, metrics: e.metrics, state: cloneMaintenanceManifest(e.committed), committed: cloneMaintenanceManifest(e.committed), sharedCatalog: e.sharedCatalog}
 	e.pin(generation)
 	e.mu.Unlock()
 	defer func() { e.mu.Lock(); e.unpin(generation); e.mu.Unlock() }()
@@ -1180,6 +1292,10 @@ func (e *Engine) CompactOnce(ctx context.Context) error {
 		e.compactionBudget = &rateBudget{start: time.Now(), rate: e.options.CompactionOptions.IOBytesPerSecond}
 	}
 	defer func() { e.lastCompactionEnd = time.Now() }()
+	start := time.Now()
+	defer func() { e.metrics.CompactionDuration.Observe(time.Since(start).Seconds()) }()
+	e.metrics.CompactionActive.Set(1)
+	defer e.metrics.CompactionActive.Set(0)
 	e.mu.Lock()
 	pending := e.state.CompactionJob.Key != ""
 	e.mu.Unlock()
@@ -1193,12 +1309,6 @@ func (e *Engine) CompactOnce(ctx context.Context) error {
 	if job.ID == "" {
 		return nil
 	}
-	start := time.Now()
-	e.metrics.CompactionActive.Set(1)
-	defer func() {
-		e.metrics.CompactionActive.Set(0)
-		e.metrics.CompactionDuration.Observe(time.Since(start).Seconds())
-	}()
 	defer func() { e.mu.Lock(); e.unpin(job.Generation); e.mu.Unlock() }()
 	replacements, packs, err := e.copyJob(ctx, job)
 	if err == nil {

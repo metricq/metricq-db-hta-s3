@@ -2,6 +2,7 @@ package engine
 
 import (
 	"strings"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 )
@@ -9,6 +10,9 @@ import (
 // Metrics holds the engine's Prometheus collectors. The executable registers
 // them with a token label; docs/operations/monitoring.md lists them.
 type Metrics struct {
+	CompactionDeferredMerges                                                                prometheus.Counter
+	CompactionPhases                                                                        *prometheus.HistogramVec
+	MetadataCache                                                                           *prometheus.CounterVec
 	CandidateObjects, SmallBlocks, SmallBlockBytes                                          prometheus.Gauge
 	CompactionInputBlocks, CompactionOutputBlocks, CompactionNoop                           prometheus.Counter
 	CompactionActive                                                                        prometheus.Gauge
@@ -86,7 +90,12 @@ func NewMetrics(r prometheus.Registerer) *Metrics {
 	}
 	batchSize := prometheus.NewHistogram(prometheus.HistogramOpts{Namespace: "metricq_db", Name: "ingest_batch_deliveries", Help: "AMQP deliveries made durable by one WAL fsync.", Buckets: prometheus.ExponentialBuckets(1, 2, 13)})
 	r.MustRegister(batchSize)
+	phases := prometheus.NewHistogramVec(prometheus.HistogramOpts{Namespace: "metricq_db", Name: "compaction_phase_seconds", Help: "Compaction phase durations; nested phases overlap. Selection includes no-op attempts.", Buckets: prometheus.ExponentialBuckets(.0001, 4, 11)}, []string{"phase"})
+	r.MustRegister(phases)
 	return &Metrics{
+		CompactionDeferredMerges: counter("compaction_deferred_merges_total", "Large tail merge candidates deferred until sufficient growth or age."),
+		CompactionPhases:         phases,
+		MetadataCache:            counterVec("metadata_cache_requests_total", "Decoded metadata cache lookups.", "kind", "result"),
 		Config:                   gaugeVec("config", "Configured engine option values; the parameter label names the option.", "parameter"),
 		IngestBatches:            counter("ingest_batches_total", "Group-committed delivery batches (one WAL fsync each)."),
 		IngestBatchSize:          batchSize,
@@ -172,4 +181,9 @@ func (m *Metrics) observeStore(op, key string, n int, err error) {
 	if err != nil {
 		m.StoreErrors.WithLabelValues(op, kind).Inc()
 	}
+}
+
+func (m *Metrics) phaseTimer(phase string) func() {
+	start := time.Now()
+	return func() { m.CompactionPhases.WithLabelValues(phase).Observe(time.Since(start).Seconds()) }
 }

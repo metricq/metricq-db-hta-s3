@@ -62,7 +62,23 @@ func (e *Engine) selectLocality(ctx context.Context, snapshot *Engine, options C
 	}
 	cutoff := time.Now().Add(-time.Duration(options.MergeCooldownSeconds) * time.Second).UnixNano()
 	checked := 0
+	var selected []BlockInfo
+	var selectedBytes int64
+	selectedObjects := map[string]bool{}
+	accept := func(stream localityStream, work []BlockInfo) {
+		selected = append(selected, work...)
+		for _, b := range work {
+			selectedBytes += b.Entry.Blob.Length
+			selectedObjects[b.Entry.Blob.Key] = true
+		}
+		// Until publication this is the retry point, not the end of the section.
+		e.localityScans[stream.Key] = localityScan{After: work[0].Entry.First}
+	}
+scanStreams:
 	for i := start; i < len(streams); i++ {
+		if len(selected) >= options.JobMaxBlocks-1 || selectedBytes >= options.JobMaxBytes {
+			return selected, true, nil
+		}
 		s := streams[i]
 		root := snapshot.state.Roots[s.Metric][s.Level]
 		state := e.localityScans[s.Key]
@@ -72,11 +88,11 @@ func (e *Engine) selectLocality(ctx context.Context, snapshot *Engine, options C
 		}
 		if checked >= 64 || snapshot.nodeReads >= 2048 {
 			e.localityCursor = streams[max(start, i-1)].Key
-			return nil, true, nil
+			return selected, true, nil
 		}
 		checked++
 		cooldown := false
-		entries, err := snapshot.indexEntriesAfter(ctx, root, state.After, options.JobMaxBlocks)
+		entries, err := snapshot.indexEntriesAfter(ctx, root, state.After, options.JobMaxBlocks-len(selected))
 		if err != nil {
 			return nil, false, err
 		}
@@ -96,8 +112,8 @@ func (e *Engine) selectLocality(ctx context.Context, snapshot *Engine, options C
 		for _, entry := range entries {
 			if strings.Contains(entry.Blob.Key, "/locality/") {
 				if work, ok := flush(); ok {
-					e.localityScans[s.Key] = localityScan{After: group[0].Entry.First}
-					return work, true, nil
+					accept(s, work)
+					continue scanStreams
 				}
 				group = nil
 				bytes = 0
@@ -106,11 +122,14 @@ func (e *Engine) selectLocality(ctx context.Context, snapshot *Engine, options C
 				advance = afterLocalityEntry(entry)
 				continue
 			}
+			if len(group) == 0 && !selectedObjects[entry.Blob.Key] && len(selectedObjects) >= objectLimit {
+				return selected, true, nil
+			}
 			newObject := !objects[entry.Blob.Key]
-			if len(group) > 0 && (bytes+entry.Blob.Length > options.OutputObjectBytes || bytes+entry.Blob.Length > options.JobMaxBytes || (newObject && len(objects) >= objectLimit)) {
+			if len(group) > 0 && (bytes+entry.Blob.Length > options.OutputObjectBytes || bytes+entry.Blob.Length > options.JobMaxBytes-selectedBytes || (newObject && !selectedObjects[entry.Blob.Key] && len(selectedObjects)+countNewObjects(objects, selectedObjects) >= objectLimit)) {
 				if work, ok := flush(); ok {
-					e.localityScans[s.Key] = localityScan{After: group[0].Entry.First}
-					return work, true, nil
+					accept(s, work)
+					continue scanStreams
 				}
 				// The preceding extent already has good physical locality or cannot
 				// improve within this job's object target. Continue with the next extent.
@@ -120,14 +139,14 @@ func (e *Engine) selectLocality(ctx context.Context, snapshot *Engine, options C
 				spans = 0
 				objects = make(map[string]bool)
 			}
-			if entry.Blob.Length > options.OutputObjectBytes || entry.Blob.Length > options.JobMaxBytes {
+			if entry.Blob.Length > options.OutputObjectBytes || entry.Blob.Length > options.JobMaxBytes-selectedBytes {
 				advance = afterLocalityEntry(entry)
 				continue
 			}
 			if newObject {
 				o, ok, err := snapshot.catalogGet(ctx, snapshot.state.Catalog, entry.Blob.Key)
 				if errors.Is(err, errCatalogBudget) {
-					return nil, true, nil
+					return selected, true, nil
 				}
 				if err != nil {
 					return nil, false, err
@@ -160,15 +179,15 @@ func (e *Engine) selectLocality(ctx context.Context, snapshot *Engine, options C
 			bytes += entry.Blob.Length
 		}
 		if work, ok := flush(); ok {
-			e.localityScans[s.Key] = localityScan{After: group[0].Entry.First}
-			return work, true, nil
+			accept(s, work)
+			continue scanStreams
 		}
 		if len(group) > 0 {
 			advance = group[0].Entry.First
 		}
 		// A complete scan can sleep until this stream root changes. If the batch
 		// was full, resume beyond it instead, retaining only its unfinished suffix.
-		if len(entries) < options.JobMaxBlocks {
+		if len(entries) < options.JobMaxBlocks-len(selected) {
 			if !cooldown {
 				e.localityScans[s.Key] = localityScan{Root: root, After: advance, ObjectLimit: objectLimit}
 			}
@@ -178,9 +197,19 @@ func (e *Engine) selectLocality(ctx context.Context, snapshot *Engine, options C
 			}
 			e.localityScans[s.Key] = localityScan{After: advance}
 			e.localityCursor = "" // revisit this stream on a later bounded selection
-			return nil, true, nil
+			return selected, true, nil
 		}
 	}
 	e.localityCursor = ""
-	return nil, false, nil
+	return selected, len(selected) > 0, nil
+}
+
+func countNewObjects(group, selected map[string]bool) int {
+	n := 0
+	for key := range group {
+		if !selected[key] {
+			n++
+		}
+	}
+	return n
 }

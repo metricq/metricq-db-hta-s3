@@ -117,8 +117,8 @@ func TestIngestBatchStopsAtPressureAndInvalidDeliveries(t *testing.T) {
 	if !errors.Is(err, ErrPressure) || n == 0 || n == len(batch) {
 		t.Fatalf("expected partial batch before pressure: %d %v", n, err)
 	}
-	if e.wal.size > e.options.WALHard || e.sequence != uint64(n) {
-		t.Fatalf("WAL %d bytes, sequence %d after %d deliveries", e.wal.size, e.sequence, n)
+	if e.wal.total() > e.options.WALHard || e.sequence != uint64(n) {
+		t.Fatalf("WAL %d bytes, sequence %d after %d deliveries", e.wal.total(), e.sequence, n)
 	}
 	// The caller flushes and retries only the remainder.
 	for rest := batch[n:]; len(rest) > 0; {

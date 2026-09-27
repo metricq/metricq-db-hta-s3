@@ -35,8 +35,8 @@ func TestDefaultCompressionRecoveryAndBestSpeedCheckpoint(t *testing.T) {
 	// Construct a complete checkpoint with the previous compressor, including
 	// independently compressed data blocks, index pages and the manifest.
 	groups := make(map[int64][]hta.Record)
-	for _, row := range e.pending {
-		groups[row.Record.Level] = append(groups[row.Record.Level], row.Record)
+	for _, stream := range e.pending.sorted() {
+		groups[stream.level] = stream.records
 	}
 	data, _ := newPack("data")
 	index, _ := newPack("index")

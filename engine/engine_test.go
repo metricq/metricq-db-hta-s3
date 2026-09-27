@@ -129,7 +129,7 @@ func TestDurabilityAndQueries(t *testing.T) {
 	if err := e.Flush(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if e.wal.size != 0 {
+	if e.wal.total() != 0 {
 		t.Fatal("WAL not reclaimed")
 	}
 	e.Close()
@@ -155,11 +155,11 @@ func TestManifestFailureRetainsWAL(t *testing.T) {
 			s.loseReply = failure == "lost"
 			err := e.Flush(context.Background())
 			if failure == "lost" {
-				if err != nil || e.wal.size != 0 {
+				if err != nil || e.wal.total() != 0 {
 					t.Fatalf("lost successful reply not reconciled: %v", err)
 				}
 			} else {
-				if err == nil || e.wal.size == 0 {
+				if err == nil || e.wal.total() == 0 {
 					t.Fatal("failed commit discarded WAL")
 				}
 			}
@@ -196,7 +196,7 @@ func TestPressureAndRecovery(t *testing.T) {
 			t.Fatal("no backpressure")
 		}
 	}
-	if e.wal.size > e.options.WALHard {
+	if e.wal.total() > e.options.WALHard {
 		t.Fatal("hard limit exceeded")
 	}
 	seq := e.sequence
@@ -303,7 +303,7 @@ func TestWALWriteFailureCannotBeAcknowledged(t *testing.T) {
 	if err := e.Ingest(context.Background(), "x", chunk(hta.Point{Time: 100, Value: 1})); err == nil {
 		t.Fatal("ingestion succeeded without durable WAL write")
 	}
-	if e.sequence != 0 || len(e.pending) != 0 || !reflect.DeepEqual(before, *e.state.Series["x"]) {
+	if e.sequence != 0 || e.pending.len() != 0 || !reflect.DeepEqual(before, *e.state.Series["x"]) {
 		t.Fatal("failed WAL write advanced database state")
 	}
 }
@@ -316,12 +316,12 @@ func TestRejectedIngestPlanDoesNotChangeState(t *testing.T) {
 	for k, v := range e.state.Series["x"].Levels {
 		before.Levels[k] = v
 	}
-	seq, size, pending, pendingBytes := e.sequence, e.wal.size, len(e.pending), e.pendingBytes
+	seq, size, pending, pendingBytes := e.sequence, e.wal.total(), e.pending.len(), e.pendingBytes
 	e.options.BuilderHard = pendingBytes + 1
 	if err := e.Ingest(context.Background(), "x", chunk(hta.Point{Time: 200, Value: 2})); err == nil {
 		t.Fatal("accepted over-capacity delivery")
 	}
-	if e.sequence != seq || e.wal.size != size || len(e.pending) != pending || e.pendingBytes != pendingBytes || !reflect.DeepEqual(before, *e.state.Series["x"]) {
+	if e.sequence != seq || e.wal.total() != size || e.pending.len() != pending || e.pendingBytes != pendingBytes || !reflect.DeepEqual(before, *e.state.Series["x"]) {
 		t.Fatal("rejected preparation changed live state")
 	}
 	e.options.BuilderHard = 100000
@@ -401,7 +401,7 @@ func TestLocksAndConcurrentWriter(t *testing.T) {
 	if err := b.Flush(context.Background()); !errors.Is(err, storage.ErrConflict) {
 		t.Fatalf("expected writer conflict: %v", err)
 	}
-	if b.wal.size == 0 {
+	if b.wal.total() == 0 {
 		t.Fatal("lost conflicting writer WAL")
 	}
 }

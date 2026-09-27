@@ -61,7 +61,7 @@ func (e *Engine) initializeGC(ctx context.Context) error {
 	return nil
 }
 
-// Caller holds mu, so no new snapshot can start between the reader check and
+// Caller holds publishMu and mu, so no new snapshot can start between the reader check and
 // DELETE. Existing snapshots keep every old pack alive until their queries end.
 // Limit each pass to avoid an unbounded deletion batch under the ingestion lock.
 func (e *Engine) collectGarbage(ctx context.Context) {

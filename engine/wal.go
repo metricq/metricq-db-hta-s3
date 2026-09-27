@@ -9,6 +9,9 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
+	"strings"
 	"syscall"
 )
 
@@ -19,46 +22,199 @@ const maxFrame = 64 << 20
 
 var crcTable = crc32.MakeTable(crc32.Castagnoli)
 
+// The active segment is ingest.wal. A checkpoint freezes it by renaming it to
+// ingest.wal.<last sequence>, so ingestion continues in a new active segment
+// while the frozen frames are uploaded. Committed segments are deleted.
 type wal struct {
+	dir    string
+	lock   *os.File
 	file   *os.File
 	size   int64
+	frozen []walSegment
 	failed error
 }
+
+type walSegment struct {
+	path string
+	last uint64
+	size int64
+}
+
+const activeWAL = "ingest.wal"
 
 func openWAL(dir string) (*wal, error) {
 	if err := makeDurableDir(dir); err != nil {
 		return nil, err
 	}
-	f, err := os.OpenFile(filepath.Join(dir, "ingest.wal"), os.O_CREATE|os.O_RDWR, 0600)
+	lock, err := os.OpenFile(filepath.Join(dir, "lock"), os.O_CREATE|os.O_RDWR, 0600)
 	if err != nil {
 		return nil, err
 	}
-	if err = syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		f.Close()
+	if err = syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		lock.Close()
 		return nil, fmt.Errorf("WAL already in use: %w", err)
 	}
-	d, err := os.Open(dir)
-	if err == nil {
-		err = d.Sync()
-		d.Close()
-	}
-	if err != nil {
-		f.Close()
+	w := &wal{dir: dir, lock: lock}
+	if err = w.open(); err != nil {
+		lock.Close()
 		return nil, err
+	}
+	return w, nil
+}
+
+func (w *wal) open() error {
+	// A crash during rotation can leave an unused, never written new segment.
+	if err := os.Remove(filepath.Join(w.dir, activeWAL+".new")); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	entries, err := os.ReadDir(w.dir)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		suffix, ok := strings.CutPrefix(entry.Name(), activeWAL+".")
+		if !ok {
+			continue
+		}
+		last, err := strconv.ParseUint(suffix, 10, 64)
+		if err != nil {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		w.frozen = append(w.frozen, walSegment{path: filepath.Join(w.dir, entry.Name()), last: last, size: info.Size()})
+	}
+	sort.Slice(w.frozen, func(i, j int) bool { return w.frozen[i].last < w.frozen[j].last })
+	f, err := os.OpenFile(filepath.Join(w.dir, activeWAL), os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		return err
+	}
+	if err = syncDir(w.dir); err != nil {
+		f.Close()
+		return err
 	}
 	st, err := f.Stat()
 	if err != nil {
 		f.Close()
-		return nil, err
+		return err
 	}
-	return &wal{file: f, size: st.Size()}, nil
+	w.file, w.size = f, st.Size()
+	return nil
 }
+
+func (w *wal) close() error {
+	err := w.file.Close()
+	if lockErr := w.lock.Close(); err == nil {
+		err = lockErr
+	}
+	return err
+}
+
+// total counts every byte not yet covered by a published checkpoint.
+func (w *wal) total() int64 {
+	n := w.size
+	for _, s := range w.frozen {
+		n += s.size
+	}
+	return n
+}
+
+// rotate freezes the active segment, whose last durable frame is last.
+func (w *wal) rotate(last uint64) error {
+	if w.failed != nil {
+		return w.failed
+	}
+	if w.size == 0 {
+		return nil
+	}
+	next := filepath.Join(w.dir, activeWAL+".new")
+	f, err := os.OpenFile(next, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0600)
+	if err != nil {
+		return err
+	}
+	frozen := filepath.Join(w.dir, fmt.Sprintf("%s.%020d", activeWAL, last))
+	if err = os.Rename(filepath.Join(w.dir, activeWAL), frozen); err != nil {
+		f.Close()
+		os.Remove(next)
+		return err
+	}
+	// From here the active name is missing until the second rename; failing now
+	// would leave appends without a durable home.
+	if err = os.Rename(next, filepath.Join(w.dir, activeWAL)); err == nil {
+		err = syncDir(w.dir)
+	}
+	if err != nil {
+		f.Close()
+		w.failed = fmt.Errorf("WAL rotation failed; restart required: %w", err)
+		return w.failed
+	}
+	w.file.Close()
+	w.frozen = append(w.frozen, walSegment{path: frozen, last: last, size: w.size})
+	w.file, w.size = f, 0
+	return nil
+}
+
+// release deletes frozen segments covered by a published checkpoint.
+func (w *wal) release(checkpoint uint64) error {
+	kept := w.frozen[:0]
+	removed := false
+	for _, s := range w.frozen {
+		if s.last > checkpoint {
+			kept = append(kept, s)
+			continue
+		}
+		if err := os.Remove(s.path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			w.failed = err
+			return err
+		}
+		removed = true
+	}
+	w.frozen = kept
+	if removed {
+		if err := syncDir(w.dir); err != nil {
+			w.failed = err
+			return err
+		}
+	}
+	return nil
+}
+
+func syncDir(dir string) error {
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+	return d.Sync()
+}
+
 func (w *wal) replay(apply func(uint64, []byte) error) error {
-	var offset int64
 	var previous uint64
-	for offset < w.size {
+	for _, s := range w.frozen {
+		f, err := os.Open(s.path)
+		if err != nil {
+			return err
+		}
+		err = replayFile(f, s.size, &previous, apply)
+		f.Close()
+		if err != nil {
+			return fmt.Errorf("%s: %w", filepath.Base(s.path), err)
+		}
+	}
+	if err := replayFile(w.file, w.size, &previous, apply); err != nil {
+		return err
+	}
+	_, err := w.file.Seek(w.size, io.SeekStart)
+	return err
+}
+
+func replayFile(file *os.File, size int64, previous *uint64, apply func(uint64, []byte) error) error {
+	var offset int64
+	for offset < size {
 		head := make([]byte, frameHeader)
-		if _, err := w.file.ReadAt(head, offset); err != nil {
+		if _, err := file.ReadAt(head, offset); err != nil {
 			if err == io.EOF {
 				return fmt.Errorf("incomplete WAL header at offset %d; no data removed", offset)
 			}
@@ -69,14 +225,14 @@ func (w *wal) replay(apply func(uint64, []byte) error) error {
 		}
 		n := binary.LittleEndian.Uint32(head[8:12])
 		seq := binary.LittleEndian.Uint64(head[:8])
-		if n > maxFrame || seq == 0 || seq <= previous {
+		if n > maxFrame || seq == 0 || seq <= *previous {
 			return fmt.Errorf("invalid WAL frame at %d", offset)
 		}
-		if offset+frameHeader+int64(n) > w.size {
+		if offset+frameHeader+int64(n) > size {
 			return fmt.Errorf("incomplete WAL payload at offset %d; no data removed", offset)
 		}
 		b := make([]byte, n)
-		if _, err := w.file.ReadAt(b, offset+frameHeader); err != nil {
+		if _, err := file.ReadAt(b, offset+frameHeader); err != nil {
 			return err
 		}
 		crc := crc32.Checksum(b, crcTable)
@@ -87,10 +243,9 @@ func (w *wal) replay(apply func(uint64, []byte) error) error {
 			return err
 		}
 		offset += frameHeader + int64(n)
-		previous = seq
+		*previous = seq
 	}
-	_, err := w.file.Seek(w.size, io.SeekStart)
-	return err
+	return nil
 }
 func (w *wal) append(seq uint64, b []byte) error {
 	if len(b) > maxFrame {
@@ -147,7 +302,7 @@ func (w *wal) truncate(n int64) error {
 // bind prevents accidentally replaying a WAL into a different bucket/prefix and
 // detects restoration of an older remote manifest after a local GC checkpoint.
 func (w *wal) bind(identity string, remote uint64) error {
-	dir := filepath.Dir(w.file.Name())
+	dir := w.dir
 	path := filepath.Join(dir, "identity")
 	b, err := os.ReadFile(path)
 	if err == nil {
@@ -177,7 +332,7 @@ func (w *wal) bind(identity string, remote uint64) error {
 	return nil
 }
 func (w *wal) atomicFile(name string, b []byte) error {
-	dir := filepath.Dir(w.file.Name())
+	dir := w.dir
 	path := filepath.Join(dir, name)
 	f, err := os.OpenFile(path+".tmp", os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0600)
 	if err != nil {

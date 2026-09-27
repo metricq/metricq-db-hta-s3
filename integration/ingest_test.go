@@ -11,6 +11,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -120,6 +121,7 @@ func ingestRun(t *testing.T, ctx context.Context, mode string, prefetch, metricC
 	}
 	db.Prefetch = prefetch
 	// Same retry policy as the executable: flush on pressure, keep the delivery.
+	var pressure atomic.Int64
 	ingest := func(ctx context.Context, deliveries []engine.Delivery) error {
 		for len(deliveries) > 0 {
 			n, err := e.IngestBatch(ctx, deliveries)
@@ -130,6 +132,7 @@ func ingestRun(t *testing.T, ctx context.Context, mode string, prefetch, metricC
 			if !errors.Is(err, engine.ErrPressure) {
 				return err
 			}
+			pressure.Add(1)
 			if err = e.Flush(ctx); err != nil {
 				return err
 			}
@@ -235,6 +238,7 @@ func ingestRun(t *testing.T, ctx context.Context, mode string, prefetch, metricC
 	confirms := ch.NotifyPublish(make(chan amqp.Confirmation, len(bodies)))
 	syncsBefore, syncSumBefore := histogram(t, registry, "metricq_db_wal_sync_seconds")
 	flushesBefore, flushSumBefore := histogram(t, registry, "metricq_db_flush_seconds")
+	putsBefore, putSumBefore := histogram(t, registry, "metricq_db_store_put_seconds")
 	started := time.Now()
 	outstanding := 0
 	for i, body := range bodies {
@@ -269,6 +273,8 @@ func ingestRun(t *testing.T, ctx context.Context, mode string, prefetch, metricC
 	elapsed := time.Since(started)
 	syncs, syncSum := histogram(t, registry, "metricq_db_wal_sync_seconds")
 	flushes, flushSum := histogram(t, registry, "metricq_db_flush_seconds")
+	puts, putSum := histogram(t, registry, "metricq_db_store_put_seconds")
+	t.Logf("backpressure waits=%d, S3 PUTs=%d taking %.1fs", pressure.Load(), puts-putsBefore, putSum-putSumBefore)
 	syncs -= syncsBefore
 	syncSum -= syncSumBefore
 	flushes -= flushesBefore

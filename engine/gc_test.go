@@ -117,7 +117,7 @@ func TestGCLastDataBlockAndReaderPin(t *testing.T) {
 	}
 	// Pin an older reader and append a new aggregate (no new raw data).
 	e.readers = 1
-	e.pending = []entry{{Metric: "x", Record: hta.Record{Time: 200, Level: 100, Repeat: 1, Aggregate: hta.Aggregate{Count: 1}}}}
+	e.pending.add("x", hta.Record{Time: 200, Level: 100, Repeat: 1, Aggregate: hta.Aggregate{Count: 1}})
 	e.sequence++
 	if err = e.Flush(ctx); err != nil {
 		t.Fatal(err)

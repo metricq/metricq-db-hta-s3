@@ -85,7 +85,7 @@ func InspectWAL(dir string) (WALReport, error) {
 	if err != nil {
 		return WALReport{}, err
 	}
-	defer w.file.Close()
+	defer w.close()
 	return inspectLocked(w)
 }
 
@@ -99,7 +99,7 @@ func RepairWAL(dir, expectedSHA256 string, truncateAt int64, backupPath string) 
 	if err != nil {
 		return WALReport{}, err
 	}
-	defer w.file.Close()
+	defer w.close()
 	r, err := inspectLocked(w)
 	if err != nil {
 		return r, err

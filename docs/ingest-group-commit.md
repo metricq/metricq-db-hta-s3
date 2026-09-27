@@ -56,3 +56,61 @@ METRICQ_INGEST_MODES=batch,single \
 METRICQ_INGEST_OUTPUT=docs/ingest-group-commit.csv \
   go test -tags=integration ./integration -run '^TestIngestThroughput$' -count=1 -v -timeout=50m
 ```
+
+## Checkpoints outside the ingestion lock
+
+With group commit, checkpoints held the ingestion mutex for 70-75 % of the run.
+A checkpoint now holds it only to freeze and to commit:
+
+- The active WAL segment `ingest.wal` is renamed to `ingest.wal.<last sequence>`
+  and a new active segment takes further deliveries. Published segments are
+  deleted after the manifest PUT and local checkpoint; a failed upload keeps its
+  segment and returns its records to the pending set for the next attempt.
+  Replay reads frozen segments in sequence order, then the active one. The
+  process lock moved to a separate `lock` file.
+- Pack building, all S3 PUTs, catalog updates and the manifest PUT run without
+  the mutex. Queries see the frozen records until the checkpoint is published.
+
+Moving the lock alone did not raise throughput (115,000-122,000 points/s): each
+checkpoint took about 1.1 s of CPU, so ingestion ran into builder backpressure.
+A CPU profile showed three causes, now removed:
+
+- Every history request copied all unflushed records of its metric under the
+  mutex (21 % of CPU here, driven by `LAST_VALUE` polling, but the same for
+  every FLEX request). Pending records are now stored per stream (metric and
+  level); a query shares the current slice prefixes in O(levels).
+- The checkpoint stably sorted all frozen records by metric and level (10 s of
+  CPU). Per-stream storage makes that sort unnecessary.
+- Blocks were gob/gzip-encoded one after another (23 s of CPU). They are now
+  encoded in parallel and packed in deterministic stream order.
+
+The flush loop is also woken as soon as a WAL or object threshold is crossed,
+instead of waiting for its one-second tick (a failed checkpoint is still
+retried only once per second), and builder memory is estimated at 96 bytes
+per record instead of 96 plus the metric name, which records no longer carry.
+
+Same setup as above, one run per configuration:
+
+| Mode | Prefetch | Points/s | Chunks per fsync | Mean checkpoint | Backpressure waits |
+|---|---:|---:|---:|---:|---:|
+| batch | 16 | 310,346 | 8.7 | 222 ms | 0 |
+| batch | 50 | 465,906 | 25 | 248 ms | 0 |
+| batch | 200 | 456,991 | 91 | 257 ms | 10 |
+| batch | 400 | 414,025 | 156 | 282 ms | 14 |
+| batch | 1,000 | 401,239 | 255 | 302 ms | 16 |
+| batch | 2,000 | 398,489 | 273 | 326 ms | 16 |
+| batch | 5,000 | 413,504 | 293 | 318 ms | 16 |
+| per delivery | 16-5,000 | 88,000-91,000 | 1.0 | 185 ms | 0 |
+
+Relative to the original 45,000 points/s this is about ten times the throughput
+at prefetch 50-200. Larger prefetch values produce batches whose estimated
+builder memory alone reaches `builder_hard_bytes` (64 MiB here, 32 MiB in the
+example configuration); the handler then flushes inline. The example
+configuration now uses prefetch 100. Per-delivery ingestion is limited by one
+fsync per chunk (12,000 syncs of 3.7 ms each).
+
+The remaining serial work is in `IngestBatch` on the single AMQP consumer:
+about 9 s of a 14 s run, mostly gob/gzip encoding of WAL frames under the
+mutex, followed by HTA aggregation.
+
+Raw data: [ingest-async-flush.csv](ingest-async-flush.csv).

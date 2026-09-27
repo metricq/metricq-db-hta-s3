@@ -2,7 +2,7 @@
   "server": "amqp://admin:admin@localhost/",
   "token": "db-hta-go",
   "listen": "127.0.0.1:9090",
-  "prefetch": 16,
+  "prefetch": 100,
   "s3": {
     "bucket": "metricq",
     "prefix": "db-hta-go",

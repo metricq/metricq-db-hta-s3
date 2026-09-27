@@ -136,7 +136,7 @@ func TestFailedTailReplacementRetainsWAL(t *testing.T) {
 			e.Close()
 			e = openTest(t, s, dir)
 			ingest(t, e, hta.Point{Time: 440, Value: 8}, hta.Point{Time: 560, Value: 3})
-			oldRoot, seq, walSize := e.state.Roots["x"][100], e.state.Sequence, e.wal.size
+			oldRoot, seq, walSize := e.state.Roots["x"][100], e.state.Sequence, e.wal.total()
 			if failure == "read-data" {
 				s.getPrefix = "data/"
 			} else if failure == "read-index" {
@@ -147,7 +147,7 @@ func TestFailedTailReplacementRetainsWAL(t *testing.T) {
 			if err := e.Flush(ctx); err == nil {
 				t.Fatal("flush succeeded during outage")
 			}
-			if e.wal.size != walSize || e.state.Sequence != seq || e.state.Roots["x"][100] != oldRoot {
+			if e.wal.total() != walSize || e.state.Sequence != seq || e.state.Roots["x"][100] != oldRoot {
 				t.Fatal("failed replacement published state or discarded WAL")
 			}
 			e.Close()

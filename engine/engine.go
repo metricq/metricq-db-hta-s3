@@ -12,7 +12,7 @@ import (
 	"io"
 	"log/slog"
 	"math"
-	"sort"
+	"runtime"
 	"sync"
 	"time"
 
@@ -23,6 +23,11 @@ import (
 )
 
 var ErrPressure = errors.New("WAL or builder high watermark reached")
+
+// pendingRecordBytes estimates builder memory per unflushed record: an 80-byte
+// hta.Record in its stream slice plus append growth slack. Records no longer
+// carry their metric name.
+const pendingRecordBytes = 96
 
 type Options struct {
 	AppendOnlyAggregates  bool              `json:"append_only_aggregates"`
@@ -138,8 +143,11 @@ type Engine struct {
 	pins                     map[uint64]int
 	version                  string
 	sequence                 uint64
-	pending                  []entry
+	pending                  pendingSet
 	pendingBytes             int64
+	flushing                 pendingSet // frozen by a running Flush, still queryable
+	flushWanted              chan struct{}
+	flushingBytes            int64
 	oldestWAL                int64
 	closed                   bool
 	fatal                    error
@@ -200,11 +208,11 @@ func Open(ctx context.Context, s storage.Store, o Options, configs map[string]ht
 	if err != nil {
 		return nil, err
 	}
-	e := &Engine{store: s, wal: w, options: o, metrics: m, sharedNodes: newIndexPageCache(), sharedBlocks: newDataBlockCache(), state: manifest{Version: 2, Series: map[string]*hta.Series{}, Roots: map[string]map[int64]blob{}}}
+	e := &Engine{store: s, wal: w, options: o, metrics: m, flushWanted: make(chan struct{}, 1), sharedNodes: newIndexPageCache(), sharedBlocks: newDataBlockCache(), state: manifest{Version: 2, Series: map[string]*hta.Series{}, Roots: map[string]map[int64]blob{}}}
 	success := false
 	defer func() {
 		if !success {
-			w.file.Close()
+			w.close()
 		}
 	}()
 	b, v, err := e.get(ctx, "manifest")
@@ -305,14 +313,14 @@ func (e *Engine) updateMetrics() {
 	e.metrics.WALHard.Set(float64(e.options.WALHard))
 	e.metrics.WALPending.Set(float64(e.sequence - e.state.Sequence))
 	e.metrics.OldestWAL.Set(float64(e.oldestWAL) / 1e9)
-	e.metrics.WALBytes.Set(float64(e.wal.size))
-	e.metrics.Pressure.Set(float64(e.wal.size) / float64(e.options.WALHigh))
-	e.metrics.BuilderBytes.Set(float64(e.pendingBytes))
+	e.metrics.WALBytes.Set(float64(e.wal.total()))
+	e.metrics.Pressure.Set(float64(e.wal.total()) / float64(e.options.WALHigh))
+	e.metrics.BuilderBytes.Set(float64(e.pendingBytes + e.flushingBytes))
 	e.metrics.Series.Set(float64(len(e.state.Series)))
 	e.metrics.Head.Set(float64(e.sequence))
 	e.metrics.Checkpoint.Set(float64(e.state.Sequence))
 	blocked := float64(0)
-	if e.wal.size >= e.options.WALHigh || e.pendingBytes >= e.options.BuilderHard {
+	if e.wal.total() >= e.options.WALHigh || e.pendingBytes+e.flushingBytes >= e.options.BuilderHard {
 		blocked = 1
 	}
 	e.metrics.Backpressure.Set(blocked)
@@ -324,8 +332,8 @@ func (e *Engine) apply(b batch) error {
 	s := e.state.Series[b.Metric]
 	for _, p := range b.Points {
 		if !s.Insert(p, func(r hta.Record) {
-			e.pending = append(e.pending, entry{b.Metric, r})
-			e.pendingBytes += int64(96 + len(b.Metric))
+			e.pending.add(b.Metric, r)
+			e.pendingBytes += pendingRecordBytes
 		}) {
 			return fmt.Errorf("WAL contains unprocessable point for %q at %d", b.Metric, p.Time)
 		}
@@ -400,7 +408,8 @@ func (e *Engine) IngestBatch(ctx context.Context, deliveries []Delivery) (int, e
 	var frames []byte
 	var plans []ingestPlan
 	working := make(map[string]*hta.Series)
-	walSize, pendingBytes := e.wal.size, e.pendingBytes
+	// Frames and records frozen by a running flush still occupy WAL and memory.
+	walSize, pendingBytes := e.wal.total(), e.pendingBytes+e.flushingBytes
 	sequence := e.sequence
 	processed := 0
 	for i := 0; i < valid; i++ {
@@ -424,7 +433,7 @@ func (e *Engine) IngestBatch(ctx context.Context, deliveries []Delivery) (int, e
 		accepted := make([]hta.Point, 0, len(points[i]))
 		for _, p := range points[i] {
 			if clone.Insert(p, func(r hta.Record) {
-				plan.extra += int64(96 + len(name))
+				plan.extra += pendingRecordBytes
 				// Keep the speculative buffer bounded even for rejected deliveries.
 				if plan.extra <= available {
 					plan.prepared = append(plan.prepared, entry{Metric: name, Record: r})
@@ -489,7 +498,9 @@ func (e *Engine) IngestBatch(ctx context.Context, deliveries []Delivery) (int, e
 		}
 		e.sequence++
 		e.state.Series[plan.metric] = plan.series
-		e.pending = append(e.pending, plan.prepared...)
+		for _, en := range plan.prepared {
+			e.pending.add(en.Metric, en.Record)
+		}
 		e.pendingBytes += plan.extra
 		if e.oldestWAL == 0 {
 			e.oldestWAL = plan.received
@@ -497,6 +508,14 @@ func (e *Engine) IngestBatch(ctx context.Context, deliveries []Delivery) (int, e
 		e.metrics.Samples.Add(float64(plan.accepted))
 	}
 	e.updateMetrics()
+	// Wake the flush loop as soon as a threshold is crossed, instead of letting
+	// the builder grow towards its hard limit until the next tick.
+	if e.wal.size >= e.options.WALTarget || e.pendingBytes >= e.options.ObjectTarget {
+		select {
+		case e.flushWanted <- struct{}{}:
+		default:
+		}
+	}
 	return processed, stop
 }
 func (e *Engine) get(ctx context.Context, key string) ([]byte, string, error) {
@@ -518,17 +537,20 @@ func (e *Engine) Flush(ctx context.Context) (err error) {
 	e.publishMu.Lock()
 	defer e.publishMu.Unlock()
 	e.mu.Lock()
-	defer e.mu.Unlock()
 	if e.closed {
+		e.mu.Unlock()
 		return fmt.Errorf("engine closed")
 	}
 	if e.fatal != nil {
-		return e.fatal
+		err = e.fatal
+		e.mu.Unlock()
+		return err
 	}
 	if e.sequence == e.state.Sequence && e.version != "" {
 		if !e.options.BackgroundMaintenance {
 			e.collectGarbage(ctx)
 		}
+		e.mu.Unlock()
 		return nil
 	}
 	start := time.Now()
@@ -538,114 +560,130 @@ func (e *Engine) Flush(ctx context.Context) (err error) {
 			e.metrics.CommitErrors.Inc()
 		}
 	}()
-	// The engine lock fixes a consistent checkpoint. An unavailable store stops
-	// ingestion only during the bounded PUT attempt, then WAL ingestion can resume.
-	next := e.state
+	// Freeze a consistent checkpoint under the ingestion lock: the durable WAL
+	// prefix, its records and HTA state. Ingestion continues in a new WAL segment
+	// while the frozen part is uploaded; queries still see the frozen records.
+	// Only this Flush (serialized by publishMu) changes roots and metadata.
+	if err = e.wal.rotate(e.sequence); err != nil {
+		e.fatal = err
+		e.mu.Unlock()
+		return err
+	}
+	next := cloneManifest(e.state)
+	next.Sequence = e.sequence
+	next.Generation++
+	frozen, frozenOldest := e.pending, e.oldestWAL
+	e.flushing, e.flushingBytes = frozen, e.pendingBytes
+	e.pending, e.pendingBytes, e.oldestWAL = pendingSet{}, 0, 0
+	e.mu.Unlock()
 	refDelta := make(map[string]int64)
 	var publishedData, publishedIndex *pack
 	var stagedTails map[string]tailPath
-	next.Sequence = e.sequence
-	next.Generation++
-	next.Roots = make(map[string]map[int64]blob, len(e.state.Roots))
-	for metric, levels := range e.state.Roots {
-		next.Roots[metric] = make(map[int64]blob, len(levels))
-		for l, root := range levels {
-			next.Roots[metric][l] = root
-		}
-	}
-	// Sorting packs hot metrics into dedicated objects and combines small streams.
-	records := append([]entry(nil), e.pending...)
-	sort.SliceStable(records, func(i, j int) bool {
-		a, b := records[i], records[j]
-		if a.Metric != b.Metric {
-			return a.Metric < b.Metric
-		}
-		return a.Record.Level < b.Record.Level
-	})
-	if len(records) > 0 {
-		dataPack, packErr := newPack("data")
-		if packErr != nil {
-			return packErr
-		}
-		publishedData = dataPack
-		indexPack, packErr := newPack("index")
-		if packErr != nil {
-			return packErr
-		}
-		publishedIndex = indexPack
-		indexPack.nodes = make(map[blob]indexNode)
-		stagedTails = make(map[string]tailPath)
-		type indexUpdate struct {
-			items       []indexEntry
-			replaceTail bool
-		}
-		updates := make(map[string]map[int64]indexUpdate)
-		for i := 0; i < len(records); {
-			j := i + 1
-			for j < len(records) && records[j].Metric == records[i].Metric && records[j].Record.Level == records[i].Record.Level {
-				j++
+	var version string
+	err = func() error {
+		// Streams in metric/level order pack hot metrics into dedicated objects
+		// and combine small streams; pending records are already grouped.
+		streams := frozen.sorted()
+		if len(streams) > 0 {
+			dataPack, packErr := newPack("data")
+			if packErr != nil {
+				return packErr
 			}
-			metric, level := records[i].Metric, records[i].Record.Level
-			if updates[metric] == nil {
-				updates[metric] = map[int64]indexUpdate{}
+			publishedData = dataPack
+			indexPack, packErr := newPack("index")
+			if packErr != nil {
+				return packErr
 			}
-			update := indexUpdate{}
-			part := make([]hta.Record, 0, maxDataBlockRecords)
-			// Fill the last partial aggregate block across checkpoints. Reading
-			// only this bounded tail keeps coarse levels independent of flush
-			// frequency. Raw blocks are appended; published blobs remain immutable.
-			if level > 0 && !e.options.AppendOnlyAggregates {
-				tail, tailErr := e.lastIndexEntry(ctx, next.Roots[metric][level])
-				if tailErr != nil {
-					return tailErr
-				}
-				if tail.Records > 0 && tail.Records < maxDataBlockRecords {
-					b, readErr := e.readBlob(ctx, tail.Blob)
-					if readErr != nil {
-						return readErr
+			publishedIndex = indexPack
+			indexPack.nodes = make(map[blob]indexNode)
+			stagedTails = make(map[string]tailPath)
+			type indexUpdate struct {
+				items       []indexEntry
+				replaceTail bool
+			}
+			type block struct {
+				stream  int
+				records []hta.Record
+				encoded []byte
+			}
+			updates := make([]indexUpdate, len(streams))
+			var blocks []block
+			for i, stream := range streams {
+				records, level := stream.records, stream.level
+				var part []hta.Record
+				// Fill the last partial aggregate block across checkpoints. Reading
+				// only this bounded tail keeps coarse levels independent of flush
+				// frequency. Raw blocks are appended; published blobs remain immutable.
+				if level > 0 && !e.options.AppendOnlyAggregates {
+					tail, tailErr := e.lastIndexEntry(ctx, next.Roots[stream.metric][level])
+					if tailErr != nil {
+						return tailErr
 					}
-					if err := decode(b, &part); err != nil {
-						return err
-					}
-					if len(part) != tail.Records || part[0].Time != tail.First || part[len(part)-1].LastTime() != tail.Last {
-						return fmt.Errorf("invalid aggregate tail block")
-					}
-					for row, record := range part {
-						if record.Level != level || (row > 0 && record.Time <= part[row-1].LastTime()) {
-							return fmt.Errorf("invalid aggregate tail records")
+					if tail.Records > 0 && tail.Records < maxDataBlockRecords {
+						b, readErr := e.readBlob(ctx, tail.Blob)
+						if readErr != nil {
+							return readErr
 						}
+						if err := decode(b, &part); err != nil {
+							return err
+						}
+						if len(part) != tail.Records || part[0].Time != tail.First || part[len(part)-1].LastTime() != tail.Last {
+							return fmt.Errorf("invalid aggregate tail block")
+						}
+						for row, record := range part {
+							if record.Level != level || (row > 0 && record.Time <= part[row-1].LastTime()) {
+								return fmt.Errorf("invalid aggregate tail records")
+							}
+						}
+						if records[0].Time <= tail.Last {
+							return fmt.Errorf("aggregate tail overlaps new records")
+						}
+						updates[i].replaceTail = true
+						n := min(maxDataBlockRecords-len(part), len(records))
+						blocks = append(blocks, block{stream: i, records: append(part, records[:n]...)})
+						records = records[n:]
 					}
-					if records[i].Record.Time <= tail.Last {
-						return fmt.Errorf("aggregate tail overlaps new records")
-					}
-					update.replaceTail = true
+				}
+				for k := 0; k < len(records); k += maxDataBlockRecords {
+					blocks = append(blocks, block{stream: i, records: records[k:min(k+maxDataBlockRecords, len(records))]})
 				}
 			}
-			for k := i; k < j; {
-				end := min(k+maxDataBlockRecords-len(part), j)
-				for ; k < end; k++ {
-					part = append(part, records[k].Record)
-				}
-				b, encErr := encode(part)
-				if encErr != nil {
-					return encErr
-				}
-				item := indexEntry{First: part[0].Time, Last: part[len(part)-1].LastTime(), Blob: dataPack.add(b), Records: len(part)}
-				update.items = append(update.items, item)
-				dataPack.descriptors = append(dataPack.descriptors, BlockInfo{Metric: metric, Level: level, Entry: item})
-				part = part[:0]
+			// Blocks are independent: compress them in parallel, then pack them in
+			// the deterministic stream order.
+			encodeErrs := make([]error, len(blocks))
+			var encoders sync.WaitGroup
+			work := make(chan int)
+			for w := 0; w < min(runtime.GOMAXPROCS(0), len(blocks)); w++ {
+				encoders.Add(1)
+				go func() {
+					defer encoders.Done()
+					for k := range work {
+						blocks[k].encoded, encodeErrs[k] = encode(blocks[k].records)
+					}
+				}()
 			}
-			updates[metric][level] = update
-			i = j
-		}
-		empty := ""
-		if _, err = e.put(ctx, dataPack.key, dataPack.buf.Bytes(), &empty); err != nil {
-			return err
-		}
-		e.metrics.Objects.Inc()
-		e.metrics.Bytes.Add(float64(dataPack.buf.Len()))
-		for metric, levels := range updates {
-			for level, update := range levels {
+			for k := range blocks {
+				work <- k
+			}
+			close(work)
+			encoders.Wait()
+			for k, b := range blocks {
+				if encodeErrs[k] != nil {
+					return encodeErrs[k]
+				}
+				stream := streams[b.stream]
+				item := indexEntry{First: b.records[0].Time, Last: b.records[len(b.records)-1].LastTime(), Blob: dataPack.add(b.encoded), Records: len(b.records)}
+				updates[b.stream].items = append(updates[b.stream].items, item)
+				dataPack.descriptors = append(dataPack.descriptors, BlockInfo{Metric: stream.metric, Level: stream.level, Entry: item})
+			}
+			empty := ""
+			if _, err = e.put(ctx, dataPack.key, dataPack.buf.Bytes(), &empty); err != nil {
+				return err
+			}
+			e.metrics.Objects.Inc()
+			e.metrics.Bytes.Add(float64(dataPack.buf.Len()))
+			for i, update := range updates {
+				metric, level := streams[i].metric, streams[i].level
 				indexPack.metric, indexPack.level = metric, level
 				root, appendErr := e.updateIndex(ctx, next.Roots[metric][level], update.items, indexPack, update.replaceTail)
 				if appendErr != nil {
@@ -654,58 +692,83 @@ func (e *Engine) Flush(ctx context.Context) (err error) {
 				next.Roots[metric][level] = root
 				stagedTails[streamKey(metric, level)] = rightmostPath(root, indexPack.nodes)
 			}
-		}
-		if _, err = e.put(ctx, indexPack.key, indexPack.buf.Bytes(), &empty); err != nil {
-			return err
-		}
-		e.metrics.Objects.Inc()
-		e.metrics.Bytes.Add(float64(indexPack.buf.Len()))
-		refDelta[dataPack.key] += dataPack.blocks
-		refDelta[indexPack.key] += indexPack.blocks
-		for _, retired := range indexPack.retired {
-			refDelta[retired.Key]--
-		}
-	}
-	if e.objectRefs != nil {
-		next.Garbage = make(map[string]bool, len(e.garbage))
-		for key := range e.garbage {
-			next.Garbage[key] = true
-		}
-		for key, delta := range refDelta {
-			count := e.objectRefs[key] + delta
-			if count < 0 {
-				return fmt.Errorf("negative object references: %s", key)
+			if _, err = e.put(ctx, indexPack.key, indexPack.buf.Bytes(), &empty); err != nil {
+				return err
 			}
-			if count == 0 {
+			e.metrics.Objects.Inc()
+			e.metrics.Bytes.Add(float64(indexPack.buf.Len()))
+			refDelta[dataPack.key] += dataPack.blocks
+			refDelta[indexPack.key] += indexPack.blocks
+			for _, retired := range indexPack.retired {
+				refDelta[retired.Key]--
+			}
+		}
+		if e.objectRefs != nil {
+			next.Garbage = make(map[string]bool, len(e.garbage))
+			for key := range e.garbage {
 				next.Garbage[key] = true
 			}
+			for key, delta := range refDelta {
+				count := e.objectRefs[key] + delta
+				if count < 0 {
+					return fmt.Errorf("negative object references: %s", key)
+				}
+				if count == 0 {
+					next.Garbage[key] = true
+				}
+			}
 		}
-	}
-	if e.options.BackgroundMaintenance {
-		if err = e.catalogCheckpoint(ctx, &next, publishedData, publishedIndex); err != nil {
+		if e.options.BackgroundMaintenance {
+			if err = e.catalogCheckpoint(ctx, &next, publishedData, publishedIndex); err != nil {
+				return err
+			}
+		}
+
+		b, err := encode(next)
+		if err != nil {
 			return err
 		}
-	}
-	b, err := encode(next)
-	if err != nil {
-		return err
-	}
-	version, err := e.put(ctx, "manifest", b, &e.version)
-	if err != nil {
-		// PUT may have succeeded even if its response was lost. Confirm the exact
-		// checkpoint before deleting any WAL; never guess on transport failure.
-		actual, v, getErr := e.get(ctx, "manifest")
-		if getErr == nil && bytes.Equal(actual, b) {
-			version = v
-			err = nil
-		} else {
-			if errors.Is(err, storage.ErrConflict) {
-				e.fatal = fmt.Errorf("another writer changed manifest: %w", err)
+		version, err = e.put(ctx, "manifest", b, &e.version)
+		if err != nil {
+			// PUT may have succeeded even if its response was lost. Confirm the exact
+			// checkpoint before deleting any WAL; never guess on transport failure.
+			actual, v, getErr := e.get(ctx, "manifest")
+			if getErr == nil && bytes.Equal(actual, b) {
+				version = v
+				return nil
 			}
 			return err
 		}
+		return nil
+	}()
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if err != nil {
+		if errors.Is(err, storage.ErrConflict) {
+			e.fatal = fmt.Errorf("another writer changed manifest: %w", err)
+		}
+		// The frozen records stay queryable and are retried by the next flush,
+		// together with its frozen WAL segment.
+		e.pending.prepend(e.flushing)
+		e.pendingBytes += e.flushingBytes
+		e.flushing, e.flushingBytes = pendingSet{}, 0
+		if frozenOldest != 0 && (e.oldestWAL == 0 || frozenOldest < e.oldestWAL) {
+			e.oldestWAL = frozenOldest
+		}
+		e.updateMetrics()
+		return err
 	}
+	// Publish the checkpoint, keeping the live HTA state and metrics configured
+	// meanwhile. The manifest keeps the frozen state matching its WAL sequence.
+	live := e.state.Series
+	liveRoots := e.state.Roots
 	e.state = next
+	e.state.Series = live
+	for name, roots := range liveRoots {
+		if _, ok := e.state.Roots[name]; !ok {
+			e.state.Roots[name] = roots
+		}
+	}
 	e.committed = cloneManifest(next)
 	if e.objectRefs != nil {
 		for key, delta := range refDelta {
@@ -721,14 +784,12 @@ func (e *Engine) Flush(ctx context.Context) (err error) {
 		e.pinTailPaths(stagedTails, publishedIndex.nodes)
 		publishedIndex.nodes = nil
 	}
-	e.pending = nil
-	e.pendingBytes = 0
-	e.oldestWAL = 0
-	if err = e.wal.checkpoint(e.state.Sequence); err != nil {
+	e.flushing, e.flushingBytes = pendingSet{}, 0
+	if err = e.wal.checkpoint(next.Sequence); err != nil {
 		e.fatal = err
 		return err
 	}
-	if err = e.wal.truncate(0); err != nil {
+	if err = e.wal.release(next.Sequence); err != nil {
 		e.fatal = err
 		return err
 	}
@@ -746,24 +807,31 @@ func (e *Engine) Flush(ctx context.Context) (err error) {
 func (e *Engine) RunFlush(ctx context.Context) {
 	t := time.NewTicker(time.Second)
 	defer t.Stop()
+	var failed time.Time
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			if e.NeedsFlush() {
-				if err := e.Flush(ctx); err != nil {
-					slog.Error("object-store checkpoint failed; WAL retained", "error", err)
-				}
-			} else {
-				e.mu.Lock()
-				if !e.closed && e.fatal == nil {
-					if !e.options.BackgroundMaintenance {
-						e.collectGarbage(ctx)
-					}
-				}
-				e.mu.Unlock()
+		case <-e.flushWanted:
+			// After a failed checkpoint, retry only on the tick, not per delivery.
+			if time.Since(failed) < time.Second {
+				continue
 			}
+		}
+		if e.NeedsFlush() {
+			if err := e.Flush(ctx); err != nil {
+				failed = time.Now()
+				slog.Error("object-store checkpoint failed; WAL retained", "error", err)
+			}
+		} else if !e.options.BackgroundMaintenance && e.publishMu.TryLock() {
+			// Legacy GC edits reference state that an unlocked flush reads.
+			e.mu.Lock()
+			if !e.closed && e.fatal == nil {
+				e.collectGarbage(ctx)
+			}
+			e.mu.Unlock()
+			e.publishMu.Unlock()
 		}
 	}
 }
@@ -776,5 +844,5 @@ func (e *Engine) Close() error {
 		return nil
 	}
 	e.closed = true
-	return e.wal.file.Close()
+	return e.wal.close()
 }

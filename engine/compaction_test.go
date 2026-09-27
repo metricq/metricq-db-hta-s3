@@ -128,7 +128,7 @@ func TestCompactionKeepsLiveWALAndQueryResults(t *testing.T) {
 				t.Fatal("flush performed background deletion")
 			}
 			ingest(t, e, hta.Point{Time: 48100, Value: 77}, hta.Point{Time: 48200, Value: 88})
-			beforeSequence, head, walBytes := e.state.Sequence, e.sequence, e.wal.size
+			beforeSequence, head, walBytes := e.state.Sequence, e.sequence, e.wal.total()
 			requests := []*metricq.HistoryRequest{
 				{Type: metricq.HistoryRequest_FLEX_TIMELINE, StartTime: 100, EndTime: 48200},
 				{Type: metricq.HistoryRequest_FLEX_TIMELINE, StartTime: 150, EndTime: 47890, IntervalMax: 1000},
@@ -143,7 +143,7 @@ func TestCompactionKeepsLiveWALAndQueryResults(t *testing.T) {
 			if err := e.CompactOnce(ctx); err != nil {
 				t.Fatal(err)
 			}
-			if e.state.Sequence != beforeSequence || e.sequence != head || e.wal.size != walBytes {
+			if e.state.Sequence != beforeSequence || e.sequence != head || e.wal.total() != walBytes {
 				t.Fatal("compaction modified WAL checkpoint/head")
 			}
 			if e.state.CompactionJob.Key != "" {
@@ -354,12 +354,12 @@ func TestCompactionFailedPublicationKeepsOriginals(t *testing.T) {
 		t.Fatal(err)
 	}
 	oldRoot := e.state.Roots["x"][0]
-	sequence, walBytes := e.state.Sequence, e.wal.size
+	sequence, walBytes := e.state.Sequence, e.wal.total()
 	s.fail = "manifest"
 	if err := e.applyCompaction(ctx, job, replacements, packs); err == nil {
 		t.Fatal("failed publication succeeded")
 	}
-	if e.state.Roots["x"][0] != oldRoot || e.state.Sequence != sequence || e.wal.size != walBytes {
+	if e.state.Roots["x"][0] != oldRoot || e.state.Sequence != sequence || e.wal.total() != walBytes {
 		t.Fatal("failed publication changed checkpoint")
 	}
 	for _, input := range job.Inputs {

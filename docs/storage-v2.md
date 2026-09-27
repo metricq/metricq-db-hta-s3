@@ -29,9 +29,11 @@ physical records, without reaggregating or expanding compressed empty runs.
 flush reads and fills the last partially filled aggregate block. Raw blocks are
 always appended without tail rewriting.
 
-The commit order is data pack, index pack, conditional root manifest PUT,
-local WAL checkpoint, and WAL truncation. A failed tail read or PUT leaves
-the previous published root and WAL intact.
+A checkpoint first freezes its records and renames the active WAL segment,
+under the ingestion lock. The commit order is then data pack, index pack,
+conditional root manifest PUT, local WAL checkpoint, and deletion of the
+published segments. Uploads run outside the ingestion lock. A failed tail read
+or PUT leaves the previous published root and every WAL segment intact.
 If a manifest PUT response is lost, the engine reads the manifest back and
 reclaims WAL only when it matches the exact proposed checkpoint. Objects
 written before a failed root publication may be orphaned and are not yet

@@ -82,11 +82,8 @@ func (q *reader) records(level, begin, end int64) ([]hta.Record, error) {
 			out = append(out, entries...)
 		}
 	}
-	for _, en := range q.e.pending {
-		if en.Metric == q.metric && en.Record.Level == level {
-			out = append(out, en.Record)
-		}
-	}
+	out = append(out, q.e.flushing.stream(q.metric, level)...)
+	out = append(out, q.e.pending.stream(q.metric, level)...)
 	return out, nil
 }
 
@@ -343,7 +340,7 @@ func (q *reader) aggregate(begin, end int64) (hta.Aggregate, error) {
 		wg.Add(1)
 		go func(j int, job levelJob) {
 			defer wg.Done()
-			localEngine := &Engine{store: q.e.store, options: q.e.options, metrics: q.e.metrics, state: q.e.state, pending: q.e.pending, nodeCache: make(map[blob]indexNode), sharedNodes: q.e.sharedNodes, sharedBlocks: q.e.sharedBlocks}
+			localEngine := &Engine{store: q.e.store, options: q.e.options, metrics: q.e.metrics, state: q.e.state, pending: q.e.pending, flushing: q.e.flushing, nodeCache: make(map[blob]indexNode), sharedNodes: q.e.sharedNodes, sharedBlocks: q.e.sharedBlocks}
 			local := reader{e: localEngine, ctx: q.ctx, metric: q.metric, cache: make(map[blob][]hta.Record), budget: &budget}
 			for _, i := range job.indices {
 				part := spans[i]
@@ -583,10 +580,9 @@ func (e *Engine) readSnapshot(name string) (*Engine, error) {
 	e.pins[e.state.Generation]++
 	snapshot := &Engine{store: e.store, options: e.options, metrics: e.metrics, nodeCache: make(map[blob]indexNode), sharedNodes: e.sharedNodes, sharedBlocks: e.sharedBlocks, state: manifest{
 		Generation: e.state.Generation, Series: map[string]*hta.Series{name: &copySeries}, Roots: map[string]map[int64]blob{name: e.state.Roots[name]}}}
-	for _, en := range e.pending {
-		if en.Metric == name {
-			snapshot.pending = append(snapshot.pending, en)
-		}
-	}
+	// Share this metric's unflushed records without copying them. Records
+	// frozen by a running flush precede newer pending records.
+	snapshot.flushing = e.flushing.forMetric(name)
+	snapshot.pending = e.pending.forMetric(name)
 	return snapshot, nil
 }

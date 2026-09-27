@@ -172,7 +172,7 @@ func TestV2FailedPackKeepsAcknowledgedWAL(t *testing.T) {
 			dir := t.TempDir()
 			e := openTest(t, s, dir)
 			ingest(t, e, hta.Point{Time: 100, Value: 7})
-			if err := e.Flush(context.Background()); err == nil || e.wal.size == 0 {
+			if err := e.Flush(context.Background()); err == nil || e.wal.total() == 0 {
 				t.Fatalf("failed pack write discarded WAL: %v", err)
 			}
 			e.Close()

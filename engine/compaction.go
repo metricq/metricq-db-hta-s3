@@ -89,7 +89,7 @@ func (e *Engine) reserveCompaction(ctx context.Context) (CompactionJob, error) {
 		return CompactionJob{}, nil
 	}
 	options := e.options.Compaction.defaults()
-	if e.wal.size >= e.options.WALHigh || e.pendingBytes >= e.options.ObjectTarget {
+	if e.wal.total() >= e.options.WALHigh || e.pendingBytes >= e.options.ObjectTarget {
 		e.mu.Unlock()
 		return CompactionJob{}, nil
 	}
@@ -1138,6 +1138,8 @@ func (e *Engine) Reclaim(ctx context.Context) error {
 		return nil
 	}
 	if !e.options.BackgroundMaintenance {
+		e.publishMu.Lock()
+		defer e.publishMu.Unlock()
 		e.mu.Lock()
 		defer e.mu.Unlock()
 		e.collectGarbage(ctx)

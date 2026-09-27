@@ -17,13 +17,15 @@ for kind, name, help_text, labels in re.findall(r'(gaugeVec|counterVec|gauge|cou
 if "ingest_batch_deliveries" in text:
     rows.append(("ingest_batch_deliveries", "histogram", "", "AMQP deliveries made durable by one WAL fsync."))
 groups = [
-    ("Ingest", ("samples", "ingest_", "backpressure", "series")),
+    ("Ingest", ("ingest_",)),
     ("WAL", ("wal_",)),
-    ("Checkpoints and holding", ("checkpoint", "commit", "last_commit", "flush", "pending_records", "unsaved", "held_", "builder", "manifest", "index_pinned", "objects_written", "object_bytes")),
+    ("Checkpoints", ("checkpoint_",)),
+    ("Holding", ("hold_",)),
     ("Object store", ("store_",)),
-    ("Storage state", ("live_", "dead_", "small_", "gc_")),
-    ("Compaction", ("compaction",)),
-    ("Queries", ("quer",)),
+    ("Storage state", ("storage_",)),
+    ("Compaction", ("compaction_",)),
+    ("Maintenance (deletion of retired objects)", ("maintenance_",)),
+    ("Queries", ("query_",)),
     ("Configuration", ("config",)),
 ]
 used = set()

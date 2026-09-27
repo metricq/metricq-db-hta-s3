@@ -102,7 +102,7 @@ options and AWS credentials; `config.json` only tuning options.
 
 - `curl http://127.0.0.1:9090/readyz` returns 200 once the manager sent the
   configuration and the engine opened.
-- `metricq_db_samples_total` increases; `metricq_db_series` equals the number
+- `metricq_db_ingest_samples_total` increases; `metricq_db_ingest_metrics` equals the number
   of configured metrics.
 - Import `grafana/metricq-db-hta-s3.json` into Grafana and select the token
   (see [Monitoring](monitoring.md)).

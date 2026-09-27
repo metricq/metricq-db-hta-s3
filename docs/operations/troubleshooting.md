@@ -51,9 +51,9 @@ not repaired by the tool.
 
 ## Backpressure
 
-`metricq_db_backpressure` = 1: deliveries are refused and stay in RabbitMQ.
+`metricq_db_ingest_backpressure` = 1: deliveries are refused and stay in RabbitMQ.
 
-- **Checkpoints fail** (`commit_errors_total`, *Object store → Errors*): S3 is
+- **Checkpoints fail** (`checkpoint_errors_total`, *Object store → Errors*): S3 is
   down, credentials expired, quota exhausted. Acknowledged data is safe in the
   WAL; ingestion resumes by itself when checkpoints succeed. A full quota can
   be relieved by garbage collection, which deletes before it writes.
@@ -95,7 +95,7 @@ the prefix, then restart.
 A checkpoint or compaction that uploaded objects but never published a
 manifest leaves unreferenced objects. Aborted compaction jobs are cleaned up
 automatically; objects of failed checkpoints are not. They waste space but do
-not affect correctness. Compare `metricq_db_live_object_bytes` with the
+not affect correctness. Compare `metricq_db_storage_live_bytes` with the
 bucket usage below the prefix to estimate them.
 
 ## Data safety checklist

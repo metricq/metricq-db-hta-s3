@@ -237,7 +237,7 @@ func ingestRun(t *testing.T, ctx context.Context, mode string, prefetch, metricC
 	}
 	confirms := ch.NotifyPublish(make(chan amqp.Confirmation, len(bodies)))
 	syncsBefore, syncSumBefore := histogram(t, registry, "metricq_db_wal_sync_seconds")
-	flushesBefore, flushSumBefore := histogram(t, registry, "metricq_db_flush_seconds")
+	flushesBefore, flushSumBefore := histogram(t, registry, "metricq_db_checkpoint_seconds")
 	putsBefore, putSumBefore := histogram(t, registry, "metricq_db_store_put_seconds")
 	started := time.Now()
 	outstanding := 0
@@ -272,7 +272,7 @@ func ingestRun(t *testing.T, ctx context.Context, mode string, prefetch, metricC
 	}
 	elapsed := time.Since(started)
 	syncs, syncSum := histogram(t, registry, "metricq_db_wal_sync_seconds")
-	flushes, flushSum := histogram(t, registry, "metricq_db_flush_seconds")
+	flushes, flushSum := histogram(t, registry, "metricq_db_checkpoint_seconds")
 	puts, putSum := histogram(t, registry, "metricq_db_store_put_seconds")
 	t.Logf("backpressure waits=%d, S3 PUTs=%d taking %.1fs", pressure.Load(), puts-putsBefore, putSum-putSumBefore)
 	syncs -= syncsBefore

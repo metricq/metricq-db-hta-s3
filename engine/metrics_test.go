@@ -52,16 +52,16 @@ func TestMetricsCoverOperationalState(t *testing.T) {
 		}
 	}
 	for name, want := range map[string][]string{
-		"metricq_db_config":                  {"token=db-test", "parameter=hold_max_age_seconds"},
-		"metricq_db_checkpoints_total":       {"reason=hold_age"},
-		"metricq_db_checkpoint_blocks_total": {"size=partial"},
-		"metricq_db_store_requests_total":    {"op=put", "kind=data", "kind=manifest"},
-		"metricq_db_ingest_batch_deliveries": {"token=db-test"},
-		"metricq_db_wal_segments":            {"token=db-test"},
-		"metricq_db_held_streams":            {"token=db-test"},
-		"metricq_db_compaction_object_limit": {"token=db-test"},
-		"metricq_db_live_objects":            {"token=db-test"},
-		"metricq_db_manifest_bytes":          {"token=db-test"},
+		"metricq_db_config":                      {"token=db-test", "parameter=hold_max_age_seconds"},
+		"metricq_db_checkpoint_starts_total":     {"reason=hold_age"},
+		"metricq_db_checkpoint_blocks_total":     {"size=partial"},
+		"metricq_db_store_requests_total":        {"op=put", "kind=data", "kind=manifest"},
+		"metricq_db_ingest_batch_deliveries":     {"token=db-test"},
+		"metricq_db_wal_segments":                {"token=db-test"},
+		"metricq_db_hold_streams":                {"token=db-test"},
+		"metricq_db_compaction_job_object_limit": {"token=db-test"},
+		"metricq_db_storage_objects":             {"token=db-test"},
+		"metricq_db_store_manifest_bytes":        {"token=db-test"},
 	} {
 		for _, label := range want {
 			if !labels[name][label] {

@@ -389,9 +389,6 @@ func (e *Engine) updateMetrics() {
 	if e.options.MaintenanceEnabled {
 		e.updateMaintenanceMetrics(e.state)
 	}
-	e.metrics.WALTarget.Set(float64(e.options.WALTarget))
-	e.metrics.WALHigh.Set(float64(e.options.WALHigh))
-	e.metrics.WALHard.Set(float64(e.options.WALHard))
 	e.metrics.WALPending.Set(float64(e.sequence - e.state.Sequence))
 	e.metrics.OldestWAL.Set(float64(e.oldestWAL) / 1e9)
 	e.metrics.WALBytes.Set(float64(e.wal.total()))

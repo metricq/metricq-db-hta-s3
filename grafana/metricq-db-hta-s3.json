@@ -126,7 +126,7 @@
       },
       "targets": [
         {
-          "expr": "metricq_db_series{token=\"$token\"}",
+          "expr": "metricq_db_ingest_metrics{token=\"$token\"}",
           "legendFormat": "",
           "refId": "A",
           "datasource": {
@@ -177,7 +177,7 @@
       },
       "targets": [
         {
-          "expr": "sum(rate(metricq_db_samples_total{token=\"$token\"}[$__rate_interval]))",
+          "expr": "sum(rate(metricq_db_ingest_samples_total{token=\"$token\"}[$__rate_interval]))",
           "legendFormat": "",
           "refId": "A",
           "datasource": {
@@ -228,7 +228,7 @@
       },
       "targets": [
         {
-          "expr": "max(metricq_db_backpressure{token=\"$token\"})",
+          "expr": "max(metricq_db_ingest_backpressure{token=\"$token\"})",
           "legendFormat": "",
           "refId": "A",
           "datasource": {
@@ -283,7 +283,7 @@
       },
       "targets": [
         {
-          "expr": "time() - (max(metricq_db_last_commit_timestamp_seconds{token=\"$token\"}) > 0)",
+          "expr": "time() - (max(metricq_db_checkpoint_last_timestamp_seconds{token=\"$token\"}) > 0)",
           "legendFormat": "",
           "refId": "A",
           "datasource": {
@@ -409,7 +409,7 @@
       },
       "targets": [
         {
-          "expr": "sum(rate(metricq_db_samples_total{token=\"$token\"}[$__rate_interval]))",
+          "expr": "sum(rate(metricq_db_ingest_samples_total{token=\"$token\"}[$__rate_interval]))",
           "legendFormat": "accepted",
           "refId": "A",
           "datasource": {
@@ -418,7 +418,7 @@
           }
         },
         {
-          "expr": "sum(rate(metricq_db_samples_dropped_total{token=\"$token\"}[$__rate_interval]))",
+          "expr": "sum(rate(metricq_db_ingest_samples_dropped_total{token=\"$token\"}[$__rate_interval]))",
           "legendFormat": "dropped",
           "refId": "B",
           "datasource": {
@@ -731,7 +731,7 @@
       },
       "targets": [
         {
-          "expr": "sum(rate(metricq_db_backpressure_events_total{token=\"$token\"}[$__rate_interval]))",
+          "expr": "sum(rate(metricq_db_ingest_backpressure_events_total{token=\"$token\"}[$__rate_interval]))",
           "legendFormat": "refused",
           "refId": "A",
           "datasource": {
@@ -793,7 +793,7 @@
       },
       "targets": [
         {
-          "expr": "sum by (reason) (rate(metricq_db_checkpoints_total{token=\"$token\"}[$__rate_interval]))",
+          "expr": "sum by (reason) (rate(metricq_db_checkpoint_starts_total{token=\"$token\"}[$__rate_interval]))",
           "legendFormat": "{{reason}}",
           "refId": "A",
           "datasource": {
@@ -843,7 +843,7 @@
       },
       "targets": [
         {
-          "expr": "histogram_quantile(0.5, sum by (le) (rate(metricq_db_flush_seconds_bucket{token=\"$token\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(metricq_db_checkpoint_seconds_bucket{token=\"$token\"}[$__rate_interval])))",
           "legendFormat": "p50",
           "refId": "A",
           "datasource": {
@@ -852,7 +852,7 @@
           }
         },
         {
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(metricq_db_flush_seconds_bucket{token=\"$token\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(metricq_db_checkpoint_seconds_bucket{token=\"$token\"}[$__rate_interval])))",
           "legendFormat": "p95",
           "refId": "B",
           "datasource": {
@@ -952,7 +952,7 @@
       },
       "targets": [
         {
-          "expr": "max(metricq_db_unsaved_bytes{token=\"$token\"})",
+          "expr": "max(metricq_db_checkpoint_unsaved_bytes{token=\"$token\"})",
           "legendFormat": "unsaved",
           "refId": "A",
           "datasource": {
@@ -1011,7 +1011,7 @@
       },
       "targets": [
         {
-          "expr": "sum(rate(metricq_db_commit_errors_total{token=\"$token\"}[$__rate_interval]))",
+          "expr": "sum(rate(metricq_db_checkpoint_errors_total{token=\"$token\"}[$__rate_interval]))",
           "legendFormat": "errors",
           "refId": "A",
           "datasource": {
@@ -1123,7 +1123,7 @@
       },
       "targets": [
         {
-          "expr": "max(metricq_db_builder_bytes{token=\"$token\"})",
+          "expr": "max(metricq_db_ingest_memory_bytes{token=\"$token\"})",
           "legendFormat": "held and pending",
           "refId": "A",
           "datasource": {
@@ -1191,7 +1191,7 @@
       },
       "targets": [
         {
-          "expr": "max(metricq_db_held_oldest_age_seconds{token=\"$token\"})",
+          "expr": "max(metricq_db_hold_oldest_age_seconds{token=\"$token\"})",
           "legendFormat": "age",
           "refId": "A",
           "datasource": {
@@ -1250,7 +1250,7 @@
       },
       "targets": [
         {
-          "expr": "max(metricq_db_held_streams{token=\"$token\"})",
+          "expr": "max(metricq_db_hold_streams{token=\"$token\"})",
           "legendFormat": "streams",
           "refId": "A",
           "datasource": {
@@ -1259,7 +1259,7 @@
           }
         },
         {
-          "expr": "max(metricq_db_pending_records{token=\"$token\"})",
+          "expr": "max(metricq_db_ingest_pending_records{token=\"$token\"})",
           "legendFormat": "records",
           "refId": "B",
           "datasource": {
@@ -1268,7 +1268,7 @@
           }
         },
         {
-          "expr": "max(metricq_db_held_covered_records{token=\"$token\"})",
+          "expr": "max(metricq_db_hold_delta_records{token=\"$token\"})",
           "legendFormat": "in deltas",
           "refId": "C",
           "datasource": {
@@ -1318,7 +1318,7 @@
       },
       "targets": [
         {
-          "expr": "max(metricq_db_held_deltas{token=\"$token\"})",
+          "expr": "max(metricq_db_hold_deltas{token=\"$token\"})",
           "legendFormat": "objects",
           "refId": "A",
           "datasource": {
@@ -1327,7 +1327,7 @@
           }
         },
         {
-          "expr": "sum(rate(metricq_db_held_delta_bytes_total{token=\"$token\"}[$__rate_interval]))",
+          "expr": "sum(rate(metricq_db_hold_delta_bytes_total{token=\"$token\"}[$__rate_interval]))",
           "legendFormat": "bytes/s",
           "refId": "B",
           "datasource": {
@@ -1616,7 +1616,7 @@
       },
       "targets": [
         {
-          "expr": "max(metricq_db_manifest_bytes{token=\"$token\"})",
+          "expr": "max(metricq_db_store_manifest_bytes{token=\"$token\"})",
           "legendFormat": "manifest",
           "refId": "A",
           "datasource": {
@@ -1678,7 +1678,7 @@
       },
       "targets": [
         {
-          "expr": "max(metricq_db_live_object_bytes{token=\"$token\"})",
+          "expr": "max(metricq_db_storage_live_bytes{token=\"$token\"})",
           "legendFormat": "live",
           "refId": "A",
           "datasource": {
@@ -1687,7 +1687,7 @@
           }
         },
         {
-          "expr": "max(metricq_db_dead_object_bytes{token=\"$token\"})",
+          "expr": "max(metricq_db_storage_dead_bytes{token=\"$token\"})",
           "legendFormat": "dead",
           "refId": "B",
           "datasource": {
@@ -1737,7 +1737,7 @@
       },
       "targets": [
         {
-          "expr": "max(metricq_db_live_objects{token=\"$token\"})",
+          "expr": "max(metricq_db_storage_objects{token=\"$token\"})",
           "legendFormat": "live objects",
           "refId": "A",
           "datasource": {
@@ -1746,7 +1746,7 @@
           }
         },
         {
-          "expr": "max(metricq_db_gc_pending_objects{token=\"$token\"})",
+          "expr": "max(metricq_db_maintenance_delete_pending_objects{token=\"$token\"})",
           "legendFormat": "awaiting deletion",
           "refId": "B",
           "datasource": {
@@ -1796,7 +1796,7 @@
       },
       "targets": [
         {
-          "expr": "max(metricq_db_small_data_blocks{token=\"$token\"})",
+          "expr": "max(metricq_db_storage_small_blocks{token=\"$token\"})",
           "legendFormat": "blocks below 1024 records",
           "refId": "A",
           "datasource": {
@@ -1855,7 +1855,7 @@
       },
       "targets": [
         {
-          "expr": "max(metricq_db_small_data_block_bytes{token=\"$token\"}) / max(metricq_db_live_object_bytes{token=\"$token\"})",
+          "expr": "max(metricq_db_storage_small_block_bytes{token=\"$token\"}) / max(metricq_db_storage_live_bytes{token=\"$token\"})",
           "legendFormat": "small / live",
           "refId": "A",
           "datasource": {
@@ -1917,7 +1917,7 @@
       },
       "targets": [
         {
-          "expr": "sum(rate(metricq_db_compactions_total{token=\"$token\"}[$__rate_interval]))",
+          "expr": "sum(rate(metricq_db_compaction_jobs_total{token=\"$token\"}[$__rate_interval]))",
           "legendFormat": "published",
           "refId": "A",
           "datasource": {
@@ -1926,7 +1926,7 @@
           }
         },
         {
-          "expr": "sum(rate(metricq_db_compaction_errors_total{token=\"$token\"}[$__rate_interval]))",
+          "expr": "sum(rate(metricq_db_compaction_job_errors_total{token=\"$token\"}[$__rate_interval]))",
           "legendFormat": "failed",
           "refId": "B",
           "datasource": {
@@ -1935,7 +1935,7 @@
           }
         },
         {
-          "expr": "sum(rate(metricq_db_compaction_budget_exceeded_total{token=\"$token\"}[$__rate_interval]))",
+          "expr": "sum(rate(metricq_db_compaction_job_budget_exceeded_total{token=\"$token\"}[$__rate_interval]))",
           "legendFormat": "catalog budget",
           "refId": "C",
           "datasource": {
@@ -2053,7 +2053,7 @@
       },
       "targets": [
         {
-          "expr": "sum(rate(metricq_db_compaction_read_bytes_total{token=\"$token\"}[$__rate_interval]))",
+          "expr": "sum(rate(metricq_db_compaction_io_read_bytes_total{token=\"$token\"}[$__rate_interval]))",
           "legendFormat": "read",
           "refId": "A",
           "datasource": {
@@ -2062,7 +2062,7 @@
           }
         },
         {
-          "expr": "sum(rate(metricq_db_compaction_write_bytes_total{token=\"$token\"}[$__rate_interval]))",
+          "expr": "sum(rate(metricq_db_compaction_io_write_bytes_total{token=\"$token\"}[$__rate_interval]))",
           "legendFormat": "write",
           "refId": "B",
           "datasource": {
@@ -2121,7 +2121,7 @@
       },
       "targets": [
         {
-          "expr": "histogram_quantile(0.5, sum by (le) (rate(metricq_db_compaction_seconds_bucket{token=\"$token\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(metricq_db_compaction_job_seconds_bucket{token=\"$token\"}[$__rate_interval])))",
           "legendFormat": "p50",
           "refId": "A",
           "datasource": {
@@ -2130,7 +2130,7 @@
           }
         },
         {
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(metricq_db_compaction_seconds_bucket{token=\"$token\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(metricq_db_compaction_job_seconds_bucket{token=\"$token\"}[$__rate_interval])))",
           "legendFormat": "p95",
           "refId": "B",
           "datasource": {
@@ -2198,7 +2198,7 @@
           }
         },
         {
-          "expr": "max(metricq_db_compaction_object_limit{token=\"$token\"})",
+          "expr": "max(metricq_db_compaction_job_object_limit{token=\"$token\"})",
           "legendFormat": "object limit",
           "refId": "B",
           "datasource": {
@@ -2307,7 +2307,7 @@
       },
       "targets": [
         {
-          "expr": "time() - (max(metricq_db_compaction_last_success_timestamp_seconds{token=\"$token\"}) > 0)",
+          "expr": "time() - (max(metricq_db_compaction_job_last_success_timestamp_seconds{token=\"$token\"}) > 0)",
           "legendFormat": "age",
           "refId": "A",
           "datasource": {
@@ -2369,7 +2369,7 @@
       },
       "targets": [
         {
-          "expr": "max(metricq_db_gc_pending_objects{token=\"$token\"})",
+          "expr": "max(metricq_db_maintenance_delete_pending_objects{token=\"$token\"})",
           "legendFormat": "pending",
           "refId": "A",
           "datasource": {
@@ -2419,7 +2419,7 @@
       },
       "targets": [
         {
-          "expr": "sum(rate(metricq_db_gc_deleted_objects_total{token=\"$token\"}[$__rate_interval]))",
+          "expr": "sum(rate(metricq_db_maintenance_deleted_objects_total{token=\"$token\"}[$__rate_interval]))",
           "legendFormat": "deleted",
           "refId": "A",
           "datasource": {
@@ -2428,7 +2428,7 @@
           }
         },
         {
-          "expr": "sum(rate(metricq_db_gc_delete_errors_total{token=\"$token\"}[$__rate_interval]))",
+          "expr": "sum(rate(metricq_db_maintenance_delete_errors_total{token=\"$token\"}[$__rate_interval]))",
           "legendFormat": "errors",
           "refId": "B",
           "datasource": {
@@ -2490,7 +2490,7 @@
       },
       "targets": [
         {
-          "expr": "sum(rate(metricq_db_queries_total{token=\"$token\"}[$__rate_interval]))",
+          "expr": "sum(rate(metricq_db_query_requests_total{token=\"$token\"}[$__rate_interval]))",
           "legendFormat": "queries",
           "refId": "A",
           "datasource": {
@@ -2617,7 +2617,7 @@
       },
       "targets": [
         {
-          "expr": "max(metricq_db_index_pinned_entries{token=\"$token\"})",
+          "expr": "max(metricq_db_checkpoint_pinned_index_entries{token=\"$token\"})",
           "legendFormat": "entries",
           "refId": "A",
           "datasource": {

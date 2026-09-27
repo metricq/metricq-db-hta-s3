@@ -384,9 +384,18 @@ func candidateKey(o ObjectInfo) string {
 	return fmt.Sprintf("%03d/%s", rank, o.Key)
 }
 func (e *Engine) catalogChanges(ctx context.Context, next *manifest, changes map[string]*ObjectInfo) ([]string, error) {
+	uploads := newInventoryUploads(ctx, func(ctx context.Context, p *pack) error {
+		absent := ""
+		_, err := e.put(ctx, p.key, p.buf.Bytes(), &absent)
+		return err
+	})
+	defer uploads.close()
 	candidates := make(map[string]*ObjectInfo)
 	var trash []string
 	for key, value := range changes {
+		if err := uploads.ctx.Err(); err != nil {
+			return nil, uploads.failure()
+		}
 		old, ok, err := e.catalogGet(ctx, e.state.Catalog, key)
 		if err != nil {
 			return nil, err
@@ -409,7 +418,7 @@ func (e *Engine) catalogChanges(ctx context.Context, next *manifest, changes map
 			}
 		}
 		if value != nil {
-			retired, err := e.writeObjectInventory(ctx, value, old)
+			retired, err := e.prepareObjectInventory(value, old, uploads.submit)
 			if err != nil {
 				return nil, err
 			}
@@ -436,6 +445,10 @@ func (e *Engine) catalogChanges(ctx context.Context, next *manifest, changes map
 				candidates[candidate] = &ObjectInfo{Key: candidate, Target: key, Modified: time.Now().UnixNano()}
 			}
 		}
+	}
+	// No catalog root can reference an inventory upload that has not succeeded.
+	if err := uploads.wait(); err != nil {
+		return nil, err
 	}
 	root, retired, err := e.updateCatalog(ctx, e.state.Catalog, changes, "catalog")
 	if err != nil {

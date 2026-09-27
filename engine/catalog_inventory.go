@@ -82,6 +82,16 @@ func inventoryObjects(pages []objectInventoryPage) map[string]bool {
 // One pack per changed object's inventory keeps retirement local to that object.
 // Pages from other objects never share this pack; unchanged pages remain live.
 func (e *Engine) writeObjectInventory(ctx context.Context, o *ObjectInfo, old ObjectInfo) ([]string, error) {
+	return e.prepareObjectInventory(o, old, func(p *pack) error {
+		absent := ""
+		_, err := e.put(ctx, p.key, p.buf.Bytes(), &absent)
+		return err
+	})
+}
+
+// Preparation remains serialized; upload may transfer ownership of the pack
+// buffer to a bounded queue. Callers must await uploads before publishing refs.
+func (e *Engine) prepareObjectInventory(o *ObjectInfo, old ObjectInfo, upload func(*pack) error) ([]string, error) {
 	if !sort.SliceIsSorted(o.Blocks, func(i, j int) bool { return o.Blocks[i].Entry.Blob.Offset < o.Blocks[j].Entry.Blob.Offset }) {
 		o.Blocks = append([]BlockInfo(nil), o.Blocks...)
 		sort.Slice(o.Blocks, func(i, j int) bool { return o.Blocks[i].Entry.Blob.Offset < o.Blocks[j].Entry.Blob.Offset })
@@ -92,8 +102,7 @@ func (e *Engine) writeObjectInventory(ctx context.Context, o *ObjectInfo, old Ob
 		if p == nil {
 			return nil
 		}
-		absent := ""
-		_, err := e.put(ctx, p.key, p.buf.Bytes(), &absent)
+		err := upload(p)
 		p = nil
 		return err
 	}

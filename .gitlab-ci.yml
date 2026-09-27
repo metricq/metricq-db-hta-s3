@@ -1,8 +1,18 @@
-# Documentation: built on every branch, published with GitLab Pages from the
-# default branch. Sources are the Markdown files in docs/ (mkdocs.yml).
+# Tests on every push. Documentation: built on every branch, published with
+# GitLab Pages from the default branch; sources are docs/*.md (mkdocs.yml).
+# Integration tests need the MetricQ stack and S3 and are not run here.
 stages:
+  - test
   - build
   - deploy
+
+test:
+  stage: test
+  image: golang:1.25
+  script:
+    - go vet ./...
+    - go vet -tags=integration ./integration
+    - go test -race ./...
 
 .mkdocs:
   image: python:3.12-slim

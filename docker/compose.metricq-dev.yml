@@ -61,9 +61,6 @@ services:
   db-hta-go-dummy:
     build:
       context: ..
-      additional_contexts:
-        # Local checkout of metricq-go with the batched data handler.
-        metricq-go: ../../metricq-go
     image: metricq-db-hta-go
     depends_on:
       s3-bucket:

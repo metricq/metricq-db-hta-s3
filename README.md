@@ -12,9 +12,7 @@ monitoring and troubleshooting.
 
 ## Quick start
 
-Requires Linux and Go 1.25. Keep the extended
-[`metricq-go`](https://github.com/metricq/metricq-go) checkout next to this
-repository (`go.mod` uses a local `replace`).
+Requires Linux and Go 1.25.
 
 ```sh
 go build ./cmd/metricq-db-hta-go ./cmd/metricq-db-hta-wal-repair
@@ -36,7 +34,7 @@ Container image and a compose file for the MetricQ development environment,
 including Prometheus and Grafana with the dashboard:
 
 ```sh
-docker build --build-context metricq-go=../metricq-go -t metricq-db-hta-go .
+docker build -t metricq-db-hta-go .
 cd docker && docker compose -f compose.metricq-dev.yml --profile monitoring up --build
 ```
 

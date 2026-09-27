@@ -14,8 +14,11 @@ docs/                        this documentation (MkDocs, published by GitLab Pag
 measurements/                benchmark reports and design history
 ```
 
-The module depends on a `metricq-go` checkout next to the repository
-(`replace` in `go.mod`) until the batched data handler is released.
+The MetricQ client is [`metricq-go`](https://github.com/metricq/metricq-go),
+pinned in `go.mod` to the commit that introduced the batched data handler
+(`DB.DataBatch`). To work on both at once, add
+`replace github.com/metricq/metricq-go => ../metricq-go` locally and do not
+commit it.
 
 ## Packages
 

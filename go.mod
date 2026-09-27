@@ -8,10 +8,10 @@ require (
 	github.com/aws/aws-sdk-go-v2/credentials v1.20.6
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.113.4
 	github.com/aws/smithy-go v1.28.1
-	github.com/metricq/metricq-go v0.0.0
+	github.com/metricq/metricq-go v0.0.0-20260927125830-46e20280ce8f
 	github.com/prometheus/client_golang v1.24.1
-	github.com/rabbitmq/amqp091-go v1.8.1
-	google.golang.org/protobuf v1.36.11
+	github.com/rabbitmq/amqp091-go v1.13.0
+	google.golang.org/protobuf v1.36.12
 )
 
 require (
@@ -37,5 +37,3 @@ require (
 	github.com/prometheus/procfs v0.21.1 // indirect
 	golang.org/x/sys v0.47.0 // indirect
 )
-
-replace github.com/metricq/metricq-go => ../metricq-go

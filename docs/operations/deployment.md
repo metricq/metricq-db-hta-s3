@@ -37,7 +37,7 @@ curl -X PUT -H 'Content-Type: application/json' \
 ### Container
 
 ```sh
-docker build --build-context metricq-go=../metricq-go -t metricq-db-hta-go .
+docker build -t metricq-db-hta-go .
 
 docker run -d --name db-hta-go \
   -v db-hta-go:/var/lib/metricq-db-hta-go \
@@ -56,9 +56,7 @@ docker run -d --name db-hta-go \
   `token`, `metricq_url` and `wait_for_rabbitmq_url` (host:port to wait for,
   with `WAITFORIT_TIMEOUT` seconds, 0 = forever). Without waiting, the process
   exits if RabbitMQ is not reachable at start; restart policies handle that.
-- `docker build` clones `metricq-go` from `METRICQ_GO_REPO`/`METRICQ_GO_REF`
-  unless a local checkout is passed with `--build-context metricq-go=…`.
-  `--build-arg VERSION=…` sets the reported version.
+- `--build-arg VERSION=…` sets the reported version.
 - Metrics listen on `0.0.0.0:9090` inside the container.
 
 ### MetricQ development environment
@@ -74,8 +72,7 @@ docker compose -f compose.metricq-dev.yml up --build
 docker compose -f compose.metricq-dev.yml --profile monitoring up --build
 ```
 
-It expects the stack's network `metricq_metricq-network` and a `metricq-go`
-checkout next to this repository.
+It expects the stack's network `metricq_metricq-network`.
 
 ### systemd
 

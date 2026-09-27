@@ -2,25 +2,12 @@
 #
 # Build from this repository:
 #   docker build -t metricq-db-hta-go .
-# The module needs the metricq-go client with the batched data handler. By
-# default it is cloned from METRICQ_GO_REPO/METRICQ_GO_REF; a local checkout
-# replaces that stage:
-#   docker build --build-context metricq-go=../metricq-go -t metricq-db-hta-go .
+#   docker build --build-arg VERSION=1.2.3 -t metricq-db-hta-go .
 
 ARG GO_VERSION=1.25
 
-FROM alpine/git:latest AS metricq-go-source
-ARG METRICQ_GO_REPO=https://github.com/metricq/metricq-go.git
-ARG METRICQ_GO_REF=main
-RUN git clone --depth 1 --branch "${METRICQ_GO_REF}" "${METRICQ_GO_REPO}" /metricq-go
-
-# Named stage so --build-context metricq-go=<dir> can override it.
-FROM scratch AS metricq-go
-COPY --from=metricq-go-source /metricq-go /
-
 FROM golang:${GO_VERSION} AS build
-WORKDIR /src/metricq-db-hta-go
-COPY --from=metricq-go / /src/metricq-go/
+WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .

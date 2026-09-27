@@ -5,7 +5,6 @@
 ```sh
 go test ./...
 go test -race ./...           # required before committing engine changes
-(cd ../metricq-go && go test -race ./...)
 ```
 
 Engine tests use an in-memory object store (`memoryStore`, `gcStore`) and a
@@ -66,5 +65,6 @@ python3 grafana/generate_dashboard.py
 python3 scripts/metrics-reference.py   # table for operations/monitoring.md
 ```
 
-GitLab CI builds the site on every branch and publishes it with GitLab Pages
-from the default branch (`.gitlab-ci.yml`).
+GitLab CI (`.gitlab-ci.yml`) runs `go vet` and the unit tests with the race
+detector on every push, builds the site on every branch and publishes it with
+GitLab Pages from the default branch.

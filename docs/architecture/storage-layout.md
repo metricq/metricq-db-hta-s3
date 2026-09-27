@@ -13,7 +13,7 @@ writing new objects and conditionally replacing `manifest`.
 | `state/<id>` | Pages of the open HTA state (per metric), hash-partitioned | checkpoint |
 | `roots/<id>` | Pages of index roots per metric and level, hash-partitioned | checkpoint, compaction |
 | `held/<id>` | Held records persisted by one checkpoint ([write path](write-path.md#holding-streams)) | checkpoint |
-| `held-state/<id>` | List of needed held deltas and per-stream watermarks | checkpoint |
+| `held-state/<id>` | Versioned root and independent paged trees of needed held deltas and per-stream watermarks, packed together | checkpoint |
 | `catalog/…`, `candidates/…` | Pages of the maintenance catalog and the compaction candidate tree | checkpoint, compaction |
 | `trash/<id>` | Pages of the deletion journal | checkpoint, compaction, GC |
 | `jobs/<id>` | Description of a reserved or aborted compaction job | compaction |
@@ -42,6 +42,40 @@ through a directory. A change writes one pack with the changed pages and a new
 directory. This bounds PUT count per changed metadata kind; the bytes written
 still depend on how many pages change and how much state those pages contain.
 With input on every metric, most Series pages can change at every checkpoint.
+
+### Held metadata
+
+`HeldState` addresses a version-1 root with two checksummed references:
+`Inventory` and `Watermarks`. Each is a copy-on-write ordered tree with at most
+64 entries or children per page. The inventory orders descriptors by checkpoint
+generation and ordinal; WAL sequence alone is insufficient because an
+age-triggered checkpoint can publish without accepting new samples. Watermarks
+use the canonical metric/level stream key and contain absolute written-prefix
+timestamps, including timestamp zero as a valid value.
+
+An inventory-only change reuses the complete watermark tree. A localized change
+writes affected leaves and ancestor paths, not the full collection. Changed
+pages from both collections and the small root share immutable packs capped at
+4 MiB; a publication normally needs one `held-state/` PUT. Packed sibling pages
+are read together using bounded, checksummed range reads during startup. All
+metadata is hydrated before WAL replay; queries need no additional lookups.
+
+Retirement considers the union of both trees and the root. A pack containing an
+obsolete inventory page remains live while an unchanged watermark page still
+references it. GC deletes it after its last reference disappears and generation
+pins permit deletion. This can retain dead bytes inside a partially live pack;
+there is no automatic metadata-pack repacking yet.
+
+The reader accepts the previous monolithic `Deltas`/`Watermarks` object and
+transitions it on the next held-state change. Unknown versions, invalid page
+ordering, missing pages and checksum failures stop startup. All immutable
+metadata must be uploaded before the single manifest CAS; only a successful or
+exactly reconciled publication permits reclaiming its WAL prefix. Failed
+ordinary checkpoints can still leave unreachable output objects, as before.
+
+Series dirty tracking freezes with the WAL sequence. Concurrent samples and new
+configurations accumulate in the next set; a failed checkpoint restores the
+frozen set. No per-Series patch journal is part of this format.
 
 ## Catalog
 

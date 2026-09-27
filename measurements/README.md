@@ -27,3 +27,4 @@ output paths point into this directory.
 | [hold-back.md](hold-back.md) | Holding streams in memory until they fill a block |
 | [capacity-review-c0d3a3d.md](capacity-review-c0d3a3d.md) | Capacity and history locality review at c0d3a3d |
 | [paged-manifest-and-level-locality.md](paged-manifest-and-level-locality.md) | Paged checkpoint metadata and level locality |
+| [metadata-split.md](metadata-split.md) | Independent held metadata, hourly write costs and recovery tradeoffs |

@@ -1,7 +1,11 @@
 # Plan: reduce checkpoint metadata writes
 
-Status: proposal, based on c3189d8. No storage implementation changes are part
-of this plan.
+Status: implemented for independent held collections, dirty tracking and
+checkpoint/GC integration. Measurements and the decision to defer the optional
+Series journal are in [metadata split results](../../measurements/metadata-split.md).
+The hourly comparison uses a zero-latency in-memory object backend with a real
+WAL and Prometheus HTTP endpoint; real S3 recovery and legacy parity have
+separate integration coverage. It is not a sustained S3 capacity measurement.
 
 ## Finding and scope
 

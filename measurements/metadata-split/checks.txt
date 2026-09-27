@@ -1,0 +1,25 @@
+=== RUN   TestReviewFullBlockQueryLocality
+=== RUN   TestReviewFullBlockQueryLocality/flushes=16
+    capacity_review_test.go:162: before cold FLEX: median=8.701867ms data_GETs=9.0 data_bytes=254915 rows=1000 candidates=1
+    capacity_review_test.go:171: completed compactions=5
+    capacity_review_test.go:162: after cold FLEX: median=6.300378ms data_GETs=1.0 data_bytes=254915 rows=1000 candidates=0
+=== RUN   TestReviewFullBlockQueryLocality/flushes=1
+    capacity_review_test.go:162: before cold FLEX: median=5.970463ms data_GETs=1.0 data_bytes=254915 rows=1000 candidates=0
+    capacity_review_test.go:171: completed compactions=0
+    capacity_review_test.go:162: after cold FLEX: median=5.615501ms data_GETs=1.0 data_bytes=254915 rows=1000 candidates=0
+--- PASS: TestReviewFullBlockQueryLocality (0.53s)
+    --- PASS: TestReviewFullBlockQueryLocality/flushes=16 (0.32s)
+    --- PASS: TestReviewFullBlockQueryLocality/flushes=1 (0.21s)
+=== RUN   TestReviewHoldExpiryPublications
+=== RUN   TestReviewHoldExpiryPublications/check_every_1s
+    capacity_review_test.go:251: expiry-only: manifest_PUTs=120 manifest_bytes=160251 wall=2.661123052s remaining_held_records=4140
+=== RUN   TestReviewHoldExpiryPublications/check_every_30s
+    capacity_review_test.go:251: expiry-only: manifest_PUTs=4 manifest_bytes=5224 wall=155.77743ms remaining_held_records=4140
+--- PASS: TestReviewHoldExpiryPublications (3.21s)
+    --- PASS: TestReviewHoldExpiryPublications/check_every_1s (2.89s)
+    --- PASS: TestReviewHoldExpiryPublications/check_every_30s (0.32s)
+=== RUN   TestReviewSeriesPatchOpportunity
+    state_patch_review_test.go:80: 1500 active series, 30s checkpoint: snapshot=371585B candidate_patch=280180B savings=24.6% changed_levels=6000/7500 (excludes bases/recovery)
+--- PASS: TestReviewSeriesPatchOpportunity (0.79s)
+PASS
+ok  	github.com/metricq/metricq-db-hta-s3/engine	4.547s

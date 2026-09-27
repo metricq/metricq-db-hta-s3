@@ -1,0 +1,48 @@
+=== RUN   TestReviewMetadataHourlyWorkload
+=== RUN   TestReviewMetadataHourlyWorkload/dense
+    metadata_workload_review_test.go:210: hour=1 samples=5400000 held=120 candidates=0 wall=38.061281299s
+    metadata_workload_review_test.go:210: hour=2 samples=10800000 held=118 candidates=11 wall=1m15.658507657s
+    metadata_workload_review_test.go:223: samples=10800000 hours=2 ACK_batch_p50=135.888661ms ACK_batch_p95=185.517174ms flush_p50=140.347256ms flush_p95=440.7467ms wall=1m15.661094932s scrapes=76
+    metadata_workload_review_test.go:231: traffic delete/candidates calls=16 bytes=0
+    metadata_workload_review_test.go:231: traffic delete/catalog calls=134 bytes=0
+    metadata_workload_review_test.go:231: traffic delete/held calls=122 bytes=0
+    metadata_workload_review_test.go:231: traffic delete/held-state calls=239 bytes=0
+    metadata_workload_review_test.go:231: traffic delete/index calls=22 bytes=0
+    metadata_workload_review_test.go:231: traffic delete/jobs calls=7 bytes=0
+    metadata_workload_review_test.go:231: traffic delete/roots calls=29 bytes=0
+    metadata_workload_review_test.go:231: traffic delete/state calls=239 bytes=0
+    metadata_workload_review_test.go:231: traffic delete/trash calls=249 bytes=0
+    metadata_workload_review_test.go:231: traffic get/manifest calls=1 bytes=0
+    metadata_workload_review_test.go:231: traffic put/candidates calls=17 bytes=11480
+    metadata_workload_review_test.go:231: traffic put/catalog calls=166 bytes=8472945
+    metadata_workload_review_test.go:231: traffic put/data calls=44 bytes=441934482
+    metadata_workload_review_test.go:231: traffic put/held calls=240 bytes=365262973
+    metadata_workload_review_test.go:231: traffic put/held-state calls=240 bytes=7869841
+    metadata_workload_review_test.go:231: traffic put/index calls=30 bytes=15222743
+    metadata_workload_review_test.go:231: traffic put/jobs calls=7 bytes=15866
+    metadata_workload_review_test.go:231: traffic put/manifest calls=266 bytes=499434
+    metadata_workload_review_test.go:231: traffic put/roots calls=31 bytes=7104817
+    metadata_workload_review_test.go:231: traffic put/state calls=240 bytes=89845095
+    metadata_workload_review_test.go:231: traffic put/trash calls=274 bytes=102397
+    metadata_workload_review_test.go:231: traffic range/candidates calls=23 bytes=15097
+    metadata_workload_review_test.go:231: traffic range/catalog calls=243 bytes=14185924
+    metadata_workload_review_test.go:231: traffic range/data calls=26 bytes=1991761
+    metadata_workload_review_test.go:231: traffic range/index calls=628 bytes=446926
+    metadata_workload_review_test.go:231: traffic range/jobs calls=7 bytes=15866
+    metadata_workload_review_test.go:231: traffic range/trash calls=274 bytes=102397
+    metadata_workload_review_test.go:247: retained candidates bytes=855
+    metadata_workload_review_test.go:247: retained catalog bytes=1788715
+    metadata_workload_review_test.go:247: retained data bytes=441934482
+    metadata_workload_review_test.go:247: retained held bytes=179171922
+    metadata_workload_review_test.go:247: retained held-state bytes=60635
+    metadata_workload_review_test.go:247: retained index bytes=4453409
+    metadata_workload_review_test.go:247: retained manifest bytes=1947
+    metadata_workload_review_test.go:247: retained roots bytes=639265
+    metadata_workload_review_test.go:247: retained state bytes=395386
+    metadata_workload_review_test.go:247: retained trash bytes=9558
+    metadata_workload_review_test.go:249: retained objects=233
+    metadata_workload_review_test.go:289: S3_only_recovery time=6.113303258s calls=128 bytes=180254547
+--- PASS: TestReviewMetadataHourlyWorkload (81.81s)
+    --- PASS: TestReviewMetadataHourlyWorkload/dense (81.81s)
+PASS
+ok  	github.com/metricq/metricq-db-hta-s3/engine	82.077s

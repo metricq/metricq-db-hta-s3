@@ -174,3 +174,13 @@ This table is generated from `engine/metrics.go` by
 | `metricq_db_query_seconds` | histogram |  | History request latency. |
 | **Configuration** | | | |
 | `metricq_db_config` | gauge | parameter | Configured engine option values; the parameter label names the option. |
+
+## Checkpoint metadata pages
+
+`metricq_db_checkpoint_metadata_pages_total{kind}` counts encoded immutable
+pages for `state`, `roots`, `held-inventory` and `held-watermarks`. Failed
+publication attempts are included; root descriptors/directories are excluded.
+Inventory-only checkpoints should not increase `held-watermarks`. Use
+`metricq_db_store_bytes_total{op="put",kind="held-state"}` and
+`metricq_db_store_requests_total` for physical traffic, rather than estimating
+it from page counts. Maintenance reuses unchanged held metadata.

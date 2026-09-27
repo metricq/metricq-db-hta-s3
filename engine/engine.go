@@ -219,6 +219,14 @@ type Engine struct {
 }
 
 func encode(v any) ([]byte, error) {
+	if b, handled, err := encodeBinaryBlock(v); handled {
+		return b, err
+	}
+	return encodeGob(v)
+}
+
+// Metadata and WAL batches keep their existing gzip/Gob representation.
+func encodeGob(v any) ([]byte, error) {
 	var b bytes.Buffer
 	z := gzipWriters.Get().(*gzip.Writer)
 	z.Reset(&b)
@@ -242,6 +250,14 @@ var gzipWriters = sync.Pool{New: func() any {
 }}
 
 func decode(b []byte, v any) error {
+	if bytes.HasPrefix(b, []byte(blockMagic)) {
+		return decodeBinaryBlock(b, v)
+	}
+	return decodeGob(b, v)
+}
+
+// Legacy independent gzip/Gob data and index blocks remain readable.
+func decodeGob(b []byte, v any) error {
 	z, err := gzip.NewReader(bytes.NewReader(b))
 	if err != nil {
 		return err

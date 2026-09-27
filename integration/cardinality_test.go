@@ -7,6 +7,7 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/csv"
 	"encoding/gob"
 	"fmt"
@@ -93,6 +94,9 @@ type auditManifest struct {
 type layoutStats struct{ rawBlocks, rawRecords, aggregateBlocks, aggregateRecords, fragmentedAggregates, indexNodes, liveDataBytes, liveIndexBytes int64 }
 
 func auditDecode(b []byte, v any) error {
+	if bytes.HasPrefix(b, []byte("MQHB")) {
+		return auditBinaryIndex(b, v)
+	}
 	r, err := gzip.NewReader(bytes.NewReader(b))
 	if err != nil {
 		return err
@@ -100,6 +104,78 @@ func auditDecode(b []byte, v any) error {
 	defer r.Close()
 	return gob.NewDecoder(r).Decode(v)
 }
+
+// An independent reader for the documented version-1 index format keeps the
+// physical-layout audit separate from the engine's own codec implementation.
+func auditBinaryIndex(b []byte, v any) error {
+	dst, ok := v.(*auditNode)
+	if !ok || len(b) < 6 || b[4] != 1 || b[5] != 2 {
+		return fmt.Errorf("invalid audit binary index envelope")
+	}
+	z, err := gzip.NewReader(bytes.NewReader(b[6:]))
+	if err != nil {
+		return err
+	}
+	defer z.Close()
+	const limit = 5 + 64*(65535+2+70)
+	payload, err := io.ReadAll(io.LimitReader(z, limit+1))
+	if err != nil {
+		return err
+	}
+	if len(payload) > limit {
+		return fmt.Errorf("audit index exceeds limit")
+	}
+	r := bytes.NewReader(payload)
+	leaf, err := r.ReadByte()
+	if err != nil {
+		return err
+	}
+	var count, keyCount uint16
+	if err = binary.Read(r, binary.LittleEndian, &count); err != nil {
+		return err
+	}
+	if err = binary.Read(r, binary.LittleEndian, &keyCount); err != nil {
+		return err
+	}
+	if leaf > 1 || count > 64 || keyCount > count {
+		return fmt.Errorf("invalid audit index header")
+	}
+	keys := make([]string, int(keyCount))
+	for i := range keys {
+		var length uint16
+		if err = binary.Read(r, binary.LittleEndian, &length); err != nil {
+			return err
+		}
+		key := make([]byte, int(length))
+		if _, err = io.ReadFull(r, key); err != nil {
+			return err
+		}
+		keys[i] = string(key)
+	}
+	node := auditNode{Leaf: leaf == 1, Entries: make([]auditEdge, int(count))}
+	for i := range node.Entries {
+		var wire struct {
+			First, Last    int64
+			Key            uint16
+			Offset, Length int64
+			Hash           [32]byte
+			Records        uint32
+		}
+		if err = binary.Read(r, binary.LittleEndian, &wire); err != nil {
+			return err
+		}
+		if int(wire.Key) >= len(keys) {
+			return fmt.Errorf("invalid audit index key ID")
+		}
+		node.Entries[i] = auditEdge{First: wire.First, Last: wire.Last, Records: int(wire.Records), Blob: auditBlob{Key: keys[wire.Key], Offset: wire.Offset, Length: wire.Length, Hash: wire.Hash}}
+	}
+	if r.Len() != 0 {
+		return fmt.Errorf("trailing audit index payload")
+	}
+	*dst = node
+	return nil
+}
+
 func auditLayout(ctx context.Context, s storage.Store) (layoutStats, error) {
 	var stats layoutStats
 	b, _, err := s.Get(ctx, "manifest")

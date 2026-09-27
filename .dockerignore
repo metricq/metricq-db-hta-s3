@@ -1,0 +1,8 @@
+.git
+*.test
+measurements
+docs
+site
+public
+integration
+**/__pycache__

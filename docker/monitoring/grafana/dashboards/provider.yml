@@ -1,0 +1,6 @@
+apiVersion: 1
+providers:
+  - name: metricq-db-hta-go
+    type: file
+    options:
+      path: /var/lib/grafana/dashboards

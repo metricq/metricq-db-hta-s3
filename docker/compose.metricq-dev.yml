@@ -1,0 +1,129 @@
+# Adds metricq-db-hta-go with a local S3 (RustFS) to a running MetricQ
+# development environment (github.com/metricq/metricq,
+# docker-compose-development.yml, project name "metricq"). From this directory:
+#
+#   docker compose -f compose.metricq-dev.yml up --build
+#
+# It joins the external network metricq_metricq-network, seeds the database
+# configuration "db-hta-go-dummy" into CouchDB (same metrics as db-hta-dummy),
+# and exposes Prometheus metrics on 127.0.0.1:9090 and S3 on 127.0.0.1:19001.
+# Add --profile monitoring for a Prometheus and Grafana with the dashboard.
+name: metricq-db-hta-go-dev
+
+services:
+  s3:
+    image: rustfs/rustfs@sha256:8cc9801755448b71a786705ce76692c77e14936cccd87cf2fc31842e58f4d1ff
+    environment:
+      RUSTFS_ACCESS_KEY: metricq
+      RUSTFS_SECRET_KEY: metricqsecret
+    ports:
+      - "127.0.0.1:19001:9000"
+    volumes:
+      - s3-data:/data
+    networks:
+      - metricq-network
+
+  s3-bucket:
+    image: amazon/aws-cli:latest
+    depends_on:
+      - s3
+    environment:
+      AWS_ACCESS_KEY_ID: metricq
+      AWS_SECRET_ACCESS_KEY: metricqsecret
+      AWS_DEFAULT_REGION: us-east-1
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        until aws --endpoint-url http://s3:9000 s3api head-bucket --bucket metricq 2>/dev/null \
+          || aws --endpoint-url http://s3:9000 s3 mb s3://metricq; do sleep 2; done
+    networks:
+      - metricq-network
+
+  db-config:
+    image: curlimages/curl:latest
+    volumes:
+      - ./db-hta-go-dummy.json:/config.json:ro
+    command:
+      - --no-progress-meter
+      - --retry-connrefused
+      - --retry
+      - "10"
+      - -X
+      - PUT
+      - -H
+      - "Content-Type: application/json"
+      - http://admin:admin@couchdb-server:5984/config/db-hta-go-dummy
+      - --data-binary
+      - "@/config.json"
+    networks:
+      - metricq-network
+
+  db-hta-go-dummy:
+    build:
+      context: ..
+      additional_contexts:
+        # Local checkout of metricq-go with the batched data handler.
+        metricq-go: ../../metricq-go
+    image: metricq-db-hta-go
+    depends_on:
+      s3-bucket:
+        condition: service_completed_successfully
+      db-config:
+        condition: service_completed_successfully
+    environment:
+      token: db-hta-go-dummy
+      metricq_url: amqp://admin:admin@rabbitmq-server
+      wait_for_rabbitmq_url: rabbitmq-server:5672
+      WAITFORIT_TIMEOUT: 0
+      METRICQ_S3_BUCKET: metricq
+      METRICQ_S3_PREFIX: db-hta-go-dummy
+      METRICQ_S3_ENDPOINT: http://s3:9000
+      METRICQ_S3_PATH_STYLE: "true"
+      AWS_ACCESS_KEY_ID: metricq
+      AWS_SECRET_ACCESS_KEY: metricqsecret
+    ports:
+      - "127.0.0.1:9090:9090"
+    volumes:
+      - wal:/var/lib/metricq-db-hta-go
+    restart: unless-stopped
+    networks:
+      - metricq-network
+
+  # Optional: docker compose -f compose.metricq-dev.yml --profile monitoring up
+  # Prometheus on 127.0.0.1:9091, Grafana (anonymous) on 127.0.0.1:3030 with
+  # the dashboard from ../grafana provisioned.
+  prometheus:
+    profiles: [monitoring]
+    image: prom/prometheus:latest
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "127.0.0.1:9091:9090"
+    networks:
+      - metricq-network
+
+  grafana:
+    profiles: [monitoring]
+    image: grafana/grafana:latest
+    environment:
+      # Local development only: anonymous admin access, no login.
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+    volumes:
+      - ./monitoring/grafana/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ../grafana:/var/lib/grafana/dashboards:ro
+    ports:
+      - "127.0.0.1:3030:3000"
+    networks:
+      - metricq-network
+
+volumes:
+  s3-data:
+  wal:
+
+networks:
+  metricq-network:
+    name: metricq_metricq-network
+    external: true

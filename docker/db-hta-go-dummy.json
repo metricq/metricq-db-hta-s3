@@ -1,0 +1,22 @@
+{
+  "metrics": {
+    "dummy.source.hta-go": {
+      "interval_min": 400000000,
+      "interval_max": 400000000000000,
+      "interval_factor": 10,
+      "input": "dummy.source"
+    },
+    "metricq.rabbitmq.data.exchange.metricq_data.publish_in.rate.hta-go": {
+      "interval_min": 400000000000,
+      "interval_max": 400000000000000,
+      "interval_factor": 10,
+      "input": "metricq.rabbitmq.data.exchange.metricq_data.publish_in.rate"
+    },
+    "metricq.rabbitmq.data.exchange.metricq_data.publish_out.rate.hta-go": {
+      "interval_min": 400000000000,
+      "interval_max": 400000000000000,
+      "interval_factor": 10,
+      "input": "metricq.rabbitmq.data.exchange.metricq_data.publish_out.rate"
+    }
+  }
+}

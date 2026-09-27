@@ -1,0 +1,6 @@
+global:
+  scrape_interval: 15s
+scrape_configs:
+  - job_name: metricq-db-hta-go
+    static_configs:
+      - targets: ["db-hta-go-dummy:9090"]

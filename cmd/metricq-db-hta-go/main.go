@@ -10,8 +10,8 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"runtime"
 	"os/signal"
+	"runtime"
 	"sort"
 	"sync"
 	"syscall"
@@ -212,6 +212,7 @@ func run() error {
 	}
 	return err
 }
+
 // redactURL removes credentials from an AMQP URL for logging.
 func redactURL(raw string) string {
 	u, err := url.Parse(raw)

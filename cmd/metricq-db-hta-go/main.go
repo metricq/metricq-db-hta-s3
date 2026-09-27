@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
+	"runtime"
 	"os/signal"
 	"sort"
 	"sync"
@@ -24,55 +26,40 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
-type localConfig struct {
-	Server   string           `json:"server"`
-	Token    string           `json:"token"`
-	Listen   string           `json:"listen"`
-	Prefetch int              `json:"prefetch"`
-	S3       storage.S3Config `json:"s3"`
-	Engine   engine.Options   `json:"engine"`
-}
-
 func run() error {
-	path := flag.String("config", "config.json", "Local connection, S3 and WAL configuration; metric configuration comes from the manager")
-	flag.Parse()
-	b, err := os.ReadFile(*path)
+	if err := loadDotMetricq(); err != nil {
+		return err
+	}
+	o, err := parseOptions(os.Args[1:], os.Getenv, os.Stderr)
+	if errors.Is(err, flag.ErrHelp) {
+		return nil
+	}
 	if err != nil {
 		return err
 	}
-	var cfg localConfig
-	cfg.Engine.AppendOnlyAggregates = true
-	cfg.Engine.HoldSeconds = 3600
-	cfg.Engine.Compaction.Enabled = true
-	cfg.Engine.Compaction.MergeSmallBlocks = true
-	cfg.Engine.Compaction.CooldownSeconds = 60
-	cfg.Engine.Compaction.MaxBlocks = 512
-	cfg.Engine.Compaction.MaxCycleSeconds = 30
-	if err = json.Unmarshal(b, &cfg); err != nil {
-		return err
+	if o.version {
+		fmt.Println("metricq-db-hta-go", version)
+		return nil
 	}
-	cfg.Engine.BackgroundMaintenance = true
-	if !cfg.Engine.Compaction.Enabled || !cfg.Engine.Compaction.MergeSmallBlocks {
-		cfg.Engine.AppendOnlyAggregates = false
-	}
-	if cfg.Server == "" {
-		cfg.Server = "amqp://localhost/"
-	}
-	if cfg.Listen == "" {
-		cfg.Listen = "127.0.0.1:9090"
-	}
-	if cfg.Token == "" {
-		return fmt.Errorf("database token required")
-	}
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: o.verbosity})))
+	cfg := o.config
+	slog.Info("starting", "version", version, "token", cfg.Token, "server", redactURL(cfg.Server), "bucket", cfg.S3.Bucket, "prefix", cfg.S3.Prefix, "wal", cfg.Engine.WALDirectory)
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	backend, err := storage.NewS3(ctx, cfg.S3)
 	if err != nil {
 		return err
 	}
+	// Every series carries the database token, so one Prometheus can scrape
+	// several databases and the dashboard can select one.
 	registry := prometheus.NewRegistry()
-	registry.MustRegister(collectors.NewGoCollector(), collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
-	metrics := engine.NewMetrics(registry)
+	labelled := prometheus.WrapRegistererWith(prometheus.Labels{"token": cfg.Token}, registry)
+	labelled.MustRegister(collectors.NewGoCollector(), collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
+	buildInfo := prometheus.NewGaugeVec(prometheus.GaugeOpts{Namespace: "metricq_db", Name: "build_info", Help: "Build version; value 1."}, []string{"version", "goversion"})
+	labelled.MustRegister(buildInfo)
+	buildInfo.WithLabelValues(version, runtime.Version()).Set(1)
+	metrics := engine.NewMetrics(labelled)
+	metrics.Config.WithLabelValues("prefetch").Set(float64(cfg.Prefetch))
 	var mu sync.RWMutex
 	var dbEngine *engine.Engine
 	mapping := map[string]string{}
@@ -225,6 +212,16 @@ func run() error {
 	}
 	return err
 }
+// redactURL removes credentials from an AMQP URL for logging.
+func redactURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.User == nil {
+		return raw
+	}
+	u.User = url.User(u.User.Username())
+	return u.String()
+}
+
 func main() {
 	if err := run(); err != nil {
 		slog.Error("database stopped", "error", err)

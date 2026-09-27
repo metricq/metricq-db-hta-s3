@@ -295,3 +295,27 @@ func (e *Engine) loadHeld(ctx context.Context) error {
 	}
 	return nil
 }
+
+// updateHoldMetrics scans held streams; called once per flush-loop tick
+// rather than per delivery. Caller holds mu.
+func (e *Engine) updateHoldMetrics() {
+	streams := 0
+	var oldest time.Time
+	for metric, levels := range e.pending.streams {
+		for level, records := range levels {
+			if len(records) == 0 {
+				continue
+			}
+			streams++
+			if h := e.held[streamKey(metric, level)]; h != nil && (oldest.IsZero() || h.since.Before(oldest)) {
+				oldest = h.since
+			}
+		}
+	}
+	e.metrics.HeldStreams.Set(float64(streams))
+	age := 0.0
+	if e.holding() && !oldest.IsZero() {
+		age = e.clock().Sub(oldest).Seconds()
+	}
+	e.metrics.HeldOldestAge.Set(age)
+}

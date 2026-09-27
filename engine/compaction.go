@@ -1202,9 +1202,12 @@ func (e *Engine) CompactOnce(ctx context.Context) error {
 	if budgetExceeded {
 		e.compactionObjectLimit = max(limit/2, 2)
 		e.compactionScanMore = true
+		e.metrics.CompactionBudgetExceeded.Inc()
 	} else if err == nil {
 		e.compactionObjectLimit = min(limit+max(1, limit/4), maxCompactionObjects)
+		e.metrics.CompactionLastSuccess.SetToCurrentTime()
 	}
+	e.metrics.CompactionObjectLimit.Set(float64(e.compactionObjectLimit))
 	e.mu.Unlock()
 	if err != nil {
 		e.metrics.CompactionErrors.Inc()
@@ -1315,7 +1318,11 @@ func (e *Engine) Reclaim(ctx context.Context) error {
 	// The retirement journal is durable and addresses cannot be resurrected.
 	// Repeating a DELETE is safe, so only a successful prefix advances the cursor.
 	deleteCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-	errs := deleteKeys(deleteCtx, deleter, append(append([]string(nil), toDelete...), keys...))
+	all := append(append([]string(nil), toDelete...), keys...)
+	errs := deleteKeys(deleteCtx, deleter, all)
+	for i, key := range all {
+		e.metrics.observeStore("delete", key, 0, errs[i])
+	}
 	cancel()
 	var deleteErr error
 	if e.deletedCleanups == nil {

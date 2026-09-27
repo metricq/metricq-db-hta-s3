@@ -264,6 +264,7 @@ func Open(ctx context.Context, s storage.Store, o Options, configs map[string]ht
 		return nil, err
 	}
 	e.sequence = e.state.Sequence
+	e.setConfigMetrics()
 	// Held records precede the WAL frames after the checkpoint.
 	if err = e.loadHeld(ctx); err != nil {
 		return nil, err
@@ -351,6 +352,30 @@ func (e *Engine) updateMetrics() {
 		blocked = 1
 	}
 	e.metrics.Backpressure.Set(blocked)
+	e.metrics.PendingRecords.Set(float64(e.pending.len() + e.flushing.len()))
+	e.metrics.UnsavedBytes.Set(float64(e.unsavedBytes()))
+	e.metrics.HeldCoveredRecords.Set(float64(e.coveredRecords))
+	e.metrics.HeldDeltas.Set(float64(len(e.state.Held)))
+	e.metrics.WALSegments.Set(float64(len(e.wal.frozen) + 1))
+	e.metrics.PinnedEntries.Set(float64(e.tailEntries))
+}
+
+// setConfigMetrics publishes the effective limits once at startup.
+func (e *Engine) setConfigMetrics() {
+	o, c := e.options, e.options.Compaction.defaults()
+	for name, v := range map[string]float64{
+		"wal_target_bytes": float64(o.WALTarget), "wal_high_bytes": float64(o.WALHigh), "wal_hard_bytes": float64(o.WALHard),
+		"object_target_bytes": float64(o.ObjectTarget), "builder_hard_bytes": float64(o.BuilderHard),
+		"hold_seconds": float64(o.HoldSeconds), "hold_bytes": float64(o.HoldBytes), "max_query_rows": float64(o.MaxQueryRows),
+		"compaction_interval_seconds": float64(c.IntervalSeconds), "compaction_cooldown_seconds": float64(c.CooldownSeconds),
+		"compaction_max_duration_seconds": float64(c.MaxDurationSeconds), "compaction_max_cycle_seconds": float64(c.MaxCycleSeconds),
+		"compaction_max_job_bytes": float64(c.MaxJobBytes), "compaction_max_blocks": float64(c.MaxBlocks),
+		"compaction_object_bytes": float64(c.ObjectBytes), "compaction_bytes_per_second": float64(c.BytesPerSecond),
+		"compaction_dead_fraction": c.DeadFraction,
+	} {
+		e.metrics.Config.WithLabelValues(name).Set(v)
+	}
+	e.metrics.CompactionObjectLimit.Set(maxCompactionObjects)
 }
 func (e *Engine) apply(b batch) error {
 	if e.oldestWAL == 0 {
@@ -414,6 +439,8 @@ func (e *Engine) IngestBatch(ctx context.Context, deliveries []Delivery) (int, e
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
+	e.metrics.IngestBatches.Inc()
+	e.metrics.IngestBatchSize.Observe(float64(len(deliveries)))
 	points := make([][]hta.Point, len(deliveries))
 	var stop error
 	valid := len(deliveries)
@@ -491,6 +518,7 @@ func (e *Engine) IngestBatch(ctx context.Context, deliveries []Delivery) (int, e
 		}
 		if walSize >= e.options.WALHigh || walSize+int64(len(payload)+frameHeader) > e.options.WALHard || pendingBytes+plan.extra > e.options.BuilderHard {
 			e.metrics.Backpressure.Set(1)
+			e.metrics.BackpressureEvents.Inc()
 			stop = ErrPressure
 			break
 		}
@@ -546,12 +574,19 @@ func (e *Engine) IngestBatch(ctx context.Context, deliveries []Delivery) (int, e
 func (e *Engine) get(ctx context.Context, key string) ([]byte, string, error) {
 	start := time.Now()
 	defer func() { e.metrics.StoreGet.Observe(time.Since(start).Seconds()) }()
-	return e.store.Get(ctx, key)
+	b, v, err := e.store.Get(ctx, key)
+	e.metrics.observeStore("get", key, len(b), err)
+	return b, v, err
 }
 func (e *Engine) put(ctx context.Context, key string, b []byte, v *string) (string, error) {
 	start := time.Now()
 	defer func() { e.metrics.StorePut.Observe(time.Since(start).Seconds()) }()
-	return e.store.Put(ctx, key, b, v)
+	version, err := e.store.Put(ctx, key, b, v)
+	e.metrics.observeStore("put", key, len(b), err)
+	if err == nil && key == "manifest" {
+		e.metrics.ManifestBytes.Set(float64(len(b)))
+	}
+	return version, err
 }
 func (e *Engine) NeedsFlush() bool {
 	e.mu.Lock()
@@ -585,6 +620,18 @@ func (e *Engine) Flush(ctx context.Context) (err error) {
 			e.metrics.CommitErrors.Inc()
 		}
 	}()
+	reason := "explicit"
+	switch {
+	case e.wal.size >= e.options.WALTarget:
+		reason = "wal"
+	case e.unsavedBytes() >= e.options.ObjectTarget:
+		reason = "object_target"
+	case e.holdPressure():
+		reason = "hold_budget"
+	case e.holdDue():
+		reason = "hold_age"
+	}
+	e.metrics.FlushReasons.WithLabelValues(reason).Inc()
 	// Freeze a consistent checkpoint under the ingestion lock: the durable WAL
 	// prefix, its records and HTA state. Ingestion continues in a new WAL segment
 	// while the frozen part is uploaded; queries still see the frozen records.
@@ -721,6 +768,11 @@ func (e *Engine) Flush(ctx context.Context) (err error) {
 				if encodeErrs[k] != nil {
 					return encodeErrs[k]
 				}
+				if len(b.records) == maxDataBlockRecords {
+					e.metrics.FlushBlocks.WithLabelValues("full").Inc()
+				} else {
+					e.metrics.FlushBlocks.WithLabelValues("partial").Inc()
+				}
 				stream := streams[b.stream]
 				item := indexEntry{First: b.records[0].Time, Last: b.records[len(b.records)-1].LastTime(), Blob: dataPack.add(b.encoded), Records: len(b.records)}
 				updates[b.stream].items = append(updates[b.stream].items, item)
@@ -788,6 +840,7 @@ func (e *Engine) Flush(ctx context.Context) (err error) {
 				}
 				e.metrics.Objects.Inc()
 				e.metrics.Bytes.Add(float64(deltaPack.buf.Len()))
+				e.metrics.HeldDeltaBytes.Add(float64(deltaPack.buf.Len()))
 			}
 			next.HeldWatermarks = plan.watermarks
 			if err := e.appendTrash(ctx, &next, plan.obsolete, 0); err != nil {
@@ -855,6 +908,7 @@ func (e *Engine) Flush(ctx context.Context) (err error) {
 		publishedIndex.nodes = nil
 	}
 	e.commitHold(plan)
+	e.metrics.FlushRecords.Add(float64(e.flushing.len()))
 	e.flushing, e.flushingBytes = pendingSet{}, 0
 	if err = e.wal.checkpoint(next.Sequence); err != nil {
 		e.fatal = err
@@ -884,6 +938,9 @@ func (e *Engine) RunFlush(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
+			e.mu.Lock()
+			e.updateHoldMetrics()
+			e.mu.Unlock()
 		case <-e.flushWanted:
 			// After a failed checkpoint, retry only on the tick, not per delivery.
 			if time.Since(failed) < time.Second {

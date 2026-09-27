@@ -94,6 +94,7 @@ func (e *Engine) readRange(ctx context.Context, key string, offset, length int64
 			b = whole[offset : offset+length]
 		}
 	}
+	e.metrics.observeStore("range", key, len(b), err)
 	if err != nil {
 		return nil, err
 	}

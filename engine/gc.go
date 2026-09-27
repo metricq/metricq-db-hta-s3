@@ -81,7 +81,9 @@ func (e *Engine) collectGarbage(ctx context.Context) {
 			break
 		}
 		attempts++
-		if err := deleter.Delete(ctx, key); err != nil {
+		err := deleter.Delete(ctx, key)
+		e.metrics.observeStore("delete", key, 0, err)
+		if err != nil {
 			e.metrics.GCErrors.Inc()
 			slog.Warn("retired object deletion failed", "key", key, "error", err)
 			break

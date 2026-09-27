@@ -423,6 +423,12 @@ func (e *Engine) updateMaintenanceMetrics(m manifest) {
 		e.metrics.SmallBlocks.Set(math.NaN())
 		e.metrics.SmallBlockBytes.Set(math.NaN())
 	}
+	e.metrics.LiveObjects.Set(float64(m.LiveObjects))
+	jobPending := 0.0
+	if m.CompactionJob.Key != "" {
+		jobPending = 1
+	}
+	e.metrics.CompactionJobPending.Set(jobPending)
 	e.metrics.LiveObjectBytes.Set(float64(m.LiveObjectBytes))
 	e.metrics.DeadObjectBytes.Set(float64(m.StoredObjectBytes - m.LiveObjectBytes))
 }

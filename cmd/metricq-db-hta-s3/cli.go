@@ -13,8 +13,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/metricq/metricq-db-hta-go/engine"
-	"github.com/metricq/metricq-db-hta-go/storage"
+	"github.com/metricq/metricq-db-hta-s3/engine"
+	"github.com/metricq/metricq-db-hta-s3/storage"
 )
 
 // version is set at build time: -ldflags "-X main.version=...".
@@ -35,10 +35,10 @@ type localConfig struct {
 // defaults for everything left at zero.
 func defaultConfig() localConfig {
 	var cfg localConfig
-	cfg.Token = "db-hta-go"
+	cfg.Token = "db-hta-s3"
 	cfg.Listen = "127.0.0.1:9090"
 	cfg.Prefetch = 100
-	cfg.Engine.WALDirectory = "/var/lib/metricq-db-hta-go/wal"
+	cfg.Engine.WALDirectory = "/var/lib/metricq-db-hta-s3/wal"
 	cfg.Engine.AppendOnlyAggregates = true
 	cfg.Engine.HoldSeconds = 3600
 	cfg.Engine.Compaction.Enabled = true
@@ -69,7 +69,7 @@ func parseOptions(args []string, getenv func(string) string, stderr io.Writer) (
 	var o options
 	o.config = defaultConfig()
 	o.verbosity = slog.LevelWarn
-	fs := flag.NewFlagSet("metricq-db-hta-go", flag.ContinueOnError)
+	fs := flag.NewFlagSet("metricq-db-hta-s3", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	values := map[string]*string{}
 	var defs []option
@@ -78,7 +78,7 @@ func parseOptions(args []string, getenv func(string) string, stderr io.Writer) (
 	}
 	cfg := &o.config
 	def("server", "MetricQ server URL; $USER and $HOST are replaced", func(v string) error { cfg.Server = placeholders(v, getenv); return nil })
-	def("token", "client token of this database (default db-hta-go); $USER and $HOST are replaced", func(v string) error { cfg.Token = placeholders(v, getenv); return nil })
+	def("token", "client token of this database (default db-hta-s3); $USER and $HOST are replaced", func(v string) error { cfg.Token = placeholders(v, getenv); return nil })
 	def("verbosity", "log level: debug, info, warning or error (default warning)", func(v string) error {
 		level, err := parseLevel(v)
 		o.verbosity = level
@@ -86,7 +86,7 @@ func parseOptions(args []string, getenv func(string) string, stderr io.Writer) (
 	})
 	def("metrics-listen", "address of the Prometheus /metrics and /readyz endpoint (default 127.0.0.1:9090)", func(v string) error { cfg.Listen = v; return nil })
 	def("prefetch", "AMQP data prefetch; deliveries of one batch share a WAL fsync (default 100)", func(v string) error { return setInt(&cfg.Prefetch, v) })
-	def("wal-dir", "local WAL directory on durable storage (default /var/lib/metricq-db-hta-go/wal)", func(v string) error { cfg.Engine.WALDirectory = v; return nil })
+	def("wal-dir", "local WAL directory on durable storage (default /var/lib/metricq-db-hta-s3/wal)", func(v string) error { cfg.Engine.WALDirectory = v; return nil })
 	def("s3-bucket", "S3 bucket", func(v string) error { cfg.S3.Bucket = v; return nil })
 	def("s3-prefix", "key prefix inside the bucket; one database per prefix", func(v string) error { cfg.S3.Prefix = v; return nil })
 	def("s3-endpoint", "S3 endpoint URL, e.g. https://s3.example.org (default AWS)", func(v string) error { cfg.S3.Endpoint = v; return nil })
@@ -105,7 +105,7 @@ func parseOptions(args []string, getenv func(string) string, stderr io.Writer) (
 	configPath := fs.String("config", "", "optional JSON file with connection, S3 and engine tuning options [$METRICQ_CONFIG]")
 	fs.BoolVar(&o.version, "version", false, "print the version and exit")
 	fs.Usage = func() {
-		fmt.Fprintf(stderr, "Usage: metricq-db-hta-go [options]\n\nMetricQ HTA database storing aggregated time series in S3.\n\n")
+		fmt.Fprintf(stderr, "Usage: metricq-db-hta-s3 [options]\n\nMetricQ HTA database storing aggregated time series in S3.\n\n")
 		fs.PrintDefaults()
 		fmt.Fprintf(stderr, "\nAll options can be passed as environment variables prefixed with METRICQ_, e.g.\nMETRICQ_SERVER=amqps://... A .metricq file in the working or home directory can\nprovide such variables. S3 credentials use the standard AWS variables\n(AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY) or AWS profiles.\n")
 	}

@@ -3,7 +3,7 @@ package engine
 import (
 	"sort"
 
-	"github.com/metricq/metricq-db-hta-go/hta"
+	"github.com/metricq/metricq-db-hta-s3/hta"
 )
 
 // pendingSet holds records not yet in a published checkpoint, grouped by

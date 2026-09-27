@@ -6,7 +6,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/metricq/metricq-db-hta-go/hta"
+	"github.com/metricq/metricq-db-hta-s3/hta"
 )
 
 // Holding streams back avoids writing a tiny block, and rewriting its index

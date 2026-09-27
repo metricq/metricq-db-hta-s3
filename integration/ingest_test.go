@@ -15,8 +15,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/metricq/metricq-db-hta-go/engine"
-	"github.com/metricq/metricq-db-hta-go/hta"
+	"github.com/metricq/metricq-db-hta-s3/engine"
+	"github.com/metricq/metricq-db-hta-s3/hta"
 	metricq "github.com/metricq/metricq-go"
 	"github.com/prometheus/client_golang/prometheus"
 	amqp "github.com/rabbitmq/amqp091-go"

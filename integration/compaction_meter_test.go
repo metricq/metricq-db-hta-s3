@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/metricq/metricq-db-hta-go/storage"
+	"github.com/metricq/metricq-db-hta-s3/storage"
 )
 
 type compactionIO struct {

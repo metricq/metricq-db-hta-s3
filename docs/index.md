@@ -1,6 +1,6 @@
-# metricq-db-hta-go
+# metricq-db-hta-s3
 
-`metricq-db-hta-go` is a [MetricQ](https://github.com/metricq/metricq) history
+`metricq-db-hta-s3` is a [MetricQ](https://github.com/metricq/metricq) history
 database. It receives time series from MetricQ over AMQP, aggregates them into
 the HTA hierarchy (hierarchical timeline aggregation) and stores them as
 immutable objects in S3-compatible object storage. It answers all MetricQ
@@ -11,7 +11,7 @@ configuration.
 ```mermaid
 flowchart LR
   src[MetricQ sources] -->|data exchange| rmq[(RabbitMQ)]
-  rmq -->|batched deliveries| db[metricq-db-hta-go]
+  rmq -->|batched deliveries| db[metricq-db-hta-s3]
   db -->|fsync| wal[(local WAL)]
   db -->|checkpoints, compaction| s3[(S3 bucket/prefix)]
   clients[Grafana, webview, tools] -->|history requests| rmq

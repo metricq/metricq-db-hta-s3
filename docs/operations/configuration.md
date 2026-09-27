@@ -17,11 +17,11 @@ manager ([Deployment](deployment.md#2-register-the-database-with-the-manager)).
 | Flag | Variable | Default | Meaning |
 | --- | --- | --- | --- |
 | `--server` | `METRICQ_SERVER` | — (required) | AMQP URL of the MetricQ RabbitMQ. `$USER` and `$HOST` are replaced. |
-| `--token` | `METRICQ_TOKEN` | `db-hta-go` | Client token; the manager's configuration document id. |
+| `--token` | `METRICQ_TOKEN` | `db-hta-s3` | Client token; the manager's configuration document id. |
 | `-v`, `--verbosity` | `METRICQ_VERBOSITY` | `warning` | `debug`, `info`, `warning`, `error` |
 | `--metrics-listen` | `METRICQ_METRICS_LISTEN` | `127.0.0.1:9090` | Address of `/metrics` and `/readyz` |
 | `--prefetch` | `METRICQ_PREFETCH` | `100` | AMQP data prefetch = largest group-commit batch |
-| `--wal-dir` | `METRICQ_WAL_DIR` | `/var/lib/metricq-db-hta-go/wal` | WAL directory on durable local storage |
+| `--wal-dir` | `METRICQ_WAL_DIR` | `/var/lib/metricq-db-hta-s3/wal` | WAL directory on durable local storage |
 | `--s3-bucket` | `METRICQ_S3_BUCKET` | — (required) | Bucket |
 | `--s3-prefix` | `METRICQ_S3_PREFIX` | empty | Key prefix of this database (exclusive) |
 | `--s3-endpoint` | `METRICQ_S3_ENDPOINT` | AWS | Endpoint URL, `http(s)://host[:port]` |
@@ -45,12 +45,12 @@ All keys are optional. Values in bytes are plain integers.
 ```json
 {
   "server": "amqp://user:pass@rabbitmq/",
-  "token": "db-hta-go",
+  "token": "db-hta-s3",
   "listen": "127.0.0.1:9090",
   "prefetch": 100,
-  "s3": {"bucket": "metricq", "prefix": "db-hta-go", "endpoint": "https://s3.example.org", "region": "us-east-1", "path_style": true},
+  "s3": {"bucket": "metricq", "prefix": "db-hta-s3", "endpoint": "https://s3.example.org", "region": "us-east-1", "path_style": true},
   "engine": {
-    "wal_directory": "/var/lib/metricq-db-hta-go/wal",
+    "wal_directory": "/var/lib/metricq-db-hta-s3/wal",
     "wal_target_bytes": 33554432,
     "wal_high_bytes": 67108864,
     "wal_hard_bytes": 83886080,

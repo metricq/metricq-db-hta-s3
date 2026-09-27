@@ -1,7 +1,7 @@
 {
-  "uid": "metricq-db-hta-go",
+  "uid": "metricq-db-hta-s3",
   "title": "MetricQ HTA database (S3)",
-  "description": "State of one metricq-db-hta-go database, selected by its MetricQ token.",
+  "description": "State of one metricq-db-hta-s3 database, selected by its MetricQ token.",
   "tags": [
     "metricq",
     "database"

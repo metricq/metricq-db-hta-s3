@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/metricq/metricq-db-hta-go/hta"
+	"github.com/metricq/metricq-db-hta-s3/hta"
 	"github.com/prometheus/client_golang/prometheus"
 )
 

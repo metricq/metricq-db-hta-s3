@@ -1,4 +1,4 @@
-// Package engine is the storage engine of metricq-db-hta-go: a single-writer
+// Package engine is the storage engine of metricq-db-hta-s3: a single-writer
 // MetricQ history database that aggregates samples into the HTA hierarchy,
 // makes them durable in a local write-ahead log (WAL) and stores them as
 // immutable objects in an object store (package storage).

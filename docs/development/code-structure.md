@@ -1,8 +1,8 @@
 # Code structure
 
 ```
-cmd/metricq-db-hta-go/       executable: CLI, MetricQ adapter, Prometheus endpoint
-cmd/metricq-db-hta-wal-repair/  offline WAL inspection and repair
+cmd/metricq-db-hta-s3/       executable: CLI, MetricQ adapter, Prometheus endpoint
+cmd/metricq-db-hta-s3-wal-repair/  offline WAL inspection and repair
 cmd/check-ceph-s3/           probe for the S3 features the database needs
 engine/                      storage engine (all persistence and queries)
 hta/                         HTA aggregation of one metric (no I/O)

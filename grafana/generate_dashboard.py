@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate grafana/metricq-db-hta-go.json.
+"""Generate grafana/metricq-db-hta-s3.json.
 
 Edit this script, not the JSON: python3 grafana/generate_dashboard.py
 Every query selects one database through the token label that the executable
@@ -213,9 +213,9 @@ panel("CPU", [(f"rate(process_cpu_seconds_total{T}[$__rate_interval])", "cores")
 panel("Goroutines and files", [(f"max(go_goroutines{T})", "goroutines"), (f"max(process_open_fds{T})", "open files")], "short")
 
 dashboard = {
-    "uid": "metricq-db-hta-go",
+    "uid": "metricq-db-hta-s3",
     "title": "MetricQ HTA database (S3)",
-    "description": "State of one metricq-db-hta-go database, selected by its MetricQ token.",
+    "description": "State of one metricq-db-hta-s3 database, selected by its MetricQ token.",
     "tags": ["metricq", "database"],
     "timezone": "browser",
     "schemaVersion": 39,
@@ -233,6 +233,6 @@ dashboard = {
     ]},
     "panels": panels,
 }
-out = pathlib.Path(__file__).with_name("metricq-db-hta-go.json")
+out = pathlib.Path(__file__).with_name("metricq-db-hta-s3.json")
 out.write_text(json.dumps(dashboard, indent=2) + "\n")
 print(f"wrote {out} with {sum(p['type'] != 'row' for p in panels)} panels")

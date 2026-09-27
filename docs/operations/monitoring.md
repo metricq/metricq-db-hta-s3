@@ -9,7 +9,7 @@ scrape several databases:
 
 ```yaml
 scrape_configs:
-  - job_name: metricq-db-hta-go
+  - job_name: metricq-db-hta-s3
     static_configs:
       - targets: ["db-host:9090"]
 ```
@@ -20,7 +20,7 @@ runtime and process collectors (`go_*`, `process_*`) and
 
 ## Dashboard
 
-`grafana/metricq-db-hta-go.json` is a Grafana dashboard with a *Prometheus*
+`grafana/metricq-db-hta-s3.json` is a Grafana dashboard with a *Prometheus*
 data source variable and a *Token* variable
 (`label_values(metricq_db_build_info, token)`). Import it via
 *Dashboards → New → Import*, or provision it from a file. The JSON is
@@ -52,7 +52,7 @@ Suggested rules; adjust durations to your checkpoint cadence.
 
 ```yaml
 groups:
-  - name: metricq-db-hta-go
+  - name: metricq-db-hta-s3
     rules:
       - alert: MetricQDBBackpressure
         expr: max by (token) (metricq_db_backpressure) == 1

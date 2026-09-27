@@ -1,4 +1,4 @@
-# metricq-db-hta-go
+# metricq-db-hta-s3
 
 MetricQ history database in Go. It aggregates incoming time series into the
 HTA hierarchy, keeps a local write-ahead log for durability and stores all
@@ -15,10 +15,10 @@ monitoring and troubleshooting.
 Requires Linux and Go 1.25.
 
 ```sh
-go build ./cmd/metricq-db-hta-go ./cmd/metricq-db-hta-wal-repair
+go build ./cmd/metricq-db-hta-s3 ./cmd/metricq-db-hta-s3-wal-repair
 export AWS_ACCESS_KEY_ID=... AWS_SECRET_ACCESS_KEY=...
-./metricq-db-hta-go --server amqp://admin:admin@localhost/ --token db-hta-go \
-  --s3-bucket metricq --s3-prefix db-hta-go --s3-endpoint http://localhost:9000 \
+./metricq-db-hta-s3 --server amqp://admin:admin@localhost/ --token db-hta-s3 \
+  --s3-bucket metricq --s3-prefix db-hta-s3 --s3-endpoint http://localhost:9000 \
   --s3-path-style true --wal-dir ./wal -v info
 curl http://127.0.0.1:9090/metrics
 ```
@@ -34,7 +34,7 @@ Container image and a compose file for the MetricQ development environment,
 including Prometheus and Grafana with the dashboard:
 
 ```sh
-docker build -t metricq-db-hta-go .
+docker build -t metricq-db-hta-s3 .
 cd docker && docker compose -f compose.metricq-dev.yml --profile monitoring up --build
 ```
 

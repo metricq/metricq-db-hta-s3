@@ -29,7 +29,7 @@ damaged frame, typically after a power loss. Startup refuses to discard data.
 1. Stop the database. Inspect:
 
     ```sh
-    metricq-db-hta-wal-repair -wal-dir /var/lib/metricq-db-hta-go/wal
+    metricq-db-hta-s3-wal-repair -wal-dir /var/lib/metricq-db-hta-s3/wal
     ```
 
     The report shows the first damaged frame, the last verified boundary
@@ -38,7 +38,7 @@ damaged frame, typically after a power loss. Startup refuses to discard data.
 2. If the damage is explained, truncate at the boundary, keeping a backup:
 
     ```sh
-    metricq-db-hta-wal-repair -wal-dir /var/lib/metricq-db-hta-go/wal -apply \
+    metricq-db-hta-s3-wal-repair -wal-dir /var/lib/metricq-db-hta-s3/wal -apply \
       -expected-sha256 <sha256> -truncate-at <valid_bytes> \
       -backup /safe/place/ingest.wal.before-repair
     ```

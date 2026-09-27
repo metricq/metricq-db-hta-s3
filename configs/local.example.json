@@ -1,11 +1,11 @@
 {
   "server": "amqp://admin:admin@localhost/",
-  "token": "db-hta-go",
+  "token": "db-hta-s3",
   "listen": "127.0.0.1:9090",
   "prefetch": 100,
   "s3": {
     "bucket": "metricq",
-    "prefix": "db-hta-go",
+    "prefix": "db-hta-s3",
     "endpoint": "http://localhost:9000",
     "region": "us-east-1",
     "path_style": true

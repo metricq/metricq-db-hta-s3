@@ -1,4 +1,4 @@
-site_name: metricq-db-hta-go
+site_name: metricq-db-hta-s3
 site_description: MetricQ HTA history database storing aggregated time series in S3
 docs_dir: docs
 site_dir: public

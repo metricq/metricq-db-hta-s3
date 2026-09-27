@@ -7,7 +7,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/metricq/metricq-db-hta-go/hta"
+	"github.com/metricq/metricq-db-hta-s3/hta"
 	metricq "github.com/metricq/metricq-go"
 	"google.golang.org/protobuf/proto"
 )

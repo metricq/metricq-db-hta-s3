@@ -19,9 +19,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/metricq/metricq-db-hta-go/engine"
-	"github.com/metricq/metricq-db-hta-go/hta"
-	"github.com/metricq/metricq-db-hta-go/storage"
+	"github.com/metricq/metricq-db-hta-s3/engine"
+	"github.com/metricq/metricq-db-hta-s3/hta"
+	"github.com/metricq/metricq-db-hta-s3/storage"
 	metricq "github.com/metricq/metricq-go"
 	amqp "github.com/rabbitmq/amqp091-go"
 	"google.golang.org/protobuf/proto"

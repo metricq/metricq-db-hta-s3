@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/metricq/metricq-db-hta-go/hta"
-	"github.com/metricq/metricq-db-hta-go/storage"
+	"github.com/metricq/metricq-db-hta-s3/hta"
+	"github.com/metricq/metricq-db-hta-s3/storage"
 )
 
 func TestManifestPagesKeepMaintenanceSmallAndRecover(t *testing.T) {

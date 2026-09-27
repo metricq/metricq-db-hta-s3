@@ -4,7 +4,7 @@ import (
 	"container/list"
 	"sync"
 
-	"github.com/metricq/metricq-db-hta-go/hta"
+	"github.com/metricq/metricq-db-hta-s3/hta"
 )
 
 const dataBlockCacheBytes = 128 << 20

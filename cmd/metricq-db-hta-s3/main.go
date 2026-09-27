@@ -1,4 +1,4 @@
-// Command metricq-db-hta-go is the MetricQ HTA history database with S3
+// Command metricq-db-hta-s3 is the MetricQ HTA history database with S3
 // object storage. It registers with the MetricQ manager under its token,
 // stores the configured metrics and answers history requests.
 //
@@ -25,9 +25,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/metricq/metricq-db-hta-go/engine"
-	"github.com/metricq/metricq-db-hta-go/hta"
-	"github.com/metricq/metricq-db-hta-go/storage"
+	"github.com/metricq/metricq-db-hta-s3/engine"
+	"github.com/metricq/metricq-db-hta-s3/hta"
+	"github.com/metricq/metricq-db-hta-s3/storage"
 	metricq "github.com/metricq/metricq-go"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
@@ -46,7 +46,7 @@ func run() error {
 		return err
 	}
 	if o.version {
-		fmt.Println("metricq-db-hta-go", version)
+		fmt.Println("metricq-db-hta-s3", version)
 		return nil
 	}
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: o.verbosity})))

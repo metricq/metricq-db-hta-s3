@@ -1,12 +1,12 @@
 # Components
 
-The executable `metricq-db-hta-go` wires a MetricQ database client to a
+The executable `metricq-db-hta-s3` wires a MetricQ database client to a
 storage engine. Everything that touches data lives in the `engine` package.
 
 ```mermaid
 flowchart TB
-  subgraph process[metricq-db-hta-go]
-    adapter[MetricQ adapter<br/>cmd/metricq-db-hta-go]
+  subgraph process[metricq-db-hta-s3]
+    adapter[MetricQ adapter<br/>cmd/metricq-db-hta-s3]
     subgraph engine[engine]
       ingest[IngestBatch<br/>HTA aggregation]
       wal[(WAL segments)]
@@ -29,7 +29,7 @@ flowchart TB
 
 | Component | Responsibility |
 | --- | --- |
-| MetricQ adapter (`cmd/metricq-db-hta-go`) | Registers the database with the manager, receives the metric configuration, maps MetricQ input names to stored metric names, passes batches of data deliveries to the engine, answers history requests, serves Prometheus metrics. |
+| MetricQ adapter (`cmd/metricq-db-hta-s3`) | Registers the database with the manager, receives the metric configuration, maps MetricQ input names to stored metric names, passes batches of data deliveries to the engine, answers history requests, serves Prometheus metrics. |
 | `metricq-go` `DB` client | AMQP connections, prefetch, batched data consumption with one multiple ACK per batch, parallel history workers. |
 | Ingest (`IngestBatch`) | Validates samples, runs the HTA aggregation, appends one WAL frame per delivery and fsyncs once per batch, then publishes the new state in memory. |
 | WAL (`wal.go`) | Local, checksummed, segmented log of accepted samples. Guarantees that acknowledged samples survive a crash until a checkpoint stores them. |

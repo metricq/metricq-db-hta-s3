@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/metricq/metricq-db-hta-go/storage"
+	"github.com/metricq/metricq-db-hta-s3/storage"
 )
 
 // Rebuild counts from the committed index on startup, without reading data

@@ -13,8 +13,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/metricq/metricq-db-hta-go/hta"
-	"github.com/metricq/metricq-db-hta-go/storage"
+	"github.com/metricq/metricq-db-hta-s3/hta"
+	"github.com/metricq/metricq-db-hta-s3/storage"
 )
 
 // compactionCatalogBudget bounds catalog metadata read by one selection;

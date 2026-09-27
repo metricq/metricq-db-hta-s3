@@ -17,8 +17,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/metricq/metricq-db-hta-go/engine"
-	"github.com/metricq/metricq-db-hta-go/hta"
+	"github.com/metricq/metricq-db-hta-s3/engine"
+	"github.com/metricq/metricq-db-hta-s3/hta"
 	metricq "github.com/metricq/metricq-go"
 	amqp "github.com/rabbitmq/amqp091-go"
 	"google.golang.org/protobuf/proto"
@@ -27,7 +27,7 @@ import (
 func TestExecutablePrometheusAndShutdown(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	id := fmt.Sprintf("hta-go-cli-%d", time.Now().UnixNano())
+	id := fmt.Sprintf("hta-s3-cli-%d", time.Now().UnixNano())
 	token := "db-" + id
 	metric := id + ".sample"
 	server := env("METRICQ_AMQP", "amqp://admin:admin@localhost/")
@@ -53,8 +53,8 @@ func TestExecutablePrometheusAndShutdown(t *testing.T) {
 	seed(t, "metadata", metric, map[string]any{"description": "CLI smoke test"})
 	seed(t, "config", token, map[string]any{"metrics": cfg})
 	dir := t.TempDir()
-	binary := filepath.Join(dir, "metricq-db-hta-go")
-	build := exec.CommandContext(ctx, "go", "build", "-o", binary, "../cmd/metricq-db-hta-go")
+	binary := filepath.Join(dir, "metricq-db-hta-s3")
+	build := exec.CommandContext(ctx, "go", "build", "-o", binary, "../cmd/metricq-db-hta-s3")
 	if b, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build: %s %v", b, err)
 	}

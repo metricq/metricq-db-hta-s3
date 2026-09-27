@@ -14,8 +14,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/metricq/metricq-db-hta-go/hta"
-	"github.com/metricq/metricq-db-hta-go/storage"
+	"github.com/metricq/metricq-db-hta-s3/hta"
+	"github.com/metricq/metricq-db-hta-s3/storage"
 	metricq "github.com/metricq/metricq-go"
 	"github.com/prometheus/client_golang/prometheus"
 )

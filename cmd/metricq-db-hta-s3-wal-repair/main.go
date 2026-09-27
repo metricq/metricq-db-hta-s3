@@ -1,4 +1,4 @@
-// Command metricq-db-hta-wal-repair inspects the active WAL segment of a
+// Command metricq-db-hta-s3-wal-repair inspects the active WAL segment of a
 // stopped database and, with -apply, truncates it at the last verified frame
 // after writing a durable backup. It never repairs automatically; see
 // docs/operations/troubleshooting.md.
@@ -10,7 +10,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/metricq/metricq-db-hta-go/engine"
+	"github.com/metricq/metricq-db-hta-s3/engine"
 )
 
 func main() {

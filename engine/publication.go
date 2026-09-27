@@ -1,6 +1,6 @@
 package engine
 
-import "github.com/metricq/metricq-db-hta-go/hta"
+import "github.com/metricq/metricq-db-hta-s3/hta"
 
 // Committed HTA state must remain independent of newer WAL-backed live state.
 func cloneManifest(m manifest) manifest {

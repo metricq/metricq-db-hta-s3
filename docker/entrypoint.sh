@@ -1,7 +1,7 @@
 #!/bin/bash
 # Container entrypoint: accepts the variables of the MetricQ development
 # environment (token, metricq_url, wait_for_rabbitmq_url) in addition to the
-# METRICQ_* variables and command-line options of metricq-db-hta-go.
+# METRICQ_* variables and command-line options of metricq-db-hta-s3.
 set -eu
 
 if [ -n "${token:-}" ] && [ -z "${METRICQ_TOKEN:-}" ]; then
@@ -28,4 +28,4 @@ if [ -n "${wait_for_rabbitmq_url:-}" ]; then
   done
 fi
 
-exec /usr/local/bin/metricq-db-hta-go "$@"
+exec /usr/local/bin/metricq-db-hta-s3 "$@"

@@ -7,8 +7,8 @@ import (
 	"reflect"
 	"strings"
 
-	"github.com/metricq/metricq-db-hta-go/hta"
-	"github.com/metricq/metricq-db-hta-go/storage"
+	"github.com/metricq/metricq-db-hta-s3/hta"
+	"github.com/metricq/metricq-db-hta-s3/storage"
 )
 
 // Hash partitioning keeps changes to a bounded directory instead of rewriting

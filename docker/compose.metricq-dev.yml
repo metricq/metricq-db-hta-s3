@@ -1,14 +1,14 @@
-# Adds metricq-db-hta-go with a local S3 (RustFS) to a running MetricQ
+# Adds metricq-db-hta-s3 with a local S3 (RustFS) to a running MetricQ
 # development environment (github.com/metricq/metricq,
 # docker-compose-development.yml, project name "metricq"). From this directory:
 #
 #   docker compose -f compose.metricq-dev.yml up --build
 #
 # It joins the external network metricq_metricq-network, seeds the database
-# configuration "db-hta-go-dummy" into CouchDB (same metrics as db-hta-dummy),
+# configuration "db-hta-s3-dummy" into CouchDB (same metrics as db-hta-dummy),
 # and exposes Prometheus metrics on 127.0.0.1:9090 and S3 on 127.0.0.1:19001.
 # Add --profile monitoring for a Prometheus and Grafana with the dashboard.
-name: metricq-db-hta-go-dev
+name: metricq-db-hta-s3-dev
 
 services:
   s3:
@@ -42,7 +42,7 @@ services:
   db-config:
     image: curlimages/curl:latest
     volumes:
-      - ./db-hta-go-dummy.json:/config.json:ro
+      - ./db-hta-s3-dummy.json:/config.json:ro
     command:
       - --no-progress-meter
       - --retry-connrefused
@@ -52,28 +52,28 @@ services:
       - PUT
       - -H
       - "Content-Type: application/json"
-      - http://admin:admin@couchdb-server:5984/config/db-hta-go-dummy
+      - http://admin:admin@couchdb-server:5984/config/db-hta-s3-dummy
       - --data-binary
       - "@/config.json"
     networks:
       - metricq-network
 
-  db-hta-go-dummy:
+  db-hta-s3-dummy:
     build:
       context: ..
-    image: metricq-db-hta-go
+    image: metricq-db-hta-s3
     depends_on:
       s3-bucket:
         condition: service_completed_successfully
       db-config:
         condition: service_completed_successfully
     environment:
-      token: db-hta-go-dummy
+      token: db-hta-s3-dummy
       metricq_url: amqp://admin:admin@rabbitmq-server
       wait_for_rabbitmq_url: rabbitmq-server:5672
       WAITFORIT_TIMEOUT: 0
       METRICQ_S3_BUCKET: metricq
-      METRICQ_S3_PREFIX: db-hta-go-dummy
+      METRICQ_S3_PREFIX: db-hta-s3-dummy
       METRICQ_S3_ENDPOINT: http://s3:9000
       METRICQ_S3_PATH_STYLE: "true"
       AWS_ACCESS_KEY_ID: metricq
@@ -81,7 +81,7 @@ services:
     ports:
       - "127.0.0.1:9090:9090"
     volumes:
-      - wal:/var/lib/metricq-db-hta-go
+      - wal:/var/lib/metricq-db-hta-s3
     restart: unless-stopped
     networks:
       - metricq-network

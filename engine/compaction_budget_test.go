@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/metricq/metricq-db-hta-go/hta"
+	"github.com/metricq/metricq-db-hta-s3/hta"
 )
 
 // Mixed checkpoint packs carry one block descriptor per stream. Selecting and

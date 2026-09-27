@@ -10,7 +10,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/metricq/metricq-db-hta-go/storage"
+	"github.com/metricq/metricq-db-hta-s3/storage"
 )
 
 // CompactionOptions configures background compaction; see

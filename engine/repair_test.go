@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/metricq/metricq-db-hta-go/hta"
+	"github.com/metricq/metricq-db-hta-s3/hta"
 )
 
 func TestExplicitWALRepairPreservesVerifiedPrefixAndOriginal(t *testing.T) {

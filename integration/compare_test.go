@@ -23,9 +23,9 @@ import (
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
-	"github.com/metricq/metricq-db-hta-go/engine"
-	"github.com/metricq/metricq-db-hta-go/hta"
-	"github.com/metricq/metricq-db-hta-go/storage"
+	"github.com/metricq/metricq-db-hta-s3/engine"
+	"github.com/metricq/metricq-db-hta-s3/hta"
+	"github.com/metricq/metricq-db-hta-s3/storage"
 	metricq "github.com/metricq/metricq-go"
 	amqp "github.com/rabbitmq/amqp091-go"
 	"google.golang.org/protobuf/proto"
@@ -174,7 +174,7 @@ func compare(a, b *metricq.HistoryResponse) error {
 func TestLegacyRequestParity(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
-	id := fmt.Sprintf("hta-go-test-%d", time.Now().UnixNano())
+	id := fmt.Sprintf("hta-s3-test-%d", time.Now().UnixNano())
 	server := env("METRICQ_AMQP", "amqp://admin:admin@localhost/")
 	oldToken := "db-" + id + "-old"
 	newToken := "db-" + id + "-new"

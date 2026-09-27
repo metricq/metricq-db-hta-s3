@@ -1,4 +1,4 @@
-module github.com/metricq/metricq-db-hta-go
+module github.com/metricq/metricq-db-hta-s3
 
 go 1.25.0
 

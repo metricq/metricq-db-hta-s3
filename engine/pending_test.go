@@ -3,7 +3,7 @@ package engine
 import (
 	"testing"
 
-	"github.com/metricq/metricq-db-hta-go/hta"
+	"github.com/metricq/metricq-db-hta-s3/hta"
 )
 
 func TestPendingViewsAreStableAndPrependKeepsOrder(t *testing.T) {

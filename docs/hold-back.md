@@ -45,8 +45,11 @@ factor 10, append-only aggregates, 4 MiB object target, 256 MiB builder limit
 | Engine heap | 50-100 MB | 140-270 MB | 160-240 MB |
 
 With holding, data blocks are 175 MB, deltas 173 MB (held records are written
-twice), manifests 90 MB and index pages 13 MB per hour. Compaction found no
-work after the hour: each stream had at most one fragment. In steady state
+twice), manifests 90 MB and index pages 13 MB per hour. (The compaction pass
+after that hour reported no jobs, but it was not a valid measurement:
+reservation then treated held records as checkpoint backlog and never started a
+job while they exceeded the object target. This is fixed and covered by
+`TestHoldDoesNotBlockCompaction`.) In steady state
 each stream contributes at most about one fragment per hold interval, here
 about 3 per second, compared with a measured compaction capacity of about 235
 blocks per second on local RustFS. A 15-minute hold is worse overall: some

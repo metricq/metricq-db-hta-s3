@@ -104,7 +104,9 @@ func (e *Engine) reserveCompaction(ctx context.Context) (CompactionJob, error) {
 		return CompactionJob{}, nil
 	}
 	options := e.options.Compaction.defaults()
-	if e.wal.total() >= e.options.WALHigh || e.pendingBytes >= e.options.ObjectTarget {
+	// Defer to a due checkpoint. Held records are not backlog: they may stay
+	// far above the object target for the whole hold interval.
+	if e.wal.total() >= e.options.WALHigh || e.unsavedBytes() >= e.options.ObjectTarget {
 		e.mu.Unlock()
 		return CompactionJob{}, nil
 	}

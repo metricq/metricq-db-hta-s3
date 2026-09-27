@@ -234,3 +234,32 @@ func TestHoldFailedManifestKeepsDeltaStateConsistent(t *testing.T) {
 	f.restart()
 	f.check("restart after retry")
 }
+
+// Held records are not builder backlog: compaction must still run while a
+// large held set exceeds the object target.
+func TestHoldDoesNotBlockCompaction(t *testing.T) {
+	f := newHoldFixture(t)
+	f.e.options.ObjectTarget = 10 * pendingRecordBytes
+	for round := 0; round < 2; round++ {
+		f.ingest("y", 20)
+		f.now = f.now.Add(2 * time.Hour)
+		f.flush()
+	}
+	if n := len(f.blocks("y", 0)); n != 2 {
+		t.Fatalf("fixture has %d y fragments", n)
+	}
+	f.ingest("x", 200)
+	f.flush()
+	if f.e.pendingBytes < f.e.options.ObjectTarget || f.e.unsavedBytes() != 0 {
+		t.Fatalf("fixture pending %d unsaved %d", f.e.pendingBytes, f.e.unsavedBytes())
+	}
+	if err := f.e.CompactOnce(f.ctx); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(f.blocks("y", 0)); n != 1 {
+		t.Fatalf("held records blocked compaction: %d y blocks", n)
+	}
+	f.check("after compaction")
+	f.restart()
+	f.check("restart after compaction")
+}

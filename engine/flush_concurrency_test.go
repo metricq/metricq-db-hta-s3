@@ -39,7 +39,7 @@ func walFiles(t *testing.T, dir string) []string {
 }
 
 func TestIngestAndQueriesContinueDuringFlushUpload(t *testing.T) {
-	for _, prefix := range []string{"data/", "manifest"} {
+	for _, prefix := range []string{"data/", "state/", "roots/", "manifest"} {
 		t.Run(prefix, func(t *testing.T) {
 			ctx := context.Background()
 			s := &putGateStore{memoryStore: newStore(), prefix: prefix, entered: make(chan struct{}), release: make(chan struct{})}

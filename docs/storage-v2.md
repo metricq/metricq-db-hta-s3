@@ -3,12 +3,24 @@
 Storage v2 is the only object format supported by this Go database. There is
 no reader or migration path for the earlier development format.
 
-The root `manifest` contains a version, committed WAL sequence, open HTA
-series state, and one index root per canonical metric name and HTA level.
+The conditional `manifest` PUT is the atomic commit point. It contains the
+version, committed WAL sequence, generation and references to checkpoint state,
+stream roots, held metadata, catalogs and the deletion journal. The metric maps
+are stored outside this small root:
+
+- `state/` packs contain hash-partitioned pages of open HTA Series state.
+- `roots/` packs contain pages of index roots per canonical metric and level.
+- Each directory has 256 shard references. Changed pages and their new directory
+  share one immutable pack, so each changed kind needs one PUT, independent of
+  metric count. Unchanged pages are reused. A pack is retired only after its
+  last page/directory reference disappears.
+- `held-state/` objects contain the held-delta list and stream watermarks; normal
+  compaction reuses this root together with the checkpoint-state root.
+
 Level zero holds all accepted raw samples. Higher levels hold completed
-aggregates, including compressed runs of identical empty intervals. The
-incoming MetricQ `input` binding is not a storage identity. The root is
-bounded by the number of metrics and levels rather than the age of the data.
+aggregates, including compressed runs of identical empty intervals. The incoming
+MetricQ `input` binding is not a storage identity. Metadata still scales with
+metric/level count, but every maintenance publication no longer retransmits it.
 
 At a checkpoint, pending records are grouped by canonical metric and level,
 then split into blocks of at most 1,024 records. Each block is independently
@@ -31,7 +43,7 @@ always appended without tail rewriting.
 
 A checkpoint first freezes its records and renames the active WAL segment,
 under the ingestion lock. The commit order is then data pack, index pack,
-conditional root manifest PUT, local WAL checkpoint, and deletion of the
+immutable metadata packs, conditional root manifest PUT, local WAL checkpoint, and deletion of the
 published segments. Uploads run outside the ingestion lock. A failed tail read
 or PUT leaves the previous published root and every WAL segment intact.
 If a manifest PUT response is lost, the engine reads the manifest back and
@@ -69,8 +81,8 @@ to the durability of the WAL and object store. Background consolidation trades m
 query GETs while keeping flush work proportional to newly completed records.
 Superseded tail versions are reclaimed by the background compactor. Checkpoint
 frequency still determines initial raw block sizes; compaction can merge adjacent
-small data blocks at every HTA level without dropping samples. The root remains bounded by metric and
-level count, although its open HTA state still scales with those counts.
+small data blocks at every HTA level without dropping samples. The CAS root refers to paged metadata; open HTA state and index-root pages
+scale with metric and level count.
 
 ## Catalog, compaction and object reclamation
 
@@ -85,12 +97,37 @@ catalog bootstrap it once from index trees; subsequent starts use persisted root
 Compaction selects adjacent blocks through each metric/level time index, copies
 live blocks into immutable packs, contracts sparse index paths and replaces the affected
 historical index paths. Optional data-block merging preserves every record and
-verifies adjacency through the index. Work prepares outside the ingestion lock.
+verifies adjacency through the pinned index, with final source validation before
+publication. Source reads coalesce physical ranges and verify each block
+independently. Catalog inventories are validated and filtered once per object.
+Work and manifest encoding prepare outside the ingestion lock.
 After copying, the bounded final metadata rewrite serializes with flush publication,
 validates source identities against the current committed roots and uses conditional
 manifest PUT. Ingest retains access to its mutex during this metadata I/O. The
 publication retains the committed WAL sequence and HTA
 state, so samples ACKed during preparation remain in the WAL until normal flush.
+
+Locality selection separately inspects consecutive blocks of the same canonical
+metric and HTA level, including full blocks. It uses block/byte/object limits,
+not time windows. By default at least four physical ranges must be replaceable
+by one contiguous pack. `compaction.locality_min_ranges` adjusts this threshold;
+`compaction.disable_locality` disables this objective. Every fourth successful
+job gives locality a selection opportunity; otherwise it runs after fragment
+selection has no work. Its read budget is independent, so a difficult locality
+candidate cannot consume the merger's selection budget.
+
+Locality outputs use `data/compact-<job>/locality/` names. These sealed sections
+are skipped by later locality jobs, so appends are packed separately. Partial
+blocks may still merge and partly dead objects may still be evacuated by ordinary
+reclamation. Scan cursors are in memory: after restart, layout inspection starts
+over in bounded index batches; data blocks are read only for a selected job.
+The locality pending gauge counts roots needing inspection, not proven work.
+
+Age-only background flushes are grouped with `hold_expiry_batch_seconds`
+(default 30). This adds at most one cadence to the hold deadline. Explicit
+Flush, WAL/object thresholds and held-memory pressure remain immediate. This
+cadence controls transfer of already durable held data to blocks; it does not
+close HTA aggregation intervals or partition the history into time windows.
 
 A durable linked trash journal authorizes deletion only after safe publication.
 Queries pin their manifest generation; a retired object remains protected while

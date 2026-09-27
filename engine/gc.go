@@ -49,7 +49,7 @@ func (e *Engine) initializeGC(ctx context.Context) error {
 		}
 	}
 	for key := range e.state.Garbage {
-		if !strings.HasPrefix(key, "data/") && !strings.HasPrefix(key, "index/") {
+		if !strings.HasPrefix(key, "data/") && !strings.HasPrefix(key, "index/") && !metadataKey(key) {
 			return fmt.Errorf("invalid garbage object: %q", key)
 		}
 		if e.objectRefs[key] != 0 {

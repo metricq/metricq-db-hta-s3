@@ -18,6 +18,7 @@
     "object_target_bytes": 4194304,
     "builder_hard_bytes": 805306368,
     "hold_seconds": 3600,
+    "hold_expiry_batch_seconds": 30,
     "hold_bytes": 536870912,
     "max_query_rows": 1000000,
     "compaction": {
@@ -31,6 +32,8 @@
       "bytes_per_second": 8388608,
       "dead_fraction": 0.4,
       "merge_small_blocks": true,
+      "locality_min_ranges": 4,
+      "disable_locality": false,
       "max_cycle_seconds": 30
     },
     "append_only_aggregates": true

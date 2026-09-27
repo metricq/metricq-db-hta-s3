@@ -59,7 +59,16 @@ func TestCompactionProgressesWithLargeCatalogInventories(t *testing.T) {
 		}
 	}
 	if !converged {
-		t.Fatal("compaction did not converge")
+		remaining := 0
+		blocks := 0
+		for name := range configs {
+			n := len(streamBlocks(t, e, name, 0))
+			if n != 1 {
+				remaining++
+				blocks += n
+			}
+		}
+		t.Fatalf("compaction did not converge: remaining=%d blocks=%d jobs=%d object_limit=%d scan_more=%v", remaining, blocks, e.compactionCompletions, e.compactionObjectLimit, e.compactionScanMore)
 	}
 	checkCatalog(t, e)
 }

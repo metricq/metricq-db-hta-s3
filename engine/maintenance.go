@@ -26,9 +26,15 @@ type CompactionOptions struct {
 	BytesPerSecond   int64   `json:"bytes_per_second"`
 	DeadFraction     float64 `json:"dead_fraction"`
 	MergeSmallBlocks bool    `json:"merge_small_blocks"`
+	// Minimum input physical ranges for level-local packing; no temporal grouping.
+	LocalityMinRanges int  `json:"locality_min_ranges"`
+	DisableLocality   bool `json:"disable_locality"`
 }
 
 func (o CompactionOptions) defaults() CompactionOptions {
+	if o.LocalityMinRanges == 0 {
+		o.LocalityMinRanges = 4
+	}
 	if o.MaxCycleSeconds == 0 {
 		o.MaxCycleSeconds = 10
 	}
@@ -112,15 +118,18 @@ func (e *Engine) publishMaintenanceLocked(ctx context.Context, next manifest, st
 	if e.fatal != nil {
 		return e.fatal
 	}
-	next.Series = cloneManifest(e.committed).Series
+	next.Series = e.committed.Series
 	next.Sequence = e.committed.Sequence
-	b, err := encode(next)
+	base := e.committed
+	expected := e.version
+	publisher := &Engine{store: store, metrics: e.metrics, options: e.options}
+	e.mu.Unlock()
+	b, err := publisher.encodeManifest(ctx, &next, base)
 	if err != nil {
+		e.mu.Lock()
 		return err
 	}
-	expected := e.version
-	publisher := &Engine{store: store, metrics: e.metrics}
-	e.mu.Unlock()
+	committed := cloneMaintenanceManifest(next)
 	version, err := publisher.put(ctx, "manifest", b, &expected)
 	if err != nil {
 		actual, v, getErr := publisher.get(ctx, "manifest")
@@ -138,7 +147,7 @@ func (e *Engine) publishMaintenanceLocked(ctx context.Context, next manifest, st
 		}
 	}
 	e.mu.Lock()
-	e.committed = cloneManifest(next)
+	e.committed = committed
 	live := e.state.Series
 	liveRoots := e.state.Roots
 	e.state = next
@@ -170,33 +179,12 @@ func (e *Engine) catalogCheckpoint(ctx context.Context, next *manifest, data, in
 	}
 	var trash []string
 	if index != nil {
+		retired := make(map[blob]bool, len(index.retired))
 		for _, ref := range index.retired {
-			o, ok := changes[ref.Key]
-			if !ok {
-				old, found, err := e.catalogGet(ctx, e.state.Catalog, ref.Key)
-				if err != nil {
-					return err
-				}
-				if !found {
-					return fmt.Errorf("retired block absent from catalog: %s", ref.Key)
-				}
-				old.Blocks = append([]BlockInfo(nil), old.Blocks...)
-				o = &old
-				changes[ref.Key] = o
-			}
-			found := false
-			for i, b := range o.Blocks {
-				if b.Entry.Blob == ref {
-					o.LiveBytes -= ref.Length
-					o.Blocks = append(o.Blocks[:i], o.Blocks[i+1:]...)
-					found = true
-					break
-				}
-			}
-			if !found {
-				return fmt.Errorf("retired blob absent from catalog: %s@%d", ref.Key, ref.Offset)
-			}
-			o.Modified = now
+			retired[ref] = true
+		}
+		if err := e.retireCatalogBlocks(ctx, changes, retired); err != nil {
+			return err
 		}
 	}
 	for key, o := range changes {
@@ -232,7 +220,7 @@ func (e *Engine) bootstrapCatalog(ctx context.Context) error {
 		if len(changes) == 0 {
 			return nil
 		}
-		next := cloneManifest(e.committed)
+		next := cloneMaintenanceManifest(e.committed)
 		next.Generation = e.state.Generation + 1
 		retired, err := e.catalogChanges(ctx, &next, changes)
 		if err != nil {
@@ -326,7 +314,7 @@ func (e *Engine) bootstrapCatalog(ctx context.Context) error {
 		e.state.MaintenanceStatsReady = true
 		return nil
 	}
-	next := cloneManifest(e.committed)
+	next := cloneMaintenanceManifest(e.committed)
 	next.Generation = e.state.Generation + 1
 	next.CatalogReady = true
 	var legacy []string

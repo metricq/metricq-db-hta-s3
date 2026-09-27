@@ -458,3 +458,43 @@ func (e *Engine) catalogScan(ctx context.Context, root blob, after string, limit
 	}
 	return last, nil
 }
+
+// Filter each source inventory once rather than scanning/splicing it for every
+// retired block. A missing descriptor aborts publication before deleting data.
+func (e *Engine) retireCatalogBlocks(ctx context.Context, changes map[string]*ObjectInfo, retired map[blob]bool) error {
+	groups := make(map[string]map[blob]bool)
+	for ref := range retired {
+		if groups[ref.Key] == nil {
+			groups[ref.Key] = make(map[blob]bool)
+		}
+		groups[ref.Key][ref] = true
+	}
+	for key, refs := range groups {
+		o := changes[key]
+		if o == nil {
+			old, ok, err := e.catalogGet(ctx, e.state.Catalog, key)
+			if err != nil {
+				return err
+			}
+			if !ok {
+				return fmt.Errorf("retired object absent from catalog: %s", key)
+			}
+			o = &old
+			changes[key] = o
+		}
+		kept := make([]BlockInfo, 0, len(o.Blocks))
+		for _, b := range o.Blocks {
+			if refs[b.Entry.Blob] {
+				o.LiveBytes -= b.Entry.Blob.Length
+				delete(refs, b.Entry.Blob)
+			} else {
+				kept = append(kept, b)
+			}
+		}
+		if len(refs) > 0 {
+			return fmt.Errorf("retired block absent from catalog: %s", key)
+		}
+		o.Blocks = kept
+	}
+	return nil
+}

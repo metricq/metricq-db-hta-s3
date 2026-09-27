@@ -34,6 +34,8 @@ type Options struct {
 	// HoldSeconds > 0 keeps streams in memory until they fill a block or their
 	// oldest record reaches this age; held records persist in held/ deltas.
 	HoldSeconds int64 `json:"hold_seconds"`
+	// Batch age-only background flushes; explicit Flush and pressure remain immediate.
+	HoldExpiryBatchSeconds int64 `json:"hold_expiry_batch_seconds"`
 	// HoldBytes bounds held records (estimated); above it the largest streams
 	// are written early. Zero means half of BuilderHard.
 	HoldBytes             int64             `json:"hold_bytes"`
@@ -50,6 +52,9 @@ type Options struct {
 
 func (o Options) defaults() Options {
 	o.Compaction = o.Compaction.defaults()
+	if o.HoldExpiryBatchSeconds == 0 {
+		o.HoldExpiryBatchSeconds = 30
+	}
 	if o.WALTarget == 0 {
 		o.WALTarget = 32 << 20
 	}
@@ -79,6 +84,11 @@ type entry struct {
 	Record hta.Record
 }
 type manifest struct {
+	// Immutable metadata roots; the CAS object omits the hydrated maps below.
+	CheckpointState, StreamIndex, HeldState blob
+	seriesPages, rootPages                  metadataDirectory
+	stagingNamespace                        string
+
 	TrashOffset  int
 	TrashCleanup string
 	// Held-record deltas still needed after a restart, oldest first, and the
@@ -133,6 +143,8 @@ type Engine struct {
 	lastCompactionEnd        time.Time
 	compactionCompletions    uint64
 	compactionScanMore       bool
+	localityScans            map[string]localityScan
+	localityCursor           string
 	compactionObjectLimit    int // source objects per job, adapted to the catalog budget
 	lastReclaim              time.Time
 	deletedCleanups          map[string]bool
@@ -209,6 +221,9 @@ func Open(ctx context.Context, s storage.Store, o Options, configs map[string]ht
 	if o.WALDirectory == "" || o.WALTarget <= 0 || o.WALTarget >= o.WALHigh || o.WALHigh >= o.WALHard || o.ObjectTarget <= 0 || o.BuilderHard < o.ObjectTarget || o.MaxQueryRows < 1 {
 		return nil, fmt.Errorf("invalid engine options")
 	}
+	if o.HoldExpiryBatchSeconds < 1 || o.HoldExpiryBatchSeconds > 3600 {
+		return nil, fmt.Errorf("invalid hold expiry batching")
+	}
 	if o.HoldSeconds < 0 || (o.HoldSeconds > 0 && !o.BackgroundMaintenance) {
 		return nil, fmt.Errorf("holding streams requires background maintenance")
 	}
@@ -220,7 +235,7 @@ func Open(ctx context.Context, s storage.Store, o Options, configs map[string]ht
 	}
 	if o.BackgroundMaintenance {
 		c := o.Compaction
-		if c.MaxCycleSeconds < 1 || c.MaxCycleSeconds > 3600 || c.MaxDurationSeconds < 1 || c.MaxDurationSeconds > 3600 || c.IntervalSeconds < 1 || c.CooldownSeconds < 0 || c.MaxBlocks < 1 || c.MaxBlocks > 512 || c.MaxJobBytes < 1 || c.MaxJobBytes > 64<<20 || c.ObjectBytes < 1 || c.ObjectBytes > c.MaxJobBytes || c.BytesPerSecond < 1 || c.DeadFraction <= 0 || c.DeadFraction >= 1 {
+		if c.MaxCycleSeconds < 1 || c.MaxCycleSeconds > 3600 || c.MaxDurationSeconds < 1 || c.MaxDurationSeconds > 3600 || c.IntervalSeconds < 1 || c.CooldownSeconds < 0 || c.LocalityMinRanges < 2 || c.LocalityMinRanges > 512 || c.MaxBlocks < 1 || c.MaxBlocks > 512 || c.MaxJobBytes < 1 || c.MaxJobBytes > 64<<20 || c.ObjectBytes < 1 || c.ObjectBytes > c.MaxJobBytes || c.BytesPerSecond < 1 || c.DeadFraction <= 0 || c.DeadFraction >= 1 {
 			return nil, fmt.Errorf("invalid compaction options")
 		}
 	}
@@ -242,6 +257,9 @@ func Open(ctx context.Context, s storage.Store, o Options, configs map[string]ht
 	if err == nil {
 		if err = decode(b, &e.state); err != nil {
 			return nil, fmt.Errorf("manifest: %w", err)
+		}
+		if err = e.loadManifestState(ctx, &e.state); err != nil {
+			return nil, fmt.Errorf("manifest metadata: %w", err)
 		}
 		if e.state.Version != 2 || e.state.Series == nil || e.state.Roots == nil {
 			return nil, fmt.Errorf("invalid manifest version or state")
@@ -366,12 +384,12 @@ func (e *Engine) setConfigMetrics() {
 	for name, v := range map[string]float64{
 		"wal_target_bytes": float64(o.WALTarget), "wal_high_bytes": float64(o.WALHigh), "wal_hard_bytes": float64(o.WALHard),
 		"object_target_bytes": float64(o.ObjectTarget), "builder_hard_bytes": float64(o.BuilderHard),
-		"hold_seconds": float64(o.HoldSeconds), "hold_bytes": float64(o.HoldBytes), "max_query_rows": float64(o.MaxQueryRows),
+		"hold_seconds": float64(o.HoldSeconds), "hold_expiry_batch_seconds": float64(o.HoldExpiryBatchSeconds), "hold_bytes": float64(o.HoldBytes), "max_query_rows": float64(o.MaxQueryRows),
 		"compaction_interval_seconds": float64(c.IntervalSeconds), "compaction_cooldown_seconds": float64(c.CooldownSeconds),
 		"compaction_max_duration_seconds": float64(c.MaxDurationSeconds), "compaction_max_cycle_seconds": float64(c.MaxCycleSeconds),
 		"compaction_max_job_bytes": float64(c.MaxJobBytes), "compaction_max_blocks": float64(c.MaxBlocks),
 		"compaction_object_bytes": float64(c.ObjectBytes), "compaction_bytes_per_second": float64(c.BytesPerSecond),
-		"compaction_dead_fraction": c.DeadFraction,
+		"compaction_dead_fraction": c.DeadFraction, "compaction_locality_min_ranges": float64(c.LocalityMinRanges),
 	} {
 		e.metrics.Config.WithLabelValues(name).Set(v)
 	}
@@ -847,7 +865,7 @@ func (e *Engine) Flush(ctx context.Context) (err error) {
 				return err
 			}
 		}
-		b, err := encode(next)
+		b, err := e.encodeManifest(ctx, &next, e.committed)
 		if err != nil {
 			return err
 		}
@@ -864,6 +882,10 @@ func (e *Engine) Flush(ctx context.Context) (err error) {
 		}
 		return nil
 	}()
+	var committed manifest
+	if err == nil {
+		committed = cloneManifest(next)
+	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if err != nil {
@@ -892,7 +914,7 @@ func (e *Engine) Flush(ctx context.Context) (err error) {
 			e.state.Roots[name] = roots
 		}
 	}
-	e.committed = cloneManifest(next)
+	e.committed = committed
 	if e.objectRefs != nil {
 		for key, delta := range refDelta {
 			e.objectRefs[key] += delta
@@ -947,7 +969,7 @@ func (e *Engine) RunFlush(ctx context.Context) {
 				continue
 			}
 		}
-		if e.NeedsFlush() {
+		if e.needsScheduledFlush() {
 			if err := e.Flush(ctx); err != nil {
 				failed = time.Now()
 				slog.Error("object-store checkpoint failed; WAL retained", "error", err)

@@ -319,3 +319,35 @@ func (e *Engine) updateHoldMetrics() {
 	}
 	e.metrics.HeldOldestAge.Set(age)
 }
+
+// Group age-only deadlines on a common cadence, independent of metric count.
+// Held records are already durable, so this only delays transfer into blocks.
+func (e *Engine) needsScheduledFlush() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.wal.size >= e.options.WALTarget || e.unsavedBytes() >= e.options.ObjectTarget || e.holdPressure() {
+		return true
+	}
+	if !e.holding() {
+		return false
+	}
+	period := time.Duration(e.options.HoldExpiryBatchSeconds) * time.Second
+	now := e.clock()
+	for metric, levels := range e.pending.streams {
+		for level, records := range levels {
+			h := e.held[streamKey(metric, level)]
+			if len(records) == 0 || h == nil {
+				continue
+			}
+			due := h.since.Add(time.Duration(e.options.HoldSeconds) * time.Second)
+			rounded := due.Truncate(period)
+			if rounded.Before(due) {
+				rounded = rounded.Add(period)
+			}
+			if now.After(rounded) {
+				return true
+			}
+		}
+	}
+	return false
+}

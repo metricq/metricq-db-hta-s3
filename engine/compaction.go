@@ -31,6 +31,9 @@ var compactionAbortGrace = time.Minute
 const maxCompactionObjects = 256
 
 type CompactionJob struct {
+	Locality    bool
+	Consecutive [][2]blob
+
 	CleanupAfter int64
 
 	ID             string
@@ -111,7 +114,7 @@ func (e *Engine) reserveCompaction(ctx context.Context) (CompactionJob, error) {
 		return CompactionJob{}, nil
 	}
 	generation := e.state.Generation
-	snapshot := &Engine{store: e.preparationStore(), options: e.options, metrics: e.metrics, state: cloneManifest(e.committed), sharedNodes: e.sharedNodes, nodeCache: make(map[blob]indexNode), nodeReadLimit: 4096, catalogReadBudget: compactionCatalogBudget}
+	snapshot := &Engine{store: e.preparationStore(), options: e.options, metrics: e.metrics, state: cloneMaintenanceManifest(e.committed), sharedNodes: e.sharedNodes, nodeCache: make(map[blob]indexNode), nodeReadLimit: 4096, catalogReadBudget: compactionCatalogBudget}
 	scanAfter := e.candidateCursor
 	seedObject, seedOffset := e.compactionSeedObject, e.compactionSeedOffset
 	evacuateObject := e.compactionEvacuateObject
@@ -133,6 +136,7 @@ func (e *Engine) reserveCompaction(ctx context.Context) (CompactionJob, error) {
 	}()
 	var inputs []BlockInfo
 	selected := make(map[blob]bool)
+	var consecutive [][2]blob
 	tried := make(map[string]bool)
 	var copied int64
 	previousCandidate := scanAfter
@@ -156,8 +160,26 @@ func (e *Engine) reserveCompaction(ctx context.Context) (CompactionJob, error) {
 		copied += b.Entry.Blob.Length
 		return true
 	}
+	locality := false
+	localityMore := false
+	localityChecked := false
+	selectLocality := func() ([]BlockInfo, bool, error) {
+		// Locality search must not consume the merger's catalog budget: a layout
+		// needing more inventories than the limit must never starve merge progress.
+		localityChecked = true
+		reader := &Engine{store: snapshot.store, options: snapshot.options, metrics: snapshot.metrics, state: snapshot.state, sharedNodes: snapshot.sharedNodes, nodeCache: make(map[blob]indexNode), nodeReadLimit: 4096, catalogReadBudget: compactionCatalogBudget}
+		return e.selectLocality(ctx, reader, options, objectLimit)
+	}
+	if !options.DisableLocality && e.compactionCompletions%4 == 3 {
+		var err error
+		inputs, localityMore, err = selectLocality()
+		if err != nil {
+			return CompactionJob{}, err
+		}
+		locality = len(inputs) > 0
+	}
 	nextEvacuation := ""
-	if evacuateObject != "" {
+	if evacuateObject != "" && len(inputs) == 0 {
 		o, ok, err := snapshot.catalogGet(ctx, snapshot.state.Catalog, evacuateObject)
 		if err != nil && !errors.Is(err, errCatalogBudget) {
 			return CompactionJob{}, err
@@ -297,6 +319,9 @@ func (e *Engine) reserveCompaction(ctx context.Context) (CompactionJob, error) {
 						group = group[:len(group)-1]
 					}
 					if len(group) > 1 {
+						for i := 1; i < len(group); i++ {
+							consecutive = append(consecutive, [2]blob{group[i-1].Entry.Blob, group[i].Entry.Blob})
+						}
 						for _, b := range group {
 							add(b)
 						}
@@ -335,6 +360,14 @@ func (e *Engine) reserveCompaction(ctx context.Context) (CompactionJob, error) {
 			return len(inputs) < options.MaxBlocks && copied < options.MaxJobBytes
 		})
 	}
+	if len(inputs) == 0 && !options.DisableLocality && !localityChecked {
+		var localityErr error
+		inputs, localityMore, localityErr = selectLocality()
+		if localityErr != nil {
+			return CompactionJob{}, localityErr
+		}
+		locality = len(inputs) > 0
+	}
 	e.mu.Lock()
 	e.compactionEvacuateObject = nextEvacuation
 	e.candidateCursor = cursor
@@ -343,7 +376,7 @@ func (e *Engine) reserveCompaction(ctx context.Context) (CompactionJob, error) {
 	if resumeObject != "" {
 		e.candidateCursor = resumeCandidate
 	}
-	e.compactionScanMore = len(inputs) == 0 && (seedLimited || cursor != "")
+	e.compactionScanMore = len(inputs) == 0 && (seedLimited || cursor != "" || localityMore)
 	if e.closed {
 		e.mu.Unlock()
 		return CompactionJob{}, fmt.Errorf("engine closed")
@@ -376,9 +409,14 @@ func (e *Engine) reserveCompaction(ctx context.Context) (CompactionJob, error) {
 		return CompactionJob{}, err
 	}
 	id := strings.TrimPrefix(idPack.key, "job/")
-	job := CompactionJob{ID: id, Stage: "reserved", Generation: generation, Inputs: inputs, Created: time.Now().UnixNano()}
+	if locality {
+		for i := 1; i < len(inputs); i++ {
+			consecutive = append(consecutive, [2]blob{inputs[i-1].Entry.Blob, inputs[i].Entry.Blob})
+		}
+	}
+	job := CompactionJob{Consecutive: consecutive, Locality: locality, ID: id, Stage: "reserved", Generation: generation, Inputs: inputs, Created: time.Now().UnixNano()}
 	// Register all staging namespaces before uploads, including COW metadata.
-	for _, prefix := range []string{"data/", "index/", "catalog/", "candidates/", "trash/"} {
+	for _, prefix := range []string{"data/", "index/", "catalog/", "candidates/", "trash/", "state/", "roots/", "held-state/"} {
 		job.OutputPrefixes = append(job.OutputPrefixes, prefix+"compact-"+id+"/")
 	}
 	jobWriter := &Engine{store: e.preparationStore(), metrics: e.metrics}
@@ -390,9 +428,10 @@ func (e *Engine) reserveCompaction(ctx context.Context) (CompactionJob, error) {
 	defer e.publishMu.Unlock()
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	next := cloneManifest(e.committed)
+	next := cloneMaintenanceManifest(e.committed)
 	next.Generation = e.state.Generation + 1
 	next.CompactionJob = ref
+	next.stagingNamespace = job.ID
 	if err = e.publishMaintenanceLocked(ctx, next, e.preparationStore()); err != nil {
 		return CompactionJob{}, err
 	}
@@ -515,6 +554,10 @@ func (e *Engine) copyJob(ctx context.Context, job CompactionJob) (map[blob]repla
 		}
 		return budget.take(ctx, n)
 	}
+	proven := make(map[[2]blob]bool, len(job.Consecutive))
+	for _, edge := range job.Consecutive {
+		proven[edge] = true
+	}
 	replacements := make(map[blob]replacement)
 	inputs := append([]BlockInfo(nil), job.Inputs...)
 	sort.Slice(inputs, func(i, j int) bool {
@@ -530,48 +573,18 @@ func (e *Engine) copyJob(ctx context.Context, job CompactionJob) (map[blob]repla
 		}
 		return a.Entry.First < b.Entry.First
 	})
-	// Fetch at most eight compressed source blocks ahead. Consumption remains
-	// ordered, so merging and output hashes do not depend on S3 response order.
-	cached := make(map[int][]byte)
-	load := func(index int) ([]byte, error) {
-		if b, ok := cached[index]; ok {
-			delete(cached, index)
-			return b, nil
-		}
-		end := min(index+8, len(inputs))
-		blocks := make([][]byte, end-index)
-		errs := make([]error, end-index)
-		var wg sync.WaitGroup
-		for j := index; j < end; j++ {
-			if _, ok := cached[j]; ok {
-				continue
-			}
-			wg.Add(1)
-			go func(j int) {
-				defer wg.Done()
-				k := j - index
-				if errs[k] = take(inputs[j].Entry.Blob.Length); errs[k] != nil {
-					return
-				}
-				blocks[k], errs[k] = reader.readBlob(ctx, inputs[j].Entry.Blob)
-				if errs[k] == nil {
-					e.metrics.CompactionReadBytes.Add(float64(len(blocks[k])))
-				}
-			}(j)
-		}
-		wg.Wait()
-		for k, err := range errs {
-			if err != nil {
-				return nil, err
-			}
-			if blocks[k] != nil {
-				cached[index+k] = blocks[k]
-			}
-		}
-		b := cached[index]
-		delete(cached, index)
-		return b, nil
+	refs := make([]blob, len(inputs))
+	for i, b := range inputs {
+		refs[i] = b.Entry.Blob
 	}
+	encodedInputs, err := reader.fetchEncodedPaced(ctx, refs, take)
+	if err != nil {
+		return nil, nil, err
+	}
+	for _, b := range encodedInputs {
+		e.metrics.CompactionReadBytes.Add(float64(len(b)))
+	}
+	load := func(i int) ([]byte, error) { return encodedInputs[i], nil }
 	var packs []*pack
 	var current *pack
 	counts := map[string]int{"data": 0, "index": 0}
@@ -602,7 +615,11 @@ func (e *Engine) copyJob(ctx context.Context, job CompactionJob) (map[blob]repla
 			}
 		}
 		if current == nil {
-			current = &pack{key: fmt.Sprintf("%s/compact-%s/%d", prefix, job.ID, counts[prefix])}
+			suffix := ""
+			if job.Locality && prefix == "data" {
+				suffix = "/locality"
+			}
+			current = &pack{key: fmt.Sprintf("%s/compact-%s%s/%d", prefix, job.ID, suffix, counts[prefix])}
 			counts[prefix]++
 		}
 		info.Entry.Blob = current.add(encoded)
@@ -627,6 +644,9 @@ func (e *Engine) copyJob(ctx context.Context, job CompactionJob) (map[blob]repla
 				root := e.state.Roots[b.Metric][b.Level]
 				e.mu.Unlock()
 				for j := i + 1; j < end; j++ {
+					if proven[[2]blob{inputs[j-1].Entry.Blob, inputs[j].Entry.Blob}] {
+						continue
+					}
 					next, err := indexReader.indexNeighbor(ctx, root, inputs[j-1].Entry.Last, false)
 					if err != nil {
 						return nil, nil, err
@@ -805,32 +825,38 @@ func (e *Engine) prepareCompaction(ctx context.Context, job CompactionJob, repla
 	}
 
 	sourceModified := int64(0)
-	// Exact current catalog references validate data AND index source identity.
+	// Validate each inventory in one pass, including exact source descriptors.
+	byObject := make(map[string]map[blob]BlockInfo)
 	for _, input := range job.Inputs {
-		object, ok, err := e.catalogGet(ctx, e.state.Catalog, input.Entry.Blob.Key)
+		key := input.Entry.Blob.Key
+		if byObject[key] == nil {
+			byObject[key] = make(map[blob]BlockInfo)
+		}
+		byObject[key][input.Entry.Blob] = input
+	}
+	for key, want := range byObject {
+		object, ok, err := e.catalogGet(ctx, e.state.Catalog, key)
 		if err != nil {
 			return manifest{}, err
 		}
-		if object.Modified > sourceModified {
-			sourceModified = object.Modified
+		if !ok {
+			return manifest{}, fmt.Errorf("compaction input replaced concurrently")
 		}
-		found := false
-		if ok {
-			for _, b := range object.Blocks {
-				if b == input {
-					found = true
-					break
-				}
+		sourceModified = max(sourceModified, object.Modified)
+		for _, b := range object.Blocks {
+			if input, ok := want[b.Entry.Blob]; ok && input == b {
+				delete(want, b.Entry.Blob)
 			}
 		}
-		if !found {
+		if len(want) > 0 {
 			return manifest{}, fmt.Errorf("compaction input replaced concurrently")
 		}
 	}
 	e.activeMaintenance = job.ID
 	defer func() { e.activeMaintenance = "" }()
-	next := cloneManifest(e.committed)
+	next := cloneMaintenanceManifest(e.committed)
 	next.Generation = e.state.Generation + 1
+	next.stagingNamespace = job.ID
 	p, err := newPack("index/compact-" + job.ID)
 	if err != nil {
 		return manifest{}, err
@@ -849,6 +875,11 @@ func (e *Engine) prepareCompaction(ctx context.Context, job CompactionJob, repla
 	}
 	pages := 0
 	for metric, levels := range affected {
+		copied := make(map[int64]blob, len(next.Roots[metric]))
+		for level, ref := range next.Roots[metric] {
+			copied[level] = ref
+		}
+		next.Roots[metric] = copied
 		for level, repl := range levels {
 			p.metric, p.level = metric, level
 			edges, err := e.replaceHistorical(ctx, next.Roots[metric][level], repl, p, used, &pages)
@@ -932,33 +963,8 @@ func (e *Engine) prepareCompaction(ctx context.Context, job CompactionJob, repla
 		}
 		changes[o.Key] = o
 	}
-	for ref := range retired {
-		o := changes[ref.Key]
-		if o == nil {
-			old, ok, err := e.catalogGet(ctx, e.state.Catalog, ref.Key)
-			if err != nil {
-				return manifest{}, err
-			}
-			if !ok {
-				return manifest{}, fmt.Errorf("missing retired catalog object")
-			}
-			old.Blocks = append([]BlockInfo(nil), old.Blocks...)
-			o = &old
-			changes[ref.Key] = o
-		}
-		found := false
-		for i, b := range o.Blocks {
-			if b.Entry.Blob == ref {
-				o.Blocks = append(o.Blocks[:i], o.Blocks[i+1:]...)
-				o.LiveBytes -= ref.Length
-				found = true
-				break
-			}
-		}
-		if !found {
-			return manifest{}, fmt.Errorf("missing retired compaction block")
-		}
-		// Retirement does not make surviving data newly ingested.
+	if err := e.retireCatalogBlocks(ctx, changes, retired); err != nil {
+		return manifest{}, err
 	}
 	trash := append([]string(nil), discarded...)
 	for key, o := range changes {
@@ -1004,7 +1010,7 @@ func (e *Engine) applyCompaction(ctx context.Context, job CompactionJob, replace
 			e.mu.Unlock()
 			return err
 		}
-		snapshot := &Engine{store: publication, options: e.options, metrics: e.metrics, state: cloneManifest(e.committed), committed: cloneManifest(e.committed), sharedNodes: e.sharedNodes, activeMaintenance: job.ID, nodeReadLimit: 4096, catalogReadBudget: 4 * compactionCatalogBudget}
+		snapshot := &Engine{store: publication, options: e.options, metrics: e.metrics, state: cloneMaintenanceManifest(e.committed), committed: cloneMaintenanceManifest(e.committed), sharedNodes: e.sharedNodes, activeMaintenance: job.ID, nodeReadLimit: 4096, catalogReadBudget: 4 * compactionCatalogBudget}
 		e.mu.Unlock()
 		next, err := snapshot.prepareCompaction(ctx, job, replacements, packs, nil)
 		if err != nil {
@@ -1018,6 +1024,9 @@ func (e *Engine) applyCompaction(ctx context.Context, job CompactionJob, replace
 			e.compactionCompletions++
 			e.mu.Unlock()
 			e.metrics.Compactions.Inc()
+			if job.Locality {
+				e.metrics.LocalityJobs.Inc()
+			}
 			e.metrics.CompactionInputBlocks.Add(float64(len(job.Inputs)))
 			outputBlocks := 0
 			for _, r := range replacements {
@@ -1044,7 +1053,7 @@ func (e *Engine) editMaintenance(ctx context.Context, edit func(*Engine) (manife
 		return fmt.Errorf("engine unavailable")
 	}
 	generation := e.committed.Generation
-	snapshot := &Engine{store: e.preparationStore(), options: e.options, metrics: e.metrics, state: cloneManifest(e.committed), committed: cloneManifest(e.committed)}
+	snapshot := &Engine{store: e.preparationStore(), options: e.options, metrics: e.metrics, state: cloneMaintenanceManifest(e.committed), committed: cloneMaintenanceManifest(e.committed)}
 	e.pin(generation)
 	e.mu.Unlock()
 	defer func() { e.mu.Lock(); e.unpin(generation); e.mu.Unlock() }()
@@ -1071,7 +1080,7 @@ func (e *Engine) abortCompaction(ctx context.Context) error {
 		if err != nil {
 			return manifest{}, err
 		}
-		next := cloneManifest(snapshot.committed)
+		next := cloneMaintenanceManifest(snapshot.committed)
 		if job.Stage == "aborted" {
 			return manifest{}, errMaintenanceNoop
 		}
@@ -1145,7 +1154,7 @@ func (e *Engine) recoverCompaction(ctx context.Context) error {
 		if active.ID != job.ID || active.Stage != "aborted" {
 			return manifest{}, fmt.Errorf("recovery job changed")
 		}
-		next := cloneManifest(snapshot.committed)
+		next := cloneMaintenanceManifest(snapshot.committed)
 		next.Generation++
 		next.CompactionJob = blob{}
 		keys = append(keys, snapshot.state.CompactionJob.Key)
@@ -1359,7 +1368,7 @@ func (e *Engine) Reclaim(ctx context.Context) error {
 		return deleteErr
 	}
 	e.mu.Lock()
-	next := cloneManifest(e.committed)
+	next := cloneMaintenanceManifest(e.committed)
 	next.Generation = e.state.Generation + 1
 	next.TrashCleanup = ""
 	next.TrashCleanups = remaining

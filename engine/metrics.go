@@ -50,6 +50,8 @@ type Metrics struct {
 	CompactionObjectLimit, CompactionJobPending prometheus.Gauge
 	CompactionLastSuccess                       prometheus.Gauge
 	CompactionBudgetExceeded                    prometheus.Counter
+	LocalityJobs                                prometheus.Counter
+	LocalityPendingStreams                      prometheus.Gauge
 }
 
 func NewMetrics(r prometheus.Registerer) *Metrics {
@@ -105,6 +107,8 @@ func NewMetrics(r prometheus.Registerer) *Metrics {
 		CompactionObjectLimit:    gauge("compaction_object_limit", "Current maximum source objects per compaction job (adapts to the catalog budget)."),
 		CompactionJobPending:     gauge("compaction_job_pending", "One while a reserved or aborted compaction job is recorded in the manifest."),
 		CompactionLastSuccess:    gauge("compaction_last_success_timestamp_seconds", "Unix time of the last published compaction job."),
+		LocalityJobs:             counter("compaction_locality_jobs_total", "Published jobs packing consecutive blocks of a metric level."),
+		LocalityPendingStreams:   gauge("compaction_locality_pending_streams", "Changed stream roots awaiting layout inspection; not necessarily actionable fragmentation."),
 		CompactionBudgetExceeded: counter("compaction_budget_exceeded_total", "Compaction jobs aborted because publication exceeded the catalog budget."),
 		CandidateObjects:         gauge("compaction_candidate_objects", "Tracked candidate objects, including cooldown and single tails."),
 		SmallBlocks:              gauge("small_data_blocks", "Live data blocks below 1024 records, including single stream tails."),

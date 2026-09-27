@@ -87,7 +87,8 @@ type auditNode struct {
 	Entries []auditEdge
 }
 type auditManifest struct {
-	Roots map[string]map[int64]auditBlob
+	Roots       map[string]map[int64]auditBlob
+	StreamIndex auditBlob
 }
 type layoutStats struct{ rawBlocks, rawRecords, aggregateBlocks, aggregateRecords, fragmentedAggregates, indexNodes, liveDataBytes, liveIndexBytes int64 }
 
@@ -110,6 +111,35 @@ func auditLayout(ctx context.Context, s storage.Store) (layoutStats, error) {
 		return stats, err
 	}
 	ranges := s.(storage.RangeGetter)
+	if manifest.StreamIndex.Key != "" {
+		load := func(ref auditBlob, v any) error {
+			b, err := ranges.GetRange(ctx, ref.Key, ref.Offset, ref.Length)
+			if err != nil {
+				return err
+			}
+			if int64(len(b)) != ref.Length || sha256.Sum256(b) != ref.Hash {
+				return fmt.Errorf("invalid audit metadata checksum")
+			}
+			return auditDecode(b, v)
+		}
+		var directory struct{ Pages [256]auditBlob }
+		if err := load(manifest.StreamIndex, &directory); err != nil {
+			return stats, err
+		}
+		manifest.Roots = make(map[string]map[int64]auditBlob)
+		for _, ref := range directory.Pages {
+			if ref.Key == "" {
+				continue
+			}
+			var roots map[string]map[int64]auditBlob
+			if err := load(ref, &roots); err != nil {
+				return stats, err
+			}
+			for name, levels := range roots {
+				manifest.Roots[name] = levels
+			}
+		}
+	}
 	var walk func(auditBlob, int64, *[]auditEdge) error
 	walk = func(ref auditBlob, level int64, leaves *[]auditEdge) error {
 		b, err := ranges.GetRange(ctx, ref.Key, ref.Offset, ref.Length)

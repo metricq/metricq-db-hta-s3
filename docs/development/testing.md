@@ -65,6 +65,13 @@ python3 grafana/generate_dashboard.py
 python3 scripts/metrics-reference.py   # table for operations/monitoring.md
 ```
 
-GitLab CI (`.gitlab-ci.yml`) runs `go vet` and the unit tests with the race
-detector on every push, builds the site on every branch and publishes it with
-GitLab Pages from the default branch.
+GitHub Actions (`.github/workflows/`):
+
+| Workflow | Runs |
+| --- | --- |
+| `go.yml` | `go vet` (including the `integration` and `review` tags) and the unit tests with the race detector, on pushes to `main` and pull requests |
+| `docs.yml` | `mkdocs build --strict` on every change; publishes the site with GitHub Pages from the default branch (Pages source: *GitHub Actions*) |
+| `docker.yml` | builds the image; pushes it to `ghcr.io/metricq/metricq-db-hta-s3` except for pull requests (`edge` = default branch, `vX.Y.Z` for release tags) |
+
+Dependabot keeps Go modules, actions, the Docker base images and the
+documentation tools up to date.

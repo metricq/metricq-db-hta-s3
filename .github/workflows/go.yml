@@ -1,0 +1,28 @@
+name: Go
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Vet
+        run: |
+          go vet ./...
+          go vet -tags=integration ./integration
+          go vet -tags=review ./engine
+
+      - name: Test
+        # Integration tests need RabbitMQ, CouchDB, the manager and S3; they
+        # are run locally (see docs/development/testing.md).
+        run: go test -race ./...

@@ -6,7 +6,7 @@ data as immutable objects in S3-compatible object storage. It answers all
 MetricQ history request types and can replace the file-based
 `metricq-db-hta` for the same manager configuration.
 
-**Documentation:** [`docs/`](docs/index.md), published with GitLab Pages —
+**Documentation:** [`docs/`](docs/index.md), published with GitHub Pages —
 architecture, requirements, sizing, deployment, configuration, tuning,
 monitoring and troubleshooting.
 

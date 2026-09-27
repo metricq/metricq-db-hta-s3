@@ -10,7 +10,7 @@ storage/                     object store interface and S3 implementation
 integration/                 tests against RabbitMQ, CouchDB, the manager and S3
 grafana/                     dashboard and its generator
 docker/                      container entrypoint, development compose file
-docs/                        this documentation (MkDocs, published by GitLab Pages)
+docs/                        this documentation (MkDocs, published by GitHub Pages)
 measurements/                benchmark reports and design history
 ```
 

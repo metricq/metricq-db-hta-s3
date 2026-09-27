@@ -36,6 +36,9 @@ curl -X PUT -H 'Content-Type: application/json' \
 
 ### Container
 
+Images are published as `ghcr.io/metricq/metricq-db-hta-s3` (`edge` for the
+default branch, `vX.Y.Z` for releases). To build locally:
+
 ```sh
 docker build -t metricq-db-hta-s3 .
 

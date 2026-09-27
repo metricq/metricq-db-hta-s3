@@ -109,8 +109,11 @@ type entry struct {
 	Record hta.Record
 }
 type manifest struct {
+	seriesDirty      map[string]bool
+	seriesDirtyKnown bool
 	// Immutable metadata roots; the CAS object omits the hydrated maps below.
 	CheckpointState, StreamIndex, HeldState blob
+	heldPages                               heldTrees
 	seriesPages, rootPages                  metadataDirectory
 	stagingNamespace                        string
 
@@ -157,6 +160,7 @@ func aggregationConfig(c hta.Config) hta.Config {
 // Engine is one open database. All exported methods are safe for concurrent
 // use; only one Engine (one process) may own a WAL directory and store prefix.
 type Engine struct {
+	dirtySeries              map[string]bool
 	mu                       sync.Mutex
 	maintenanceMu            sync.Mutex
 	publishMu                sync.Mutex
@@ -356,6 +360,15 @@ func Open(ctx context.Context, s storage.Store, o Options, configs map[string]ht
 	success = true
 	return e, nil
 }
+
+// Caller holds mu; swap this set at checkpoint freeze, restore on failure.
+func (e *Engine) markSeriesDirty(name string) {
+	if e.dirtySeries == nil {
+		e.dirtySeries = make(map[string]bool)
+	}
+	e.dirtySeries[name] = true
+}
+
 func (e *Engine) configure(configs map[string]hta.Config) error {
 	for name, c := range configs {
 		c = aggregationConfig(c)
@@ -372,6 +385,7 @@ func (e *Engine) configure(configs map[string]hta.Config) error {
 	for name, c := range configs {
 		if _, ok := e.state.Series[name]; !ok {
 			e.state.Series[name] = hta.New(aggregationConfig(c))
+			e.markSeriesDirty(name)
 			e.state.Roots[name] = map[int64]blob{}
 		}
 	}
@@ -432,6 +446,7 @@ func (e *Engine) apply(b batch) error {
 		e.oldestWAL = b.ReceivedAt
 	}
 	s := e.state.Series[b.Metric]
+	e.markSeriesDirty(b.Metric)
 	for _, p := range b.Points {
 		if !s.Insert(p, func(r hta.Record) {
 			e.addPending(b.Metric, r)
@@ -604,6 +619,7 @@ func (e *Engine) IngestBatch(ctx context.Context, deliveries []Delivery) (int, e
 		}
 		e.sequence++
 		e.state.Series[plan.metric] = plan.series
+		e.markSeriesDirty(plan.metric)
 		for _, en := range plan.prepared {
 			e.addPending(en.Metric, en.Record)
 		}
@@ -734,6 +750,9 @@ func (e *Engine) Flush(ctx context.Context) (err error) {
 	e.flushing, e.flushingBytes = frozen, int64(frozen.records)*pendingRecordBytes
 	e.pendingBytes -= e.flushingBytes
 	e.oldestWAL = 0
+	frozenDirty := e.dirtySeries
+	next.seriesDirty, next.seriesDirtyKnown = frozenDirty, true
+	e.dirtySeries = nil
 	e.mu.Unlock()
 	refDelta := make(map[string]int64)
 	var publishedData, publishedIndex *pack
@@ -935,6 +954,9 @@ func (e *Engine) Flush(ctx context.Context) (err error) {
 	if err != nil {
 		if errors.Is(err, storage.ErrConflict) {
 			e.fatal = fmt.Errorf("another writer changed manifest: %w", err)
+		}
+		for name := range frozenDirty {
+			e.markSeriesDirty(name)
 		}
 		// The frozen records stay queryable and are retried by the next flush,
 		// together with its frozen WAL segment.

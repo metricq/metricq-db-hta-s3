@@ -152,3 +152,57 @@ func TestFailedFlushKeepsSegmentsForRetryAndReplay(t *testing.T) {
 		t.Fatalf("restart after checkpoint: %v sequence %d", got, e.sequence)
 	}
 }
+
+func TestDirtySeriesSurviveFailedFrozenCheckpoint(t *testing.T) {
+	ctx := context.Background()
+	s := &putGateStore{memoryStore: newStore()}
+	e := openTest(t, s, t.TempDir())
+	ingest(t, e, hta.Point{Time: 100, Value: 1})
+	if err := e.Flush(ctx); err != nil {
+		t.Fatal(err)
+	}
+	ingest(t, e, hta.Point{Time: 200, Value: 2})
+	s.prefix = "manifest"
+	s.entered = make(chan struct{})
+	s.release = make(chan struct{})
+	s.fail = "manifest"
+	flushed := make(chan error, 1)
+	go func() { flushed <- e.Flush(ctx) }()
+	select {
+	case <-s.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("flush never reached manifest")
+	}
+	ingest(t, e, hta.Point{Time: 300, Value: 3})
+	if err := e.Configure(map[string]hta.Config{"y": testConfig["x"]}); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Ingest(ctx, "y", chunk(hta.Point{Time: 100, Value: 4})); err != nil {
+		t.Fatal(err)
+	}
+	close(s.release)
+	if err := <-flushed; err == nil {
+		t.Fatal("failed CAS accepted")
+	}
+	if !e.dirtySeries["x"] || !e.dirtySeries["y"] {
+		t.Fatal("frozen or concurrent changes lost from dirty set")
+	}
+	s.fail = ""
+	if err := e.Flush(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(e.dirtySeries) != 0 {
+		t.Fatal("committed dirty set not cleared")
+	}
+	if err := e.Close(); err != nil {
+		t.Fatal(err)
+	}
+	recovered, err := Open(ctx, s, Options{WALDirectory: t.TempDir()}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer recovered.Close()
+	if recovered.state.Series["x"].Last.Time != 300 || recovered.state.Series["y"].Last.Time != 100 {
+		t.Fatal("S3-only recovery lost concurrent state/configuration")
+	}
+}

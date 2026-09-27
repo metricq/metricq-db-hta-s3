@@ -28,6 +28,7 @@ type Metrics struct {
 	// usage to the parameter that bounds it.
 	Config *prometheus.GaugeVec
 
+	MetadataPages      *prometheus.CounterVec // kind; encoded pages, including failed attempts
 	IngestBatches      prometheus.Counter
 	IngestBatchSize    prometheus.Histogram
 	BackpressureEvents prometheus.Counter
@@ -99,6 +100,7 @@ func NewMetrics(r prometheus.Registerer) *Metrics {
 		FlushReasons:             counterVec("checkpoint_starts_total", "Checkpoints by trigger: wal, object_target, hold_age, hold_budget or explicit.", "reason"),
 		FlushBlocks:              counterVec("checkpoint_blocks_total", "Data blocks written by checkpoints; partial blocks (below 1024 records) are future compaction work.", "size"),
 		FlushRecords:             counter("checkpoint_records_total", "Aggregated records written to data blocks by checkpoints."),
+		MetadataPages:            counterVec("checkpoint_metadata_pages_total", "Immutable metadata pages encoded, including failed publication attempts.", "kind"),
 		HeldDeltaBytes:           counter("hold_delta_bytes_total", "Bytes of held/ delta objects written by checkpoints."),
 		ManifestBytes:            gauge("store_manifest_bytes", "Size of the last published manifest."),
 		WALSegments:              gauge("wal_segments", "Local WAL segment files, including the active one."),

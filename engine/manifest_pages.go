@@ -67,6 +67,7 @@ func (e *Engine) encodeManifest(ctx context.Context, next *manifest, base manife
 				return blob{}, dir, err
 			}
 			dir.Pages[i] = p.add(b)
+			e.metrics.MetadataPages.WithLabelValues(prefix).Inc()
 		}
 		if p == nil {
 			return oldRoot, dir, nil
@@ -93,7 +94,7 @@ func (e *Engine) encodeManifest(ctx context.Context, next *manifest, base manife
 	roots := [metadataShards]map[string]map[int64]blob{}
 	for name, v := range next.Series {
 		i := metadataShard(name)
-		if base.CheckpointState.Key == "" || (v != base.Series[name] && !reflect.DeepEqual(v, base.Series[name])) {
+		if base.CheckpointState.Key == "" || (next.seriesDirtyKnown && next.seriesDirty[name]) || (!next.seriesDirtyKnown && v != base.Series[name] && !reflect.DeepEqual(v, base.Series[name])) {
 			seriesChanged[i] = true
 		}
 	}
@@ -140,32 +141,11 @@ func (e *Engine) encodeManifest(ctx context.Context, next *manifest, base manife
 	if err != nil {
 		return nil, err
 	}
-	next.HeldState = base.HeldState
-	if !reflect.DeepEqual(next.Held, base.Held) || !reflect.DeepEqual(next.HeldWatermarks, base.HeldWatermarks) || (base.HeldState.Key == "" && (len(next.Held) > 0 || len(next.HeldWatermarks) > 0)) {
-		next.HeldState = blob{}
-		if len(next.Held) > 0 || len(next.HeldWatermarks) > 0 {
-			prefix := "held-state"
-			if next.stagingNamespace != "" {
-				prefix += "/compact-" + next.stagingNamespace
-			}
-			p, err := newPack(prefix)
-			if err != nil {
-				return nil, err
-			}
-			b, err := encode(heldMetadata{next.Held, next.HeldWatermarks})
-			if err != nil {
-				return nil, err
-			}
-			next.HeldState = p.add(b)
-			absent := ""
-			if _, err = e.put(ctx, p.key, p.buf.Bytes(), &absent); err != nil {
-				return nil, err
-			}
-		}
-		if base.HeldState.Key != "" {
-			obsolete = append(obsolete, base.HeldState.Key)
-		}
+	heldObsolete, err := e.writeHeldMetadata(ctx, next, base)
+	if err != nil {
+		return nil, err
 	}
+	obsolete = append(obsolete, heldObsolete...)
 	if e.options.MaintenanceEnabled {
 		// Use the registered job namespace for crash cleanup of publication objects.
 		publisher := &Engine{store: e.store, metrics: e.metrics, activeMaintenance: next.stagingNamespace}
@@ -189,6 +169,7 @@ func (e *Engine) encodeManifest(ctx context.Context, next *manifest, base manife
 	}
 	wire.Held, wire.HeldWatermarks = nil, nil
 	next.stagingNamespace = ""
+	next.seriesDirty, next.seriesDirtyKnown = nil, false
 	return encode(wire)
 }
 
@@ -263,16 +244,5 @@ func (e *Engine) loadManifestState(ctx context.Context, m *manifest) error {
 			return err
 		}
 	}
-	if m.HeldState.Key != "" {
-		b, err := e.readBlob(ctx, m.HeldState)
-		if err != nil {
-			return err
-		}
-		var held heldMetadata
-		if err = decode(b, &held); err != nil {
-			return err
-		}
-		m.Held, m.HeldWatermarks = held.Deltas, held.Watermarks
-	}
-	return nil
+	return e.loadHeldMetadata(ctx, m)
 }

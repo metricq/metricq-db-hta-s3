@@ -109,6 +109,21 @@ S3-only restart, compaction, restart after compaction and outage backpressure.
 [layout/timing CSV](compaction-capacity-paged.csv), and
 [raw focused results](paged-manifest-and-level-locality.txt).
 
+## Final validation after the project rename
+
+At `2337487` plus the review-test changes, `go test ./...` passed in the
+renamed `metricq-db-hta-s3` repository. The focused locality tests again produced
+one GET with identical answers. The deterministic benchmark changes the raw root
+of `canonical.metric.00000`: at 1500 metrics, complete in-memory maintenance
+publication took 1.60–3.10 ms and wrote about 15.6 KB of metadata, with a
+1.05 KB CAS manifest. At 15000 metrics it took 14.0–14.4 ms.
+
+Targeted race checks for metadata recovery, GC, locality, failed jobs,
+maintenance publication, concurrent flush/ingest and query pins passed in
+11.177 seconds. The earlier full-engine race run hit its six-minute timeout
+while executing the flush-frequency profiling fixture. It reported no data
+race, but that incomplete run is **not** a passing full race suite.
+
 ## Tests and reproduction
 
 New regression tests cover whole-level packing across million-second gaps,
@@ -120,7 +135,9 @@ concurrency tests now include the state/root metadata objects.
 
 ```sh
 GOCACHE=/tmp/metricq-go-build-cache go test ./...
-GOCACHE=/tmp/metricq-go-build-cache go test -race ./engine
+GOCACHE=/tmp/metricq-go-build-cache go test -race ./engine \
+  -run '^Test(ManifestPages.*|Metadata.*|MissingOrCorrupt.*|Locality.*|FailedLocality.*|EncodedMaintenance.*|BackgroundHold.*|IngestAndQueriesContinueDuringFlushUpload|MaintenancePublicationDoesNotHoldIngestLock|CompactionConcurrentFlushReplacesOnlyExactInputs|CompactionPinsOlderObjectsAndAllowsNewQueries|CompactionPublicationWaitsForFlushAndAllowsIngest)$' \
+  -count=1 -timeout=4m
 GOCACHE=/tmp/metricq-go-build-cache go test -tags=review ./engine \
   -run '^TestReviewFullBlockQueryLocality$' -count=2 -v
 GOCACHE=/tmp/metricq-go-build-cache go test -tags=review ./engine \

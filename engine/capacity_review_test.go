@@ -104,6 +104,7 @@ func TestReviewFullBlockQueryLocality(t *testing.T) {
 			opts.IngestMemoryLimitBytes = 128 << 20
 			opts.HoldMemoryBytes = 64 << 20
 			opts.CompactionOptions.JobMaxBlocks = 512
+			opts.CompactionOptions.OutputObjectBytes = 4 << 20
 			e, err := Open(ctx, s, opts, map[string]hta.Config{"x": {IntervalMin: int64(time.Second), IntervalMax: int64(100000 * time.Second), IntervalFactor: 10}}, nil)
 			if err != nil {
 				t.Fatal(err)
@@ -169,6 +170,17 @@ func TestReviewFullBlockQueryLocality(t *testing.T) {
 			}
 			t.Logf("completed compactions=%d", e.compactionCompletions-before)
 			measure("after")
+			if flushes == 16 {
+				e.sharedNodes = newIndexPageCache()
+				e.sharedBlocks = newDataBlockCache()
+				s.dataGets.Store(0)
+				if _, err := e.Query(ctx, "x", req); err != nil {
+					t.Fatal(err)
+				}
+				if got := s.dataGets.Load(); got != 1 {
+					t.Fatalf("locality compaction retains %d data GETs", got)
+				}
+			}
 		})
 	}
 }
@@ -247,6 +259,61 @@ func TestReviewHoldExpiryPublications(t *testing.T) {
 					t.Fatalf("response %v %v", r, err)
 				}
 			}
+		})
+	}
+}
+
+// Include immutable-page uploads in the maintenance cost, rather than timing
+// only the now-small final CAS object. The backend has no network latency.
+func BenchmarkReviewPagedMaintenance(b *testing.B) {
+	for _, n := range []int{150, 1500, 15000} {
+		b.Run(fmt.Sprintf("metrics=%d", n), func(b *testing.B) {
+			ctx := context.Background()
+			store := newStore()
+			opened, err := Open(ctx, store, Options{WALDirectory: b.TempDir()}, nil, nil)
+			if err != nil {
+				b.Fatal(err)
+			}
+			defer opened.Close()
+			opened.options.MaintenanceEnabled = true
+			base := capacityManifest(n)
+			if _, err = opened.encodeManifest(ctx, &base, manifest{}); err != nil {
+				b.Fatal(err)
+			}
+			name := "canonical.metric.00000"
+			b.ReportAllocs()
+			b.ResetTimer()
+			var manifestSize int
+			var putBytes int64
+			for i := 0; i < b.N; i++ {
+				next := cloneMaintenanceManifest(base)
+				next.Generation++
+				copied := make(map[int64]blob, len(next.Roots[name]))
+				for level, ref := range next.Roots[name] {
+					copied[level] = ref
+				}
+				next.Roots[name] = copied
+				ref := next.Roots[name][0]
+				ref.Hash = sha256.Sum256([]byte(fmt.Sprintf("root-%d", i)))
+				next.Roots[name][0] = ref
+				oldKeys := make(map[string]bool, len(store.objects))
+				for key := range store.objects {
+					oldKeys[key] = true
+				}
+				encoded, err := opened.encodeManifest(ctx, &next, base)
+				if err != nil {
+					b.Fatal(err)
+				}
+				manifestSize = len(encoded)
+				for key, bytes := range store.objects {
+					if !oldKeys[key] {
+						putBytes += int64(len(bytes))
+					}
+				}
+				base = next
+			}
+			b.ReportMetric(float64(manifestSize), "manifest-B")
+			b.ReportMetric(float64(putBytes)/float64(b.N), "metadata-PUT-B/op")
 		})
 	}
 }

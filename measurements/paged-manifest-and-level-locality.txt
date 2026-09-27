@@ -451,3 +451,58 @@ Legacy parity:
     --- PASS: TestLegacyRequestParity/compacted (25.47s)
     --- PASS: TestLegacyRequestParity/compacted-S3-restart (25.53s)
     --- PASS: TestLegacyRequestParity/S3-outage-backpressure (6.65s)
+
+Final checks after rename to metricq-db-hta-s3:
+?   	github.com/metricq/metricq-db-hta-s3/cmd/check-ceph-s3	[no test files]
+ok  	github.com/metricq/metricq-db-hta-s3/cmd/metricq-db-hta-s3	0.011s
+?   	github.com/metricq/metricq-db-hta-s3/cmd/metricq-db-hta-s3-wal-repair	[no test files]
+ok  	github.com/metricq/metricq-db-hta-s3/engine	36.073s
+ok  	github.com/metricq/metricq-db-hta-s3/hta	0.004s
+ok  	github.com/metricq/metricq-db-hta-s3/storage	0.013s
+
+Targeted race checks:
+ok  	github.com/metricq/metricq-db-hta-s3/engine	11.177s
+
+Current review fixture and deterministic benchmark:
+=== RUN   TestReviewFullBlockQueryLocality
+=== RUN   TestReviewFullBlockQueryLocality/flushes=16
+    capacity_review_test.go:162: before cold FLEX: median=8.004663ms data_GETs=9.0 data_bytes=254915 rows=1000 candidates=1
+    capacity_review_test.go:171: completed compactions=5
+    capacity_review_test.go:162: after cold FLEX: median=8.139023ms data_GETs=1.0 data_bytes=254915 rows=1000 candidates=0
+=== RUN   TestReviewFullBlockQueryLocality/flushes=1
+    capacity_review_test.go:162: before cold FLEX: median=6.919669ms data_GETs=1.0 data_bytes=254915 rows=1000 candidates=0
+    capacity_review_test.go:171: completed compactions=0
+    capacity_review_test.go:162: after cold FLEX: median=6.487023ms data_GETs=1.0 data_bytes=254915 rows=1000 candidates=0
+--- PASS: TestReviewFullBlockQueryLocality (0.55s)
+    --- PASS: TestReviewFullBlockQueryLocality/flushes=16 (0.32s)
+    --- PASS: TestReviewFullBlockQueryLocality/flushes=1 (0.23s)
+=== RUN   TestReviewFullBlockQueryLocality
+=== RUN   TestReviewFullBlockQueryLocality/flushes=16
+    capacity_review_test.go:162: before cold FLEX: median=9.590389ms data_GETs=9.0 data_bytes=254915 rows=1000 candidates=1
+    capacity_review_test.go:171: completed compactions=5
+    capacity_review_test.go:162: after cold FLEX: median=7.744557ms data_GETs=1.0 data_bytes=254915 rows=1000 candidates=0
+=== RUN   TestReviewFullBlockQueryLocality/flushes=1
+    capacity_review_test.go:162: before cold FLEX: median=6.658453ms data_GETs=1.0 data_bytes=254915 rows=1000 candidates=0
+    capacity_review_test.go:171: completed compactions=0
+    capacity_review_test.go:162: after cold FLEX: median=7.310028ms data_GETs=1.0 data_bytes=254915 rows=1000 candidates=0
+--- PASS: TestReviewFullBlockQueryLocality (0.68s)
+    --- PASS: TestReviewFullBlockQueryLocality/flushes=16 (0.44s)
+    --- PASS: TestReviewFullBlockQueryLocality/flushes=1 (0.25s)
+goos: linux
+goarch: amd64
+pkg: github.com/metricq/metricq-db-hta-s3/engine
+cpu: AMD Ryzen 7 PRO 4750U with Radeon Graphics
+BenchmarkReviewPagedMaintenance
+BenchmarkReviewPagedMaintenance/metrics=150
+BenchmarkReviewPagedMaintenance/metrics=150-16         	       5	   1977094 ns/op	      1060 manifest-B	      6736 metadata-PUT-B/op	  256012 B/op	     205 allocs/op
+BenchmarkReviewPagedMaintenance/metrics=150-16         	       5	   2088718 ns/op	      1055 manifest-B	      6760 metadata-PUT-B/op	  256366 B/op	     203 allocs/op
+BenchmarkReviewPagedMaintenance/metrics=1500
+BenchmarkReviewPagedMaintenance/metrics=1500-16        	       5	   1598710 ns/op	      1050 manifest-B	     15604 metadata-PUT-B/op	  409960 B/op	     269 allocs/op
+BenchmarkReviewPagedMaintenance/metrics=1500-16        	       5	   3104149 ns/op	      1052 manifest-B	     15660 metadata-PUT-B/op	  410822 B/op	     267 allocs/op
+BenchmarkReviewPagedMaintenance/metrics=15000
+BenchmarkReviewPagedMaintenance/metrics=15000-16       	       5	  13996595 ns/op	      1064 manifest-B	     52623 metadata-PUT-B/op	 1814364 B/op	    1451 allocs/op
+BenchmarkReviewPagedMaintenance/metrics=15000-16       	       5	  14399056 ns/op	      1058 manifest-B	     52668 metadata-PUT-B/op	 1814243 B/op	    1449 allocs/op
+PASS
+ok  	github.com/metricq/metricq-db-hta-s3/engine	5.482s
+
+Full-engine race caveat: the earlier run hit the six-minute timeout in TestProfileFlushFrequencyVsBlockCount; no data race was reported, but this was not a completed passing suite.

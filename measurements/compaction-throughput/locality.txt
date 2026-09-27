@@ -1,0 +1,14 @@
+=== RUN   TestReviewFullBlockQueryLocality
+=== RUN   TestReviewFullBlockQueryLocality/flushes=16
+    capacity_review_test.go:162: before cold FLEX: median=10.492631ms data_GETs=9.0 data_bytes=254915 rows=1000 candidates=1
+    capacity_review_test.go:171: completed compactions=3
+    capacity_review_test.go:162: after cold FLEX: median=8.082156ms data_GETs=1.0 data_bytes=254915 rows=1000 candidates=0
+=== RUN   TestReviewFullBlockQueryLocality/flushes=1
+    capacity_review_test.go:162: before cold FLEX: median=6.49854ms data_GETs=1.0 data_bytes=254915 rows=1000 candidates=0
+    capacity_review_test.go:171: completed compactions=0
+    capacity_review_test.go:162: after cold FLEX: median=7.627921ms data_GETs=1.0 data_bytes=254915 rows=1000 candidates=0
+--- PASS: TestReviewFullBlockQueryLocality (0.63s)
+    --- PASS: TestReviewFullBlockQueryLocality/flushes=16 (0.38s)
+    --- PASS: TestReviewFullBlockQueryLocality/flushes=1 (0.25s)
+PASS
+ok  	github.com/metricq/metricq-db-hta-s3/engine	0.643s

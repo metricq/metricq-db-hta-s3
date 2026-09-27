@@ -184,3 +184,21 @@ Inventory-only checkpoints should not increase `held-watermarks`. Use
 `metricq_db_store_bytes_total{op="put",kind="held-state"}` and
 `metricq_db_store_requests_total` for physical traffic, rather than estimating
 it from page counts. Maintenance reuses unchanged held metadata.
+
+## Compaction phases and caches
+
+`metricq_db_compaction_job_seconds` now measures the whole attempt, including
+selection and no-op attempts. `metricq_db_compaction_active` also covers
+selection. Use `metricq_db_compaction_phase_seconds{phase}` to distinguish:
+`select` (including reservation), `copy_merge`, `prepare`, `index`, `catalog`,
+`publish_wait`, `publish_locked` and `pace`. The index/catalog phases are nested
+inside preparation, which is nested inside the publication lock. Their sums
+must not be added as independent costs. Phase observations for index/catalog
+currently cover successful completion; a failed preparation remains visible in
+`prepare` and the error counter.
+
+`metricq_db_metadata_cache_requests_total{kind,result}` reports direct decoded
+catalog/index cache hits and misses. Prefetched index misses and pinned/local
+index hits are not included; physical store counters remain authoritative.
+`metricq_db_compaction_deferred_merges_total` counts inspected large-tail merge
+candidates deferred for insufficient growth, not distinct pending jobs.

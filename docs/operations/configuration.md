@@ -72,6 +72,7 @@ integers. Option names start with the area they affect: `wal_`,
     "hold_expiry_interval_seconds": 30,
     "query_max_rows": 1000000,
     "compaction_enabled": true,
+    "compaction_continuous": false,
     "compaction_cycle_interval_seconds": 60,
     "compaction_cycle_max_seconds": 30,
     "compaction_job_timeout_seconds": 60,
@@ -119,6 +120,7 @@ integers. Option names start with the area they affect: `wal_`,
 | Key | Default | Constraint | Meaning |
 | --- | --- | --- | --- |
 | `compaction_enabled` | true (executable) | | Run compaction |
+| `compaction_continuous` | false | | Resume a remaining backlog immediately and wake on checkpoints; I/O budget and WAL pressure still apply |
 | `compaction_cycle_interval_seconds` | 60 | ≥ 1 | Period of compaction cycles |
 | `compaction_cycle_max_seconds` | 30 (executable), 10 | 1–3600 | Consecutive jobs are started within this window per cycle |
 | `compaction_job_timeout_seconds` | 60 | 1–3600 | Timeout of one job |

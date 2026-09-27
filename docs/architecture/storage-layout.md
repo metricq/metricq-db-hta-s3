@@ -84,6 +84,25 @@ contain (metric, level, address, record count). It tells compaction and GC
 which bytes of an object are still referenced. The candidate tree indexes
 objects worth compacting: partly dead objects and objects with small blocks.
 
+### Paged object inventories
+
+An object with more than 128 live data/index descriptors stores them in immutable
+inventory pages referenced by its catalog entry. The entry retains physical
+size, live bytes, timestamps and page bounds/counts; its on-wire `Blocks` field
+is empty. Older inline entries remain readable and are paged when updated.
+Page bounds use offsets in the owning immutable object. Deleting descriptors
+preserves those bounds, so later pages do not shift and need no rewriting.
+Partial catalog bootstrap can add newly discovered descriptors.
+
+A changed object's inventory pages share their own pack (4 MiB target, up to
+32 MiB for a single page). Packs are not shared between different objects;
+retirement can check all remaining page references of that one object without a
+catalog-wide reachability scan. Missing, corrupted or invalid inventories fail
+the catalog read; complete inventories are hydrated into the bounded decoded
+catalog cache. They are maintenance metadata and add no history-query lookups.
+All inventory uploads precede the atomic manifest publication. Compaction output
+uses its registered `catalog/compact-<job>/` namespace for failure cleanup.
+
 ## Deletion journal
 
 Objects are never deleted directly. A publication that retires objects appends

@@ -87,3 +87,33 @@ around the number of streams is healthy; only a steady rise means compaction
 falls behind. `checkpoint_blocks_total{size="partial"}` is the inflow of new
 fragments; `compaction_input_blocks_total − compaction_output_blocks_total`
 is the outflow.
+
+### Compaction throughput and metadata
+
+`compaction_continuous=true` wakes the background worker after a successful
+checkpoint and resumes a remaining backlog after the cycle start window.
+The default is false. Enable it when the idle interval limits backlog removal;
+the shared I/O limiter remains active across consecutive cycles. WAL pressure,
+a due checkpoint, interrupted jobs, no useful work and cancellation stop the
+continuation. More CPU time can then be spent on maintenance; check query and
+ACK latency as well as completed jobs.
+
+The compactor shares a 32 MiB decoded catalog LRU across phases, prefetches
+known needed index pages with coalesced checked ranges, and publishes several
+consecutive metric/level sections per locality job within the same source
+budgets. Merge compression uses at most eight workers inside the single
+coordinator. It never groups by time windows.
+
+With a positive merge cooldown, a partial block with at least 256 records gains
+at least 25% before another merge. A prefix that cannot fit its next block is
+finished immediately. Sparse tails become eligible after at least one hour
+(or four cooldown periods, whichever is greater) without newer source data.
+Zero cooldown keeps aggressive consolidation. This limits repeated tail writes,
+while allowing a query to temporarily read additional fragments.
+
+Large catalog inventories use immutable pages of up to 128 descriptors. Editing
+a few blocks no longer rewrites the complete inventory, but may increase PUT
+count. Partly live metadata packs are retained until their last page is retired.
+The [throughput measurement](../../measurements/compaction-throughput.md) records
+both bytes and requests; it is a local S3 fragmentation fixture, not a sustained
+production capacity guarantee.

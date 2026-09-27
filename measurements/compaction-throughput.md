@@ -128,3 +128,7 @@ go test -tags integration ./integration -run '^TestLegacyRequestParity$' \
 unique test buckets and cleans up its objects. For the baseline, run the same
 compaction fixture in an isolated checkout of `8cc1f37`; its original fixture
 does not contain the new phase/cache metrics or HTTP scrape helper.
+
+The inventory-upload experiment has now been implemented and measured in
+[inventory-upload-pipeline.md](inventory-upload-pipeline.md). Its local comparison
+reduces catalog-phase time but does not show an overall throughput gain.

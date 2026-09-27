@@ -1,0 +1,8 @@
+    compare_test.go:521: Compared 2875 legacy/Go response pairs, including all four request types, smoothing, boundaries, gaps and recovery
+--- PASS: TestLegacyRequestParity (148.28s)
+    --- PASS: TestLegacyRequestParity/hot (26.12s)
+    --- PASS: TestLegacyRequestParity/WAL-restart (26.56s)
+    --- PASS: TestLegacyRequestParity/S3-restart (25.94s)
+    --- PASS: TestLegacyRequestParity/compacted (25.91s)
+    --- PASS: TestLegacyRequestParity/compacted-S3-restart (25.97s)
+    --- PASS: TestLegacyRequestParity/S3-outage-backpressure (6.80s)

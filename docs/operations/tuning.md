@@ -113,7 +113,20 @@ while allowing a query to temporarily read additional fragments.
 
 Large catalog inventories use immutable pages of up to 128 descriptors. Editing
 a few blocks no longer rewrites the complete inventory, but may increase PUT
-count. Partly live metadata packs are retained until their last page is retired.
+count. Inventory packs upload through a bounded pipeline with at most four
+in-flight PUTs. Preparation and staging-key registration stay serial; no pack
+shares inventory pages between owners. Normal packs target 4 MiB, so four
+uploads plus the currently prepared pack retain roughly 20 MiB of encoded
+payload; buffer capacity and encoding scratch use additional memory. A single
+exceptional page may reach 32 MiB; this is a per-pack limit,
+not a total memory limit. Errors cancel the queue, join all workers and prevent
+publication; failed PUTs are not retried. The catalog is written only after all
+inventory uploads succeed. Partly live metadata packs are retained until their
+last page is retired.
 The [throughput measurement](../../measurements/compaction-throughput.md) records
 both bytes and requests; it is a local S3 fragmentation fixture, not a sustained
 production capacity guarantee.
+
+The [inventory upload comparison](../../measurements/inventory-upload-pipeline.md)
+measures the four-slot pipeline separately: catalog-phase latency decreases,
+while total local compaction/GC time remains effectively unchanged.

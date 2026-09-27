@@ -1,0 +1,37 @@
+    compaction_test.go:162: converged after 121 bounded passes
+    compaction_meter_test.go:80: maintenance IO DELETE candidates: calls=203 bytes=0 sum_request_seconds=0.953
+    compaction_meter_test.go:80: maintenance IO DELETE catalog: calls=1733 bytes=0 sum_request_seconds=7.909
+    compaction_meter_test.go:80: maintenance IO DELETE data: calls=88 bytes=0 sum_request_seconds=0.462
+    compaction_meter_test.go:80: maintenance IO DELETE index: calls=117 bytes=0 sum_request_seconds=0.614
+    compaction_meter_test.go:80: maintenance IO DELETE jobs: calls=135 bytes=0 sum_request_seconds=0.646
+    compaction_meter_test.go:80: maintenance IO DELETE roots: calls=120 bytes=0 sum_request_seconds=0.629
+    compaction_meter_test.go:80: maintenance IO DELETE trash: calls=215 bytes=0 sum_request_seconds=0.901
+    compaction_meter_test.go:80: maintenance IO PUT candidates: calls=205 bytes=323089 sum_request_seconds=0.971
+    compaction_meter_test.go:80: maintenance IO PUT catalog: calls=1781 bytes=11959201 sum_request_seconds=9.547
+    compaction_meter_test.go:80: maintenance IO PUT data: calls=114 bytes=15285136 sum_request_seconds=1.081
+    compaction_meter_test.go:80: maintenance IO PUT index: calls=149 bytes=17128468 sum_request_seconds=1.291
+    compaction_meter_test.go:80: maintenance IO PUT jobs: calls=135 bytes=5719606 sum_request_seconds=0.821
+    compaction_meter_test.go:80: maintenance IO PUT manifest: calls=281 bytes=410009 sum_request_seconds=2.027
+    compaction_meter_test.go:80: maintenance IO PUT roots: calls=135 bytes=18973989 sum_request_seconds=1.338
+    compaction_meter_test.go:80: maintenance IO PUT trash: calls=215 bytes=140811 sum_request_seconds=1.066
+    compaction_meter_test.go:80: maintenance IO RANGE catalog: calls=74 bytes=2484317 sum_request_seconds=0.146
+    compaction_meter_test.go:80: maintenance IO RANGE data: calls=571 bytes=28537166 sum_request_seconds=1.699
+    compaction_meter_test.go:80: maintenance IO RANGE index: calls=2533 bytes=50525946 sum_request_seconds=4.531
+    compaction_meter_test.go:80: maintenance IO RANGE jobs: calls=135 bytes=5719606 sum_request_seconds=0.272
+    compaction_meter_test.go:80: maintenance IO RANGE trash: calls=224 bytes=148366 sum_request_seconds=0.291
+    compaction_metrics_test.go:59: Prometheus scrapes=31 failures=0
+    compaction_metrics_test.go:78: phase phase=catalog count=135 seconds=4.132356
+    compaction_metrics_test.go:78: phase phase=copy_merge count=135 seconds=3.711926
+    compaction_metrics_test.go:78: phase phase=index count=135 seconds=3.776258
+    compaction_metrics_test.go:78: phase phase=pace count=135 seconds=0.000121
+    compaction_metrics_test.go:78: phase phase=prepare count=135 seconds=10.320988
+    compaction_metrics_test.go:78: phase phase=publish_locked count=135 seconds=15.517155
+    compaction_metrics_test.go:78: phase phase=publish_wait count=135 seconds=0.000110
+    compaction_metrics_test.go:78: phase phase=select count=153 seconds=9.157588
+    compaction_metrics_test.go:81: cache kind=catalog,result=hit calls=51669
+    compaction_metrics_test.go:81: cache kind=catalog,result=miss calls=29
+    compaction_metrics_test.go:81: cache kind=index,result=hit calls=48141
+    compaction_metrics_test.go:81: cache kind=index,result=miss calls=2360
+    compaction_test.go:227: data/index bytes 21852231 -> 6738258; raw blocks 12000 -> 1500; 30.32s; 24 response comparisons
+--- PASS: TestCompactionS3 (62.85s)
+    --- PASS: TestCompactionS3/1500 (62.85s)

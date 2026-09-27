@@ -100,7 +100,12 @@ retirement can check all remaining page references of that one object without a
 catalog-wide reachability scan. Missing, corrupted or invalid inventories fail
 the catalog read; complete inventories are hydrated into the bounded decoded
 catalog cache. They are maintenance metadata and add no history-query lookups.
-All inventory uploads precede the atomic manifest publication. Compaction output
+Inventory preparation and staging registration are serial. Up to four immutable
+packs upload concurrently, overlapping PUT latency with preparation of the next
+object. All inventory uploads must succeed before the catalog root is written
+and the manifest is published. An error cancels and joins the upload workers;
+no failed request is retried and no new inventory reference is published.
+Compaction output
 uses its registered `catalog/compact-<job>/` namespace for failure cleanup.
 
 ## Deletion journal

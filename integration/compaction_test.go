@@ -7,6 +7,7 @@ import (
 	"encoding/csv"
 	"fmt"
 	"os"
+	"runtime/pprof"
 	"strconv"
 	"strings"
 	"testing"
@@ -16,6 +17,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/metricq/metricq-db-hta-go/engine"
 	"github.com/metricq/metricq-db-hta-go/hta"
+	"github.com/metricq/metricq-db-hta-go/storage"
 	metricq "github.com/metricq/metricq-go"
 )
 
@@ -44,7 +46,8 @@ func TestCompactionS3(t *testing.T) {
 	for _, count := range counts {
 		t.Run(fmt.Sprint(count), func(t *testing.T) {
 			id := fmt.Sprintf("hta-compact-%d-%d", time.Now().UnixNano(), count)
-			backend, client := newS3(t, ctx, id)
+			rawBackend, client := newS3(t, ctx, id)
+			backend := &compactionMeter{S3: rawBackend.(*storage.S3)}
 			configs := make(map[string]hta.Config)
 			name := func(i int) string { return fmt.Sprintf("canonical.%05d", i) }
 			for i := 0; i < count; i++ {
@@ -131,6 +134,18 @@ func TestCompactionS3(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			if path := os.Getenv("METRICQ_COMPACTION_CPU_PROFILE"); path != "" {
+				f, err := os.Create(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer f.Close()
+				if err := pprof.StartCPUProfile(f); err != nil {
+					t.Fatal(err)
+				}
+				defer pprof.StopCPUProfile()
+			}
+			backend.reset()
 			started := time.Now()
 			passes := 512
 			for i := 0; i < passes; i++ {
@@ -160,6 +175,10 @@ func TestCompactionS3(t *testing.T) {
 				t.Fatal("GC backlog remained")
 			}
 			elapsed := time.Since(started).Seconds()
+			if os.Getenv("METRICQ_COMPACTION_CPU_PROFILE") != "" {
+				pprof.StopCPUProfile()
+			}
+			backend.report(t)
 			after := physical()
 			layoutAfter, err := auditLayout(ctx, backend)
 			if err != nil {

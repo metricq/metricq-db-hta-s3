@@ -1,0 +1,69 @@
+Manifest benchmarks (the earlier wide-query probe is omitted; see 1000-position probe below):
+goos: linux
+goarch: amd64
+pkg: github.com/metricq/metricq-db-hta-go/engine
+cpu: AMD Ryzen 7 PRO 4750U with Radeon Graphics
+BenchmarkReviewManifest
+BenchmarkReviewManifest/metrics=150
+BenchmarkReviewManifest/metrics=150/clone
+BenchmarkReviewManifest/metrics=150/clone-16   	       5	    474493 ns/op	  324080 B/op	    1059 allocs/op
+BenchmarkReviewManifest/metrics=150/clone-16   	       5	    467213 ns/op	  324080 B/op	    1059 allocs/op
+BenchmarkReviewManifest/metrics=150/encode
+BenchmarkReviewManifest/metrics=150/encode-16  	       5	  11406356 ns/op	    113521 manifest-B	 1884835 B/op	    5478 allocs/op
+BenchmarkReviewManifest/metrics=150/encode-16  	       5	  11235857 ns/op	    113490 manifest-B	 1884360 B/op	    5478 allocs/op
+BenchmarkReviewManifest/metrics=1500
+BenchmarkReviewManifest/metrics=1500/clone
+BenchmarkReviewManifest/metrics=1500/clone-16  	       5	   6100490 ns/op	 3217360 B/op	   10513 allocs/op
+BenchmarkReviewManifest/metrics=1500/clone-16  	       5	   6806102 ns/op	 3217360 B/op	   10513 allocs/op
+BenchmarkReviewManifest/metrics=1500/encode
+BenchmarkReviewManifest/metrics=1500/encode-16 	       5	  91899637 ns/op	   1126322 manifest-B	19670001 B/op	   54093 allocs/op
+BenchmarkReviewManifest/metrics=1500/encode-16 	       5	  93559785 ns/op	   1126606 manifest-B	19428590 B/op	   54089 allocs/op
+BenchmarkReviewManifest/metrics=15000
+BenchmarkReviewManifest/metrics=15000/clone
+BenchmarkReviewManifest/metrics=15000/clone-16 	       5	  60171670 ns/op	32827600 B/op	  105133 allocs/op
+BenchmarkReviewManifest/metrics=15000/clone-16 	       5	  63826916 ns/op	32827600 B/op	  105133 allocs/op
+BenchmarkReviewManifest/metrics=15000/encode
+BenchmarkReviewManifest/metrics=15000/encode-16         	       5	 503943427 ns/op	  11312259 manifest-B	181100113 B/op	  540106 allocs/op
+BenchmarkReviewManifest/metrics=15000/encode-16         	       5	 443930225 ns/op	  11311391 manifest-B	180858692 B/op	  540102 allocs/op
+PASS
+ok  	github.com/metricq/metricq-db-hta-go/engine	11.484s
+
+1000-position cold query locality (append-only aggregates enabled):
+=== RUN   TestReviewFullBlockQueryLocality
+=== RUN   TestReviewFullBlockQueryLocality/flushes=16
+    capacity_review_test.go:161: before cold FLEX: median=9.140873ms data_GETs=9.0 data_bytes=254915 rows=1000 candidates=1
+    capacity_review_test.go:170: completed compactions=1
+    capacity_review_test.go:161: after cold FLEX: median=9.524163ms data_GETs=9.0 data_bytes=254915 rows=1000 candidates=0
+=== RUN   TestReviewFullBlockQueryLocality/flushes=1
+    capacity_review_test.go:161: before cold FLEX: median=7.201389ms data_GETs=1.0 data_bytes=254915 rows=1000 candidates=0
+    capacity_review_test.go:170: completed compactions=0
+    capacity_review_test.go:161: after cold FLEX: median=7.661113ms data_GETs=1.0 data_bytes=254915 rows=1000 candidates=0
+--- PASS: TestReviewFullBlockQueryLocality (0.58s)
+    --- PASS: TestReviewFullBlockQueryLocality/flushes=16 (0.32s)
+    --- PASS: TestReviewFullBlockQueryLocality/flushes=1 (0.25s)
+=== RUN   TestReviewFullBlockQueryLocality
+=== RUN   TestReviewFullBlockQueryLocality/flushes=16
+    capacity_review_test.go:161: before cold FLEX: median=9.749746ms data_GETs=9.0 data_bytes=254915 rows=1000 candidates=1
+    capacity_review_test.go:170: completed compactions=1
+    capacity_review_test.go:161: after cold FLEX: median=8.916842ms data_GETs=9.0 data_bytes=254915 rows=1000 candidates=0
+=== RUN   TestReviewFullBlockQueryLocality/flushes=1
+    capacity_review_test.go:161: before cold FLEX: median=6.944627ms data_GETs=1.0 data_bytes=254915 rows=1000 candidates=0
+    capacity_review_test.go:170: completed compactions=0
+    capacity_review_test.go:161: after cold FLEX: median=6.189598ms data_GETs=1.0 data_bytes=254915 rows=1000 candidates=0
+--- PASS: TestReviewFullBlockQueryLocality (0.61s)
+    --- PASS: TestReviewFullBlockQueryLocality/flushes=16 (0.39s)
+    --- PASS: TestReviewFullBlockQueryLocality/flushes=1 (0.22s)
+PASS
+ok  	github.com/metricq/metricq-db-hta-go/engine	1.198s
+
+Staggered held expiry:
+=== RUN   TestReviewHoldExpiryPublications
+=== RUN   TestReviewHoldExpiryPublications/check_every_1s
+    capacity_review_test.go:233: expiry-only: manifest_PUTs=120 manifest_bytes=7852408 wall=4.06665948s remaining_held_records=4140
+=== RUN   TestReviewHoldExpiryPublications/check_every_30s
+    capacity_review_test.go:233: expiry-only: manifest_PUTs=4 manifest_bytes=262617 wall=173.940908ms remaining_held_records=4140
+--- PASS: TestReviewHoldExpiryPublications (4.62s)
+    --- PASS: TestReviewHoldExpiryPublications/check_every_1s (4.24s)
+    --- PASS: TestReviewHoldExpiryPublications/check_every_30s (0.38s)
+PASS
+ok  	github.com/metricq/metricq-db-hta-go/engine	4.646s

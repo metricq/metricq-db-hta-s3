@@ -39,8 +39,9 @@ so concurrent readers keep a consistent view.
 The manifest does not contain per-metric data. Open HTA state and index roots
 are stored in 256 hash-partitioned pages each (`state/`, `roots/`), addressed
 through a directory. A change writes one pack with the changed pages and a new
-directory, so the size of a publication is independent of the number of
-metrics.
+directory. This bounds PUT count per changed metadata kind; the bytes written
+still depend on how many pages change and how much state those pages contain.
+With input on every metric, most Series pages can change at every checkpoint.
 
 ## Catalog
 

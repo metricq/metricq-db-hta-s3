@@ -30,6 +30,12 @@ hour by default. The example configuration uses a 512 MiB hold budget and a
 
 ## Measurement
 
+Historical measurement, before paged checkpoint metadata was introduced. The
+90 MB/hour manifest figure below does not describe the current approximately
+1 KB CAS manifest. Current ingestion must account for `state/`, `roots/` and
+`held-state/` writes separately; see the
+[further metadata-write reduction plan](../docs/development/metadata-write-plan.md).
+
 Engine-level simulation with a simulated clock and a file-backed object store:
 1500 metrics for one hour (100 at 10 Hz, 900 at 1 Hz, 300 at 1/10 s, 150 at
 1/min, 40 at 1/h, 10 at 1/day, about 1,930 points/s), HTA `interval_min` 1 s,

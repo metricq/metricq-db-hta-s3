@@ -59,7 +59,7 @@ The later commits `e98d8bd` (parallel decoding within coalesced ranges),
 ingestion lock) were committed after this run and are not represented here.
 
 Reproduction uses the environment in [latency-scale.md](latency-scale.md),
-with `METRICQ_BENCH_OUTPUT=docs/latency-scale-f23c0ed.csv` and the source
+with `METRICQ_BENCH_OUTPUT=measurements/latency-scale-f23c0ed.csv` and the source
 revision stated above. The full command uses 22,000,000 samples per metric,
 2 Hz, `METRICQ_BENCH_LOG_SPANS=0.1,10000000,50`, an HTA maximum of
 10,000,000 seconds, a 128 MiB object target, a 256 MiB WAL target and

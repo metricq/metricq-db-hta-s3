@@ -152,19 +152,19 @@ Run the default comparison:
 ```sh
 docker compose -f compose.test.yml up -d
 METRICQ_CARDINALITY_LISTEN=127.0.0.1:19091 \
-METRICQ_CARDINALITY_OUTPUT=docs/cardinality.csv \
-METRICQ_CARDINALITY_QUERY_OUTPUT=docs/cardinality-queries.csv \
+METRICQ_CARDINALITY_OUTPUT=measurements/cardinality.csv \
+METRICQ_CARDINALITY_QUERY_OUTPUT=measurements/cardinality-queries.csv \
   go test -v -tags=integration ./integration \
   -run '^TestMetricCardinality$' -count=1 -timeout=60m
 MPLCONFIGDIR=/tmp/metricq-matplotlib python3 scripts/plot-cardinality.py \
-  docs/cardinality.csv docs/cardinality-queries.csv docs/cardinality.svg
+  measurements/cardinality.csv measurements/cardinality-queries.csv measurements/cardinality.svg
 docker compose -f compose.test.yml down
 ```
 
 For the cache-sized workload, set `METRICQ_CARDINALITY_POINTS=1024`,
 `METRICQ_CARDINALITY_CHUNK=64` and `METRICQ_CARDINALITY_REPETITIONS=10`, with
-output names `docs/cardinality-cache.csv` and
-`docs/cardinality-cache-queries.csv`. Pass `timeline-1000` as the fourth
+output names `measurements/cardinality-cache.csv` and
+`measurements/cardinality-cache-queries.csv`. Pass `timeline-1000` as the fourth
 argument to the plot script. Keep the remaining limits fixed. Runtime and
 S3 read/write volume can grow substantially. `METRICQ_CARDINALITY_METRICS`, `METRICQ_CARDINALITY_CHUNK`,
 `METRICQ_CARDINALITY_REPETITIONS`, `METRICQ_CARDINALITY_OBJECT_TARGET_BYTES`,

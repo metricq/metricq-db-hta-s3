@@ -1,0 +1,55 @@
+site_name: metricq-db-hta-go
+site_description: MetricQ HTA history database storing aggregated time series in S3
+docs_dir: docs
+site_dir: public
+strict: true
+
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - navigation.top
+    - content.code.copy
+    - search.highlight
+  palette:
+    - scheme: default
+      toggle: {icon: material/brightness-7, name: Dark mode}
+    - scheme: slate
+      toggle: {icon: material/brightness-4, name: Light mode}
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+
+nav:
+  - Overview: index.md
+  - Architecture:
+      - Components: architecture/overview.md
+      - Data model: architecture/data-model.md
+      - Storage layout: architecture/storage-layout.md
+      - Write path: architecture/write-path.md
+      - Read path: architecture/read-path.md
+      - Maintenance: architecture/maintenance.md
+      - Durability and recovery: architecture/durability.md
+  - Operations:
+      - Requirements: operations/requirements.md
+      - Sizing: operations/sizing.md
+      - Deployment: operations/deployment.md
+      - Configuration: operations/configuration.md
+      - Tuning: operations/tuning.md
+      - Monitoring: operations/monitoring.md
+      - Troubleshooting: operations/troubleshooting.md
+  - Development:
+      - Code structure: development/code-structure.md
+      - Testing and benchmarks: development/testing.md

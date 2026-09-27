@@ -53,7 +53,7 @@ METRICQ_INGEST_WAL_DIR=$HOME/.cache/metricq-ingest-wal \
 METRICQ_INGEST_POINTS=1000000 \
 METRICQ_INGEST_PREFETCH=10,50,100,200,400,1000,2000,5000 \
 METRICQ_INGEST_MODES=batch,single \
-METRICQ_INGEST_OUTPUT=docs/ingest-group-commit.csv \
+METRICQ_INGEST_OUTPUT=measurements/ingest-group-commit.csv \
   go test -tags=integration ./integration -run '^TestIngestThroughput$' -count=1 -v -timeout=50m
 ```
 

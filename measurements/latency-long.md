@@ -60,10 +60,10 @@ METRICQ_BENCH_RATE_HZ=10 \
 METRICQ_BENCH_SPANS=1,10,100,1000,10000,50000 \
 METRICQ_BENCH_OBJECT_TARGET_BYTES=8388608 \
 METRICQ_BENCH_REPETITIONS=20 \
-METRICQ_BENCH_OUTPUT=docs/latency-long.csv \
+METRICQ_BENCH_OUTPUT=measurements/latency-long.csv \
   go test -tags=integration ./integration -run '^TestRequestLatency$' -count=1 -timeout=45m
 MPLCONFIGDIR=/tmp/metricq-matplotlib python3 scripts/plot-latency.py \
-  docs/latency-long.csv docs/latency-long.svg
+  measurements/latency-long.csv measurements/latency-long.svg
 docker compose -f compose.test.yml down
 ```
 

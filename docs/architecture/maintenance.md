@@ -1,0 +1,54 @@
+# Maintenance
+
+`RunMaintenance` runs in the background, independent of ingestion and queries:
+
+- every second: recovery of interrupted compaction jobs, and garbage collection
+  when a full batch is pending or 10 s have passed since the last deletion;
+- every `compaction.interval_seconds`: a compaction cycle that starts
+  consecutive jobs for up to `compaction.max_cycle_seconds` while there is work.
+
+## Compaction jobs
+
+A job has three phases:
+
+1. **Reserve.** Select input blocks from a pinned snapshot, write a `jobs/`
+   object naming all output prefixes, publish it in the manifest. Selection is
+   skipped while a checkpoint is due.
+2. **Copy.** Read input blocks (coalesced ranges, rate limited to
+   `compaction.bytes_per_second`), merge adjacent blocks of the same stream up to
+   1024 records, write output packs of up to `compaction.object_bytes`.
+3. **Publish.** Serialized with checkpoints: verify that every input is still
+   live, rewrite the affected index paths, update catalog and metadata, move
+   retired objects to the trash journal, conditionally PUT the manifest.
+
+A job that fails after reservation is marked aborted; its staging objects are
+deleted after one minute, and no new job starts before that. Jobs are bounded
+by `compaction.max_blocks`, `compaction.max_job_bytes`,
+`compaction.max_duration_seconds` and an adaptive limit of source objects that
+halves when publication exceeds its catalog read budget.
+
+## What gets selected
+
+In order of preference:
+
+- **Merges.** Consecutive small blocks of one stream (below 1024 records) whose
+  objects are older than `compaction.cooldown_seconds`. Found through candidate
+  objects, resumable across calls.
+- **Level locality.** Consecutive blocks of one metric level, including full
+  blocks, spread over at least `compaction.locality_min_ranges` physical ranges,
+  are rewritten into one contiguous section. Sealed sections are not rewritten
+  again. Every fourth job gives locality a turn; otherwise it runs when there is
+  nothing to merge. `compaction.disable_locality` turns it off.
+- **Reclamation.** Objects whose dead fraction exceeds `compaction.dead_fraction`
+  are evacuated (live blocks copied) so the whole object can be deleted.
+
+## Garbage collection
+
+Deletion works through the trash journal: up to 256 keys from up to 64 journal
+pages per pass, 8 DELETEs in parallel within 2 seconds, then one manifest
+publication. Objects are deleted only when no running query pins an older
+generation. Deleting is idempotent, so interrupted passes are simply repeated.
+
+Objects written by a checkpoint whose manifest was never published are not
+referenced and not in the journal; they are orphaned (see
+[Troubleshooting](../operations/troubleshooting.md#orphaned-objects)).

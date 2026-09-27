@@ -135,7 +135,7 @@ func TestExecutablePrometheusAndShutdown(t *testing.T) {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	poll("/metrics", "metricq_db_samples_total 1\n")
+	poll("/metrics", "metricq_db_samples_total{token=\""+token+"\"} 1\n")
 	if err = command.Process.Signal(syscall.SIGTERM); err != nil {
 		t.Fatal(err)
 	}

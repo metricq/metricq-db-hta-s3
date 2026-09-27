@@ -1,0 +1,453 @@
+Manifest recovery and failure tests:
+=== RUN   TestManifestPagesKeepMaintenanceSmallAndRecover
+    manifest_pages_test.go:95: 1500 metrics: manifest=1058 bytes, maintenance reuses all metadata roots
+--- PASS: TestManifestPagesKeepMaintenanceSmallAndRecover (0.18s)
+=== RUN   TestMetadataFailureRetainsAcknowledgedWAL
+=== RUN   TestMetadataFailureRetainsAcknowledgedWAL/state/
+=== RUN   TestMetadataFailureRetainsAcknowledgedWAL/roots/
+=== RUN   TestMetadataFailureRetainsAcknowledgedWAL/held-state/
+--- PASS: TestMetadataFailureRetainsAcknowledgedWAL (0.01s)
+    --- PASS: TestMetadataFailureRetainsAcknowledgedWAL/state/ (0.00s)
+    --- PASS: TestMetadataFailureRetainsAcknowledgedWAL/roots/ (0.00s)
+    --- PASS: TestMetadataFailureRetainsAcknowledgedWAL/held-state/ (0.00s)
+=== RUN   TestMissingOrCorruptManifestPageFailsStartup
+=== RUN   TestMissingOrCorruptManifestPageFailsStartup/false
+=== RUN   TestMissingOrCorruptManifestPageFailsStartup/true
+--- PASS: TestMissingOrCorruptManifestPageFailsStartup (0.01s)
+    --- PASS: TestMissingOrCorruptManifestPageFailsStartup/false (0.00s)
+    --- PASS: TestMissingOrCorruptManifestPageFailsStartup/true (0.00s)
+=== RUN   TestBackgroundHoldDeadlinesAreBatchedWithoutDelayingPressure
+--- PASS: TestBackgroundHoldDeadlinesAreBatchedWithoutDelayingPressure (0.00s)
+=== RUN   TestMetadataGCProtectsSharedPages
+--- PASS: TestMetadataGCProtectsSharedPages (0.01s)
+PASS
+ok  	github.com/metricq/metricq-db-hta-go/engine	0.212s
+
+Level locality (production object target):
+=== RUN   TestReviewFullBlockQueryLocality
+=== RUN   TestReviewFullBlockQueryLocality/flushes=16
+    capacity_review_test.go:162: before cold FLEX: median=6.951558ms data_GETs=9.0 data_bytes=254915 rows=1000 candidates=1
+    capacity_review_test.go:171: completed compactions=5
+    capacity_review_test.go:162: after cold FLEX: median=5.492947ms data_GETs=1.0 data_bytes=254915 rows=1000 candidates=0
+=== RUN   TestReviewFullBlockQueryLocality/flushes=1
+    capacity_review_test.go:162: before cold FLEX: median=3.987907ms data_GETs=1.0 data_bytes=254915 rows=1000 candidates=0
+    capacity_review_test.go:171: completed compactions=0
+    capacity_review_test.go:162: after cold FLEX: median=4.087374ms data_GETs=1.0 data_bytes=254915 rows=1000 candidates=0
+--- PASS: TestReviewFullBlockQueryLocality (0.42s)
+    --- PASS: TestReviewFullBlockQueryLocality/flushes=16 (0.29s)
+    --- PASS: TestReviewFullBlockQueryLocality/flushes=1 (0.13s)
+=== RUN   TestReviewFullBlockQueryLocality
+=== RUN   TestReviewFullBlockQueryLocality/flushes=16
+    capacity_review_test.go:162: before cold FLEX: median=6.842534ms data_GETs=9.0 data_bytes=254915 rows=1000 candidates=1
+    capacity_review_test.go:171: completed compactions=5
+    capacity_review_test.go:162: after cold FLEX: median=5.206097ms data_GETs=1.0 data_bytes=254915 rows=1000 candidates=0
+=== RUN   TestReviewFullBlockQueryLocality/flushes=1
+    capacity_review_test.go:162: before cold FLEX: median=5.938393ms data_GETs=1.0 data_bytes=254915 rows=1000 candidates=0
+    capacity_review_test.go:171: completed compactions=0
+    capacity_review_test.go:162: after cold FLEX: median=5.900513ms data_GETs=1.0 data_bytes=254915 rows=1000 candidates=0
+--- PASS: TestReviewFullBlockQueryLocality (0.46s)
+    --- PASS: TestReviewFullBlockQueryLocality/flushes=16 (0.26s)
+    --- PASS: TestReviewFullBlockQueryLocality/flushes=1 (0.20s)
+PASS
+ok  	github.com/metricq/metricq-db-hta-go/engine	0.896s
+
+Paged maintenance benchmark:
+goos: linux
+goarch: amd64
+pkg: github.com/metricq/metricq-db-hta-go/engine
+cpu: AMD Ryzen 7 PRO 4750U with Radeon Graphics
+BenchmarkReviewPagedMaintenance/metrics=150-16         	       5	    583528 ns/op	      1048 manifest-B	      6774 metadata-PUT-B/op	  256630 B/op	     202 allocs/op
+BenchmarkReviewPagedMaintenance/metrics=150-16         	       5	   1945234 ns/op	      1056 manifest-B	      6721 metadata-PUT-B/op	  256449 B/op	     197 allocs/op
+BenchmarkReviewPagedMaintenance/metrics=1500-16        	       5	   2454751 ns/op	      1046 manifest-B	     15669 metadata-PUT-B/op	  651878 B/op	     273 allocs/op
+BenchmarkReviewPagedMaintenance/metrics=1500-16        	       5	   4788330 ns/op	      1052 manifest-B	     15649 metadata-PUT-B/op	  410164 B/op	     265 allocs/op
+BenchmarkReviewPagedMaintenance/metrics=15000-16       	       5	  13047573 ns/op	      1064 manifest-B	     52681 metadata-PUT-B/op	 1813945 B/op	    1444 allocs/op
+BenchmarkReviewPagedMaintenance/metrics=15000-16       	       5	  12708232 ns/op	      1056 manifest-B	     52760 metadata-PUT-B/op	 1814611 B/op	    1457 allocs/op
+PASS
+ok  	github.com/metricq/metricq-db-hta-go/engine	4.131s
+
+Budget convergence after fix:
+=== RUN   TestCompactionProgressesWithLargeCatalogInventories
+--- PASS: TestCompactionProgressesWithLargeCatalogInventories (5.22s)
+=== RUN   TestCompactionProgressesWithLargeCatalogInventories
+--- PASS: TestCompactionProgressesWithLargeCatalogInventories (5.55s)
+=== RUN   TestCompactionProgressesWithLargeCatalogInventories
+--- PASS: TestCompactionProgressesWithLargeCatalogInventories (6.48s)
+=== RUN   TestCompactionProgressesWithLargeCatalogInventories
+--- PASS: TestCompactionProgressesWithLargeCatalogInventories (6.80s)
+=== RUN   TestCompactionProgressesWithLargeCatalogInventories
+--- PASS: TestCompactionProgressesWithLargeCatalogInventories (6.74s)
+PASS
+ok  	github.com/metricq/metricq-db-hta-go/engine	30.814s
+
+S3 CPU profile:
+File: integration.test
+Build ID: 807a0dd852c240c7f5d67107432bb2ec3c5f1be6
+Type: cpu
+Time: 2026-09-27 13:48:02 CEST
+Duration: 95.90s, Total samples = 64.80s (67.57%)
+Showing nodes accounting for 45.76s, 70.62% of 64.80s total
+Dropped 1121 nodes (cum <= 0.32s)
+      flat  flat%   sum%        cum   cum%
+         0     0%     0%     38.79s 59.86%  github.com/metricq/metricq-db-hta-go/integration.TestCompactionS3.func1
+         0     0%     0%     38.78s 59.85%  testing.tRunner
+         0     0%     0%     38.74s 59.78%  github.com/metricq/metricq-db-hta-go/engine.(*Engine).CompactOnce
+         0     0%     0%     19.95s 30.79%  github.com/metricq/metricq-db-hta-go/engine.decode
+         0     0%     0%     19.06s 29.41%  github.com/metricq/metricq-db-hta-go/engine.(*Engine).applyCompaction
+         0     0%     0%     18.46s 28.49%  encoding/gob.(*Decoder).Decode
+         0     0%     0%     18.44s 28.46%  encoding/gob.(*Decoder).DecodeValue
+     0.02s 0.031% 0.031%     16.76s 25.86%  github.com/metricq/metricq-db-hta-go/engine.(*Engine).prepareCompaction
+         0     0% 0.031%     12.51s 19.31%  github.com/metricq/metricq-db-hta-go/engine.(*Engine).reserveCompaction
+     0.01s 0.015% 0.046%     12.50s 19.29%  github.com/metricq/metricq-db-hta-go/engine.encode
+     0.02s 0.031% 0.077%     11.87s 18.32%  runtime.systemstack
+     0.04s 0.062%  0.14%     11.32s 17.47%  encoding/gob.(*Decoder).decodeValue
+     0.01s 0.015%  0.15%     10.64s 16.42%  encoding/gob.(*Decoder).decodeTypeSequence
+     0.03s 0.046%   0.2%     10.59s 16.34%  github.com/metricq/metricq-db-hta-go/engine.(*catalogWriter).read
+         0     0%   0.2%     10.31s 15.91%  github.com/metricq/metricq-db-hta-go/engine.(*Engine).catalogGet
+     0.04s 0.062%  0.26%     10.22s 15.77%  github.com/metricq/metricq-db-hta-go/engine.(*Engine).reserveCompaction.func5
+         0     0%  0.26%     10.21s 15.76%  github.com/metricq/metricq-db-hta-go/engine.(*Engine).catalogScan.func1
+         0     0%  0.26%     10.16s 15.68%  github.com/metricq/metricq-db-hta-go/engine.(*Engine).catalogScan
+         0     0%  0.26%      9.70s 14.97%  runtime.gcBgMarkWorker
+     0.01s 0.015%  0.28%      9.48s 14.63%  runtime.gcBgMarkWorker.func2
+     0.40s  0.62%   0.9%      9.45s 14.58%  runtime.gcDrain
+     2.18s  3.36%  4.26%      8.42s 12.99%  runtime.scanobject
+         0     0%  4.26%      8.32s 12.84%  github.com/aws/smithy-go/middleware.decoratedHandler.Handle
+         0     0%  4.26%      7.54s 11.64%  compress/flate.(*compressor).encSpeed
+         0     0%  4.26%      7.45s 11.50%  encoding/gob.(*Encoder).Encode
+         0     0%  4.26%      7.45s 11.50%  encoding/gob.(*Encoder).EncodeValue
+         0     0%  4.26%      7.24s 11.17%  github.com/aws/smithy-go/middleware.decoratedBuildHandler.HandleBuild (partial-inline)
+     0.02s 0.031%  4.29%      7.18s 11.08%  github.com/metricq/metricq-db-hta-go/engine.(*Engine).copyJob
+         0     0%  4.29%      7.11s 10.97%  github.com/aws/smithy-go/middleware.decoratedFinalizeHandler.HandleFinalize (partial-inline)
+     0.02s 0.031%  4.32%      7.07s 10.91%  github.com/aws/aws-sdk-go-v2/service/internal/accept-encoding.(*DisableGzip).HandleFinalize
+     0.03s 0.046%  4.37%      7.03s 10.85%  github.com/aws/aws-sdk-go-v2/aws/retry.(*Attempt).HandleFinalize
+     0.01s 0.015%  4.38%      7.03s 10.85%  github.com/aws/smithy-go/transport/http.(*InterceptBeforeRetryLoop).HandleFinalize
+     0.01s 0.015%  4.40%      7.01s 10.82%  github.com/aws/aws-sdk-go-v2/aws/middleware.(*RequestUserAgent).HandleBuild
+     0.01s 0.015%  4.41%         7s 10.80%  encoding/gob.(*Decoder).recvMessage
+     0.01s 0.015%  4.43%         7s 10.80%  github.com/aws/smithy-go/middleware.(*FinalizeStep).HandleMiddleware
+     0.01s 0.015%  4.44%      6.98s 10.77%  github.com/aws/aws-sdk-go-v2/aws/middleware.(*RecursionDetection).HandleBuild
+         0     0%  4.44%      6.96s 10.74%  github.com/aws/smithy-go/middleware.buildWrapHandler.HandleBuild
+     0.03s 0.046%  4.49%      6.93s 10.69%  github.com/aws/aws-sdk-go-v2/aws/middleware.ClientRequestID.HandleBuild
+     0.01s 0.015%  4.51%      6.91s 10.66%  io.(*LimitedReader).Read
+     0.01s 0.015%  4.52%      6.87s 10.60%  io.ReadFull (inline)
+     0.04s 0.062%  4.58%      6.86s 10.59%  bufio.(*Reader).Read
+     0.04s 0.062%  4.65%      6.86s 10.59%  io.ReadAtLeast
+         0     0%  4.65%      6.84s 10.56%  github.com/aws/smithy-go/middleware.decoratedSerializeHandler.HandleSerialize (partial-inline)
+     0.58s   0.9%  5.54%      6.81s 10.51%  encoding/gob.(*Decoder).decodeStruct
+     0.01s 0.015%  5.56%      6.76s 10.43%  github.com/aws/smithy-go/middleware.(*BuildStep).HandleMiddleware
+     0.01s 0.015%  5.57%      6.72s 10.37%  compress/gzip.(*Reader).Read
+     0.06s 0.093%  5.66%      6.71s 10.35%  github.com/aws/aws-sdk-go-v2/aws/retry.(*Attempt).handleAttempt
+     0.12s  0.19%  5.85%      6.58s 10.15%  encoding/gob.(*Decoder).decOpFor.func4
+     0.02s 0.031%  5.88%      6.57s 10.14%  compress/flate.(*decompressor).Read
+     0.01s 0.015%  5.90%      6.55s 10.11%  encoding/gob.(*Decoder).decOpFor.func3
+     0.02s 0.031%  5.93%      6.54s 10.09%  encoding/gob.(*Decoder).decodeSlice
+     0.04s 0.062%  5.99%      6.54s 10.09%  github.com/aws/aws-sdk-go-v2/service/s3.(*resolveAuthSchemeMiddleware).HandleFinalize
+         0     0%  5.99%      6.54s 10.09%  github.com/aws/smithy-go/transport/http.(*InterceptAttempt).HandleFinalize
+     0.50s  0.77%  6.76%      6.54s 10.09%  runtime.mallocgc
+     0.73s  1.13%  7.89%      6.39s  9.86%  encoding/gob.(*Decoder).decodeArrayHelper
+         0     0%  7.89%      6.33s  9.77%  github.com/aws/smithy-go/middleware.serializeWrapHandler.HandleSerialize
+     0.01s 0.015%  7.90%      6.32s  9.75%  github.com/metricq/metricq-db-hta-go/engine.(*Engine).readNode
+     0.01s 0.015%  7.92%      6.31s  9.74%  github.com/aws/aws-sdk-go-v2/service/s3.(*isExpressUserAgent).HandleSerialize
+         0     0%  7.92%      6.27s  9.68%  runtime.gcDrainMarkWorkerDedicated (inline)
+     0.01s 0.015%  7.93%      6.26s  9.66%  github.com/metricq/metricq-db-hta-go/engine.(*Engine).catalogChanges
+         0     0%  7.93%      6.06s  9.35%  github.com/aws/aws-sdk-go-v2/service/s3/internal/customizations.(*removeBucketFromPathMiddleware).HandleSerialize
+     0.03s 0.046%  7.98%      5.95s  9.18%  github.com/aws/aws-sdk-go-v2/service/internal/checksum.(*ResponseChecksumMetricsTracking).HandleBuild
+         0     0%  7.98%      5.91s  9.12%  github.com/metricq/metricq-db-hta-go/engine.(*Engine).indexNeighborEntry
+         0     0%  7.98%      5.87s  9.06%  github.com/aws/aws-sdk-go-v2/service/s3/internal/customizations.(*updateEndpoint).HandleSerialize
+         0     0%  7.98%      5.80s  8.95%  github.com/metricq/metricq-db-hta-go/engine.(*Engine).updateCatalog
+         0     0%  7.98%      5.80s  8.95%  github.com/metricq/metricq-db-hta-go/engine.(*catalogWriter).apply
+         0     0%  7.98%      5.69s  8.78%  compress/flate.(*huffmanBitWriter).writeBlockDynamic
+         0     0%  7.98%      5.60s  8.64%  github.com/metricq/metricq-db-hta-go/engine.(*catalogWriter).write
+         0     0%  7.98%      5.59s  8.63%  github.com/metricq/metricq-db-hta-go/engine.(*catalogWriter).leaves
+     0.02s 0.031%  8.01%      5.54s  8.55%  github.com/aws/aws-sdk-go-v2/service/s3.(*serializeImmutableHostnameBucketMiddleware).HandleSerialize
+     0.01s 0.015%  8.02%      5.52s  8.52%  github.com/metricq/metricq-db-hta-go/engine.decodeNode
+     0.02s 0.031%  8.06%      5.51s  8.50%  github.com/aws/aws-sdk-go-v2/service/s3.(*getIdentityMiddleware).HandleFinalize
+     0.01s 0.015%  8.07%      5.41s  8.35%  github.com/aws/aws-sdk-go-v2/service/s3.(*resolveEndpointV2Middleware).HandleFinalize
+     0.73s  1.13%  9.20%      5.22s  8.06%  compress/flate.(*decompressor).huffmanBlock
+         0     0%  9.20%      4.99s  7.70%  compress/flate.(*Writer).Close (inline)
+     0.01s 0.015%  9.21%      4.99s  7.70%  compress/flate.(*compressor).close
+         0     0%  9.21%      4.99s  7.70%  compress/gzip.(*Writer).Close
+         0     0%  9.21%      4.99s  7.70%  github.com/aws/aws-sdk-go-v2/service/s3.(*awsRestxml_serializeOpGetObject).HandleSerialize
+     0.01s 0.015%  9.23%      4.93s  7.61%  github.com/aws/aws-sdk-go-v2/service/s3.(*disableHTTPSMiddleware).HandleFinalize
+     0.02s 0.031%  9.26%      4.93s  7.61%  github.com/aws/aws-sdk-go-v2/service/s3/internal/customizations.(*s3ObjectLambdaEndpoint).HandleSerialize
+     0.02s 0.031%  9.29%      4.79s  7.39%  github.com/aws/aws-sdk-go-v2/service/s3/internal/customizations.(*processARNResource).HandleSerialize
+         0     0%  9.29%      4.70s  7.25%  github.com/aws/aws-sdk-go-v2/aws/signer/v4.(*ComputePayloadSHA256).HandleFinalize
+     0.01s 0.015%  9.31%      4.68s  7.22%  github.com/aws/aws-sdk-go-v2/aws/signer/v4.(*ContentSHA256Header).HandleFinalize
+     0.01s 0.015%  9.32%      4.66s  7.19%  github.com/aws/aws-sdk-go-v2/service/s3.(*setLegacyContextSigningOptionsMiddleware).HandleFinalize
+     0.03s 0.046%  9.37%      4.64s  7.16%  github.com/aws/aws-sdk-go-v2/service/s3.(*signRequestMiddleware).HandleFinalize
+         0     0%  9.37%      4.45s  6.87%  github.com/aws/aws-sdk-go-v2/service/s3.(*ResolveEndpoint).HandleSerialize
+     0.03s 0.046%  9.41%      4.29s  6.62%  encoding/gob.(*Decoder).getDecEnginePtr
+         0     0%  9.41%      4.12s  6.36%  encoding/gob.(*Encoder).encode
+     0.01s 0.015%  9.43%      4.05s  6.25%  github.com/aws/aws-sdk-go-v2/service/s3.(*setOperationInputMiddleware).HandleSerialize
+     0.26s   0.4%  9.83%      4.03s  6.22%  encoding/gob.(*Decoder).compileDec
+     0.45s  0.69% 10.52%      3.98s  6.14%  encoding/gob.(*Encoder).encodeStruct
+     3.47s  5.35% 15.88%      3.95s  6.10%  compress/flate.(*decompressor).huffSym
+     0.06s 0.093% 15.97%      3.86s  5.96%  encoding/gob.encOpFor.func4
+     0.01s 0.015% 15.99%      3.73s  5.76%  encoding/gob.(*Decoder).readMessage
+     0.17s  0.26% 16.25%      3.72s  5.74%  encoding/gob.(*Encoder).encodeArray
+     0.02s 0.031% 16.28%      3.71s  5.73%  internal/saferio.ReadData
+     0.26s   0.4% 16.68%      3.67s  5.66%  compress/flate.(*huffmanBitWriter).indexTokens
+     0.01s 0.015% 16.70%      3.63s  5.60%  github.com/aws/aws-sdk-go-v2/service/s3.(*putBucketContextMiddleware).HandleSerialize
+         0     0% 16.70%      3.58s  5.52%  encoding/gob.(*Decoder).recvType
+         0     0% 16.70%      3.58s  5.52%  github.com/metricq/metricq-db-hta-go/engine.(*Engine).readBlob
+     0.01s 0.015% 16.71%      3.57s  5.51%  github.com/aws/smithy-go/middleware.(*SerializeStep).HandleMiddleware
+     0.09s  0.14% 16.85%      3.54s  5.46%  compress/flate.(*huffmanEncoder).generate
+     0.01s 0.015% 16.87%      3.49s  5.39%  encoding/gob.encOpFor.func1
+     0.06s 0.093% 16.96%      3.48s  5.37%  github.com/metricq/metricq-db-hta-go/engine.(*Engine).readRange
+     0.03s 0.046% 17.01%      3.45s  5.32%  github.com/metricq/metricq-db-hta-go/integration.(*compactionMeter).GetRange
+     0.01s 0.015% 17.02%      3.44s  5.31%  encoding/gob.(*Decoder).decOpFor.func1
+     0.03s 0.046% 17.07%      3.43s  5.29%  encoding/gob.(*Decoder).decodeArray
+     0.05s 0.077% 17.15%      3.42s  5.28%  github.com/aws/aws-sdk-go-v2/service/s3.(*Client).invokeOperation
+     0.05s 0.077% 17.22%      3.41s  5.26%  github.com/metricq/metricq-db-hta-go/storage.(*S3).GetRange
+     0.02s 0.031% 17.25%      3.31s  5.11%  encoding/gob.decodeUintReader
+         0     0% 17.25%      3.29s  5.08%  github.com/aws/smithy-go/middleware.initializeWrapHandler.HandleInitialize
+     0.12s  0.19% 17.44%      3.27s  5.05%  encoding/gob.(*Decoder).decOpFor
+     0.01s 0.015% 17.45%      3.27s  5.05%  github.com/aws/smithy-go/middleware.decoratedInitializeHandler.HandleInitialize (partial-inline)
+     0.01s 0.015% 17.47%      3.26s  5.03%  github.com/aws/aws-sdk-go-v2/service/internal/s3shared.(*ARNLookup).HandleInitialize
+         0     0% 17.47%      3.18s  4.91%  runtime.gcDrainMarkWorkerIdle (inline)
+     0.01s 0.015% 17.48%      3.16s  4.88%  github.com/aws/smithy-go/middleware.finalizeWrapHandler.HandleFinalize
+         0     0% 17.48%      3.15s  4.86%  github.com/aws/aws-sdk-go-v2/aws/middleware.AddRawResponse.HandleDeserialize
+         0     0% 17.48%      3.15s  4.86%  github.com/aws/smithy-go/middleware.(*DeserializeStep).HandleMiddleware
+     0.01s 0.015% 17.50%      3.15s  4.86%  github.com/aws/smithy-go/middleware.decoratedDeserializeHandler.HandleDeserialize (partial-inline)
+         0     0% 17.50%      3.14s  4.85%  compress/flate.(*decompressor).nextBlock
+     0.42s  0.65% 18.15%      3.14s  4.85%  runtime.newobject
+         0     0% 18.15%      3.13s  4.83%  github.com/aws/aws-sdk-go-v2/service/internal/s3shared.(*errorWrapper).HandleDeserialize
+     0.02s 0.031% 18.18%      3.13s  4.83%  github.com/aws/aws-sdk-go-v2/service/internal/s3shared.(*metadataRetriever).HandleDeserialize
+     0.01s 0.015% 18.19%      3.05s  4.71%  encoding/gob.(*Encoder).writeMessage
+         0     0% 18.19%      3.02s  4.66%  compress/gzip.(*Writer).Write
+     0.01s 0.015% 18.21%      2.95s  4.55%  github.com/metricq/metricq-db-hta-go/engine.maintenanceStore.GetRange
+         0     0% 18.21%      2.91s  4.49%  github.com/aws/smithy-go/middleware.(*InitializeStep).HandleMiddleware
+     0.01s 0.015% 18.23%      2.86s  4.41%  github.com/aws/aws-sdk-go-v2/service/s3.(*Client).GetObject
+     0.01s 0.015% 18.24%      2.85s  4.40%  github.com/metricq/metricq-db-hta-go/engine.(*Engine).publishMaintenanceLocked
+         0     0% 18.24%      2.79s  4.31%  runtime.mcall
+     0.01s 0.015% 18.26%      2.77s  4.27%  github.com/aws/aws-sdk-go-v2/service/s3.(*awsRestxml_deserializeOpGetObject).HandleDeserialize
+     0.01s 0.015% 18.27%      2.77s  4.27%  runtime.schedule
+     0.01s 0.015% 18.29%      2.76s  4.26%  runtime.park_m
+     0.03s 0.046% 18.33%      2.67s  4.12%  github.com/aws/aws-sdk-go-v2/service/s3.(*validateOpGetObject).HandleInitialize
+         0     0% 18.33%      2.66s  4.10%  github.com/metricq/metricq-db-hta-go/engine.(*Engine).encodeManifest
+     0.03s 0.046% 18.38%      2.66s  4.10%  net/http.(*persistConn).writeLoop
+     2.63s  4.06% 22.44%      2.63s  4.06%  internal/runtime/syscall.Syscall6
+     0.09s  0.14% 22.58%      2.61s  4.03%  runtime.findRunnable
+         0     0% 22.58%      2.60s  4.01%  compress/flate.(*Writer).Write (inline)
+         0     0% 22.58%      2.60s  4.01%  compress/flate.(*compressor).write
+     0.02s 0.031% 22.61%      2.57s  3.97%  github.com/aws/aws-sdk-go-v2/service/internal/checksum.(*setupOutputContext).HandleInitialize
+     0.47s  0.73% 23.33%      2.55s  3.94%  runtime.mallocgcSmallScanNoHeader
+         0     0% 23.33%      2.53s  3.90%  github.com/aws/smithy-go/middleware.(*Stack).HandleMiddleware
+     0.48s  0.74% 24.07%      2.46s  3.80%  runtime.greyobject
+     0.01s 0.015% 24.09%      2.43s  3.75%  internal/poll.ignoringEINTRIO (inline)
+     1.88s  2.90% 26.99%      2.43s  3.75%  runtime.findObject
+     0.04s 0.062% 27.05%      2.41s  3.72%  syscall.Syscall
+     0.01s 0.015% 27.07%      2.25s  3.47%  github.com/aws/aws-sdk-go-v2/aws/middleware.RecordResponseTiming.HandleDeserialize
+     0.01s 0.015% 27.08%      2.25s  3.47%  github.com/metricq/metricq-db-hta-go/engine.(*Engine).replaceHistorical
+         0     0% 27.08%      2.24s  3.46%  syscall.RawSyscall6
+     1.32s  2.04% 29.12%      2.12s  3.27%  encoding/gob.(*decoderState).decodeUint
+     0.01s 0.015% 29.14%      2.06s  3.18%  github.com/metricq/metricq-db-hta-go/engine.(*Engine).prepareCompaction.func2
+     0.35s  0.54% 29.68%      2.05s  3.16%  encoding/gob.decUint8
+     0.03s 0.046% 29.72%      2.02s  3.12%  net/http.(*persistConn).readLoop
+         0     0% 29.72%      1.96s  3.02%  internal/poll.(*FD).Write
+         0     0% 29.72%      1.93s  2.98%  syscall.Write (inline)
+         0     0% 29.72%      1.93s  2.98%  syscall.write
+         0     0% 29.72%      1.89s  2.92%  github.com/metricq/metricq-db-hta-go/engine.writeNodes
+     1.89s  2.92% 32.64%      1.89s  2.92%  runtime.memmove
+         0     0% 32.64%      1.88s  2.90%  github.com/metricq/metricq-db-hta-go/engine.writeNode
+     1.12s  1.73% 34.37%      1.85s  2.85%  compress/flate.(*deflateFast).encode
+     0.01s 0.015% 34.38%      1.81s  2.79%  encoding/gob.encOpFor.func2
+         0     0% 34.38%      1.78s  2.75%  net.(*conn).Write
+         0     0% 34.38%      1.77s  2.73%  github.com/metricq/metricq-db-hta-go/engine.(*Engine).encodeManifest.func1
+         0     0% 34.38%      1.77s  2.73%  net.(*netFD).Write
+     1.75s  2.70% 37.08%      1.75s  2.70%  runtime.memclrNoHeapPointers
+         0     0% 37.08%      1.73s  2.67%  sort.Sort
+     0.09s  0.14% 37.22%      1.73s  2.67%  sort.pdqsort
+     1.43s  2.21% 39.43%      1.64s  2.53%  compress/flate.(*huffmanEncoder).bitCounts
+     0.02s 0.031% 39.46%      1.62s  2.50%  github.com/aws/aws-sdk-go-v2/service/internal/checksum.(*validateOutputPayloadChecksum).HandleDeserialize
+         0     0% 39.46%      1.61s  2.48%  bufio.(*Writer).Flush
+     0.01s 0.015% 39.48%      1.61s  2.48%  net/http.persistConnWriter.Write
+     1.61s  2.48% 41.96%      1.61s  2.48%  runtime.futex
+     0.39s   0.6% 42.56%      1.53s  2.36%  encoding/gob.(*encoderState).encodeUint (inline)
+     0.09s  0.14% 42.70%      1.48s  2.28%  runtime.makeslice
+     0.73s  1.13% 43.83%      1.43s  2.21%  compress/flate.(*huffmanBitWriter).writeTokens
+     0.01s 0.015% 43.84%      1.42s  2.19%  github.com/aws/aws-sdk-go-v2/internal/auth/smithy.(*V4SignerAdapter).SignRequest
+         0     0% 43.84%      1.42s  2.19%  github.com/aws/aws-sdk-go-v2/service/s3.(*signRequestMiddleware).HandleFinalize.func1
+         0     0% 43.84%      1.42s  2.19%  github.com/aws/aws-sdk-go-v2/service/s3.timeOperationMetric[go.shape.interface {}]
+         0     0% 43.84%      1.42s  2.19%  runtime.mallocgcLarge
+     0.23s  0.35% 44.20%      1.40s  2.16%  encoding/gob.encUint
+     0.01s 0.015% 44.21%      1.39s  2.15%  runtime.stopm
+     0.02s 0.031% 44.24%      1.37s  2.11%  github.com/aws/aws-sdk-go-v2/aws/signer/v4.Signer.SignHTTP
+         0     0% 44.24%      1.36s  2.10%  compress/flate.(*byFreq).sort (inline)
+     0.01s 0.015% 44.26%      1.35s  2.08%  github.com/aws/aws-sdk-go-v2/aws/signer/v4.(*httpSigner).Build
+     0.05s 0.077% 44.34%      1.29s  1.99%  github.com/aws/smithy-go/transport/http.(*RequestResponseLogger).HandleDeserialize
+     0.14s  0.22% 44.55%      1.27s  1.96%  compress/flate.(*decompressor).readHuffman
+     0.06s 0.093% 44.65%      1.27s  1.96%  runtime.futexsleep
+     0.01s 0.015% 44.66%      1.25s  1.93%  runtime.mPark (inline)
+     0.01s 0.015% 44.68%      1.24s  1.91%  github.com/aws/smithy-go/middleware.deserializeWrapHandler.HandleDeserialize
+         0     0% 44.68%      1.24s  1.91%  runtime.notesleep
+     0.04s 0.062% 44.74%      1.23s  1.90%  github.com/aws/smithy-go/transport/http.ClientHandler.Handle
+         0     0% 44.74%      1.20s  1.85%  compress/gzip.NewReader (inline)
+     0.02s 0.031% 44.77%      1.18s  1.82%  github.com/metricq/metricq-db-hta-go/engine.(*Engine).retireCatalogBlocks
+     0.07s  0.11% 44.88%      1.15s  1.77%  runtime.growslice
+     0.05s 0.077% 44.95%      1.14s  1.76%  compress/gzip.(*Reader).Reset
+     0.19s  0.29% 45.25%      1.14s  1.76%  runtime.mapassign
+     0.02s 0.031% 45.28%      1.09s  1.68%  compress/gzip.(*Reader).readHeader
+     0.20s  0.31% 45.59%      1.06s  1.64%  runtime.mallocgcSmallNoscan
+         0     0% 45.59%      1.05s  1.62%  encoding/gob.(*Encoder).sendTypeDescriptor
+         0     0% 45.59%      1.05s  1.62%  github.com/metricq/metricq-db-hta-go/engine.(*Engine).reserveCompaction.func3 (inline)
+     0.02s 0.031% 45.62%      1.05s  1.62%  github.com/metricq/metricq-db-hta-go/engine.(*Engine).selectLocality
+         0     0% 45.62%      1.04s  1.60%  encoding/gob.(*Encoder).sendActualType
+     0.03s 0.046% 45.66%      1.04s  1.60%  encoding/gob.(*Encoder).sendType
+     0.01s 0.015% 45.68%      0.98s  1.51%  compress/flate.NewReader
+     0.02s 0.031% 45.71%      0.96s  1.48%  github.com/aws/aws-sdk-go-v2/aws/transport/http.(*BuildableClient).Do
+     0.96s  1.48% 47.19%      0.96s  1.48%  runtime.nextFreeFast (inline)
+         0     0% 47.19%      0.94s  1.45%  net/http.(*Client).Do (inline)
+     0.02s 0.031% 47.22%      0.94s  1.45%  net/http.(*Client).do
+         0     0% 47.22%      0.92s  1.42%  runtime.memclrNoHeapPointersChunked
+     0.04s 0.062% 47.28%      0.91s  1.40%  net/http.(*Request).write
+     0.03s 0.046% 47.33%      0.91s  1.40%  runtime.(*mcache).nextFree
+     0.71s  1.10% 48.43%      0.83s  1.28%  compress/flate.(*huffmanDecoder).init
+         0     0% 48.43%      0.83s  1.28%  encoding/gob.(*Encoder).encodeSingle
+     0.18s  0.28% 48.70%      0.82s  1.27%  encoding/gob.(*Decoder).compatibleType
+     0.02s 0.031% 48.73%      0.82s  1.27%  github.com/aws/aws-sdk-go-v2/service/s3.(*resolver).ResolveEndpoint
+     0.01s 0.015% 48.75%      0.82s  1.27%  runtime.(*mcache).refill
+     0.09s  0.14% 48.89%      0.80s  1.23%  runtime.slicebytetostring
+     0.01s 0.015% 48.90%      0.79s  1.22%  net/http.(*persistConn).readResponse
+     0.54s  0.83% 49.74%      0.79s  1.22%  sort.partition
+     0.03s 0.046% 49.78%      0.78s  1.20%  crypto/internal/fips140/sha256.(*Digest).Write
+         0     0% 49.78%      0.78s  1.20%  net/http.ReadResponse
+     0.78s  1.20% 50.99%      0.78s  1.20%  runtime.(*gcBits).bitp (inline)
+         0     0% 50.99%      0.78s  1.20%  runtime.(*mspan).markBitsForIndex (inline)
+         0     0% 50.99%      0.78s  1.20%  runtime.bgsweep
+     0.10s  0.15% 51.14%      0.78s  1.20%  runtime.sweepone
+     0.10s  0.15% 51.30%      0.77s  1.19%  encoding/gob.decString
+     0.03s 0.046% 51.34%      0.76s  1.17%  encoding/gob.overflow (inline)
+     0.02s 0.031% 51.37%      0.75s  1.16%  net/http.(*Client).send
+         0     0% 51.37%      0.73s  1.13%  net/http.send
+     0.01s 0.015% 51.39%      0.72s  1.11%  github.com/aws/aws-sdk-go-v2/aws/transport/http.suppressBadHTTPRedirectTransport.RoundTrip
+     0.04s 0.062% 51.45%      0.71s  1.10%  crypto/internal/fips140/sha256.block
+     0.03s 0.046% 51.50%      0.71s  1.10%  crypto/sha256.Sum256
+         0     0% 51.50%      0.71s  1.10%  github.com/aws/aws-sdk-go-v2/service/internal/checksum.(*RequestChecksumMetricsTracking).HandleBuild
+         0     0% 51.50%      0.71s  1.10%  github.com/aws/aws-sdk-go-v2/service/internal/s3shared.(*s3100Continue).HandleBuild
+     0.01s 0.015% 51.51%      0.71s  1.10%  net/http.(*Transport).RoundTrip
+     0.71s  1.10% 52.61%      0.71s  1.10%  runtime.(*mspan).base (inline)
+     0.03s 0.046% 52.65%      0.70s  1.08%  net/http.(*Transport).roundTrip
+     0.13s   0.2% 52.85%      0.70s  1.08%  reflect.Value.FieldByIndex
+     0.18s  0.28% 53.13%      0.69s  1.06%  runtime.(*mspan).typePointersOfUnchecked
+     0.46s  0.71% 53.84%      0.69s  1.06%  sort.insertionSort
+     0.03s 0.046% 53.89%      0.68s  1.05%  github.com/aws/aws-sdk-go-v2/service/s3.awsRestxml_deserializeOpHttpBindingsGetObjectOutput
+     0.67s  1.03% 54.92%      0.67s  1.03%  crypto/internal/fips140/sha256.blockSHANI
+         0     0% 54.92%      0.66s  1.02%  github.com/aws/aws-sdk-go-v2/service/s3.(*endpointAuthResolver).ResolveAuthSchemes
+         0     0% 54.92%      0.65s  1.00%  github.com/aws/aws-sdk-go-v2/service/s3.(*endpointAuthResolver).resolveAuthSchemes
+     0.01s 0.015% 54.94%      0.64s  0.99%  compress/flate.(*dictDecoder).init (inline)
+     0.05s 0.077% 55.02%      0.64s  0.99%  net/http.(*persistConn).Read
+     0.06s 0.093% 55.11%      0.64s  0.99%  runtime.(*mheap).allocSpan
+     0.63s  0.97% 56.08%      0.63s  0.97%  encoding/gob.(*decBuffer).ReadByte (inline)
+         0     0% 56.08%      0.63s  0.97%  github.com/metricq/metricq-db-hta-go/engine.(*Engine).writeJob
+         0     0% 56.08%      0.63s  0.97%  runtime.(*mheap).alloc
+         0     0% 56.08%      0.63s  0.97%  runtime.(*mheap).alloc.func1
+     0.04s 0.062% 56.14%      0.63s  0.97%  runtime.newarray
+         0     0% 56.14%      0.62s  0.96%  github.com/aws/aws-sdk-go-v2/service/s3.(*awsRestxml_serializeOpPutObject).HandleSerialize
+     0.05s 0.077% 56.22%      0.61s  0.94%  encoding/gob.userType
+         0     0% 56.22%      0.60s  0.93%  github.com/aws/aws-sdk-go-v2/service/internal/checksum.(*ComputeInputPayloadChecksum).HandleFinalize
+         0     0% 56.22%      0.59s  0.91%  encoding/gob.(*Decoder).compileSingle
+     0.01s 0.015% 56.23%      0.59s  0.91%  net.(*conn).Read
+     0.48s  0.74% 56.98%      0.59s  0.91%  runtime.typePointers.next
+     0.48s  0.74% 57.72%      0.58s   0.9%  compress/flate.(*huffmanBitWriter).writeCode
+     0.04s 0.062% 57.78%      0.58s   0.9%  encoding/gob.validUserType
+     0.01s 0.015% 57.79%      0.58s   0.9%  net.(*netFD).Read
+     0.15s  0.23% 58.02%      0.57s  0.88%  net/textproto.CanonicalMIMEHeaderKey
+     0.54s  0.83% 58.86%      0.57s  0.88%  reflect.Value.Field
+     0.08s  0.12% 58.98%      0.57s  0.88%  runtime.(*mcentral).cacheSpan
+     0.13s   0.2% 59.18%      0.57s  0.88%  runtime.concatstrings
+     0.04s 0.062% 59.24%      0.57s  0.88%  runtime.mallocgcSmallScanHeader
+         0     0% 59.24%      0.56s  0.86%  bufio.(*Reader).Peek
+     0.01s 0.015% 59.26%      0.56s  0.86%  bufio.(*Reader).fill
+     0.19s  0.29% 59.55%      0.56s  0.86%  runtime.(*sweepLocked).sweep
+     0.01s 0.015% 59.57%      0.55s  0.85%  internal/poll.(*FD).Read
+     0.05s 0.077% 59.65%      0.55s  0.85%  runtime.concatstring3
+     0.08s  0.12% 59.77%      0.54s  0.83%  encoding/gob.encInt
+     0.01s 0.015% 59.78%      0.54s  0.83%  sync.(*Map).Load (inline)
+     0.32s  0.49% 60.28%      0.53s  0.82%  internal/sync.(*HashTrieMap[go.shape.interface {},go.shape.interface {}]).Load
+         0     0% 60.28%      0.53s  0.82%  net/http.Header.Values (inline)
+     0.01s 0.015% 60.29%      0.53s  0.82%  net/textproto.MIMEHeader.Values (inline)
+     0.01s 0.015% 60.31%      0.53s  0.82%  reflect.(*rtype).FieldByName
+     0.51s  0.79% 61.10%      0.51s  0.79%  bytes.(*Reader).ReadByte
+     0.10s  0.15% 61.25%      0.51s  0.79%  github.com/aws/smithy-go/endpoints/private/bdd.Evaluate
+         0     0% 61.25%      0.51s  0.79%  net/textproto.(*Reader).ReadMIMEHeader (inline)
+     0.04s 0.062% 61.31%      0.51s  0.79%  net/textproto.readMIMEHeader
+     0.23s  0.35% 61.67%      0.50s  0.77%  runtime.mapaccess1_faststr
+     0.05s 0.077% 61.74%      0.49s  0.76%  encoding/gob.decInt64
+         0     0% 61.74%      0.49s  0.76%  internal/runtime/maps.newGroups (inline)
+     0.01s 0.015% 61.76%      0.49s  0.76%  internal/runtime/maps.newarray
+     0.19s  0.29% 62.05%      0.49s  0.76%  net/textproto.canonicalMIMEHeaderKey
+     0.49s  0.76% 62.81%      0.49s  0.76%  runtime.(*mspan).heapBitsSmallForAddr
+     0.48s  0.74% 63.55%      0.48s  0.74%  runtime.duffcopy
+         0     0% 63.55%      0.48s  0.74%  syscall.Read (inline)
+         0     0% 63.55%      0.48s  0.74%  syscall.read
+     0.07s  0.11% 63.66%      0.47s  0.73%  encoding/gob.(*encBuffer).Write (inline)
+     0.33s  0.51% 64.17%      0.47s  0.73%  reflect.Value.Index
+     0.09s  0.14% 64.31%      0.47s  0.73%  runtime.heapSetTypeNoHeader (inline)
+     0.19s  0.29% 64.60%      0.46s  0.71%  reflect.(*structType).FieldByName
+     0.38s  0.59% 65.19%      0.46s  0.71%  runtime.spanOf (inline)
+     0.45s  0.69% 65.88%      0.45s  0.69%  compress/flate.(*dictDecoder).writeByte (inline)
+     0.05s 0.077% 65.96%      0.45s  0.69%  compress/flate.(*huffmanEncoder).assignEncodingAndSize
+         0     0% 65.96%      0.45s  0.69%  runtime.mProf_Malloc
+     0.06s 0.093% 66.05%      0.45s  0.69%  runtime.netpoll
+         0     0% 66.05%      0.45s  0.69%  runtime.profilealloc
+     0.33s  0.51% 66.56%      0.44s  0.68%  internal/runtime/maps.(*Iter).Next
+         0     0% 66.56%      0.43s  0.66%  encoding/gob.(*Decoder).decodeSingle
+         0     0% 66.56%      0.42s  0.65%  runtime.callers
+         0     0% 66.56%      0.42s  0.65%  runtime.callers.func1
+     0.01s 0.015% 66.57%      0.42s  0.65%  runtime.tracebackPCs
+     0.01s 0.015% 66.59%      0.42s  0.65%  runtime.wakep
+     0.41s  0.63% 67.22%      0.41s  0.63%  aeshashbody
+     0.25s  0.39% 67.61%      0.41s  0.63%  encoding/gob.(*encBuffer).writeByte (inline)
+         0     0% 67.61%      0.41s  0.63%  github.com/aws/aws-sdk-go-v2/service/s3.(*Client).addOperationGetObjectMiddlewares
+     0.01s 0.015% 67.62%      0.41s  0.63%  github.com/aws/aws-sdk-go-v2/service/s3.(*resolver).ResolveEndpoint.func1
+         0     0% 67.62%      0.41s  0.63%  io.ReadAll
+     0.01s 0.015% 67.64%      0.41s  0.63%  runtime.futexwakeup
+         0     0% 67.64%      0.41s  0.63%  runtime.notewakeup
+     0.01s 0.015% 67.65%      0.41s  0.63%  runtime.send
+     0.01s 0.015% 67.67%      0.40s  0.62%  github.com/aws/aws-sdk-go-v2/service/s3.evalCondition
+         0     0% 67.67%      0.40s  0.62%  github.com/metricq/metricq-db-hta-go/engine.(*publicationStore).GetRange
+     0.39s   0.6% 68.27%      0.39s   0.6%  compress/flate.(*deflateFast).matchLen
+         0     0% 68.27%      0.39s   0.6%  internal/runtime/syscall.EpollWait
+     0.01s 0.015% 68.29%      0.39s   0.6%  runtime.startm
+         0     0% 68.29%      0.38s  0.59%  fmt.Sprintf
+         0     0% 68.29%      0.38s  0.59%  github.com/aws/aws-sdk-go-v2/aws/signer/v4.(*dynamicPayloadSigningMiddleware).HandleFinalize
+         0     0% 68.29%      0.38s  0.59%  github.com/aws/aws-sdk-go-v2/service/internal/checksum.(*AddInputChecksumTrailer).HandleFinalize
+         0     0% 68.29%      0.38s  0.59%  github.com/metricq/metricq-db-hta-go/engine.(*Engine).readJob
+         0     0% 68.29%      0.38s  0.59%  io.Copy (inline)
+         0     0% 68.29%      0.38s  0.59%  io.copyBuffer
+     0.35s  0.54% 68.83%      0.38s  0.59%  runtime.(*mspan).writeHeapBitsSmall
+         0     0% 68.83%      0.37s  0.57%  compress/flate.(*byLiteral).sort (inline)
+     0.03s 0.046% 68.87%      0.37s  0.57%  github.com/aws/aws-sdk-go-v2/aws/signer/v4.(*httpSigner).buildCanonicalHeaders
+     0.09s  0.14% 69.01%      0.37s  0.57%  runtime.selectgo
+         0     0% 69.01%      0.36s  0.56%  encoding/gob.(*Encoder).encodeMap
+     0.01s 0.015% 69.03%      0.36s  0.56%  encoding/gob.(*decoderState).decodeInt (inline)
+         0     0% 69.03%      0.36s  0.56%  encoding/gob.encOpFor.func3
+     0.01s 0.015% 69.04%      0.36s  0.56%  github.com/aws/aws-sdk-go-v2/service/s3.(*Client).addCommonMiddlewares
+         0     0% 69.04%      0.36s  0.56%  runtime.(*mcentral).grow
+         0     0% 69.04%      0.36s  0.56%  runtime.goready (inline)
+     0.09s  0.14% 69.18%      0.36s  0.56%  runtime.mapassign_faststr
+     0.12s  0.19% 69.37%      0.36s  0.56%  runtime.pcvalue
+     0.02s 0.031% 69.40%      0.35s  0.54%  encoding/gob.(*encoderState).encodeInt
+         0     0% 69.40%      0.35s  0.54%  runtime.(*mcache).allocLarge
+         0     0% 69.40%      0.35s  0.54%  runtime.ready
+     0.01s 0.015% 69.41%      0.35s  0.54%  runtime.send.goready.func1
+         0     0% 69.41%      0.34s  0.52%  compress/flate.NewWriter (inline)
+         0     0% 69.41%      0.34s  0.52%  encoding/gob.encodeReflectValue
+     0.26s   0.4% 69.81%      0.34s  0.52%  reflect.Value.SetUint
+         0     0% 69.81%      0.34s  0.52%  runtime.(*unwinder).next
+     0.01s 0.015% 69.83%      0.34s  0.52%  runtime.markroot
+     0.12s  0.19% 70.02%      0.34s  0.52%  runtime.stealWork
+     0.33s  0.51% 70.52%      0.33s  0.51%  compress/flate.byFreq.Less
+     0.01s 0.015% 70.54%      0.33s  0.51%  encoding/gob.encString
+         0     0% 70.54%      0.33s  0.51%  github.com/aws/smithy-go/logging.StandardLogger.Logf
+         0     0% 70.54%      0.33s  0.51%  runtime.bgscavenge
+     0.05s 0.077% 70.62%      0.33s  0.51%  runtime.mapaccess1
+
+Legacy parity:
+    compare_test.go:521: Compared 2875 legacy/Go response pairs, including all four request types, smoothing, boundaries, gaps and recovery
+--- PASS: TestLegacyRequestParity (146.87s)
+    --- PASS: TestLegacyRequestParity/hot (26.03s)
+    --- PASS: TestLegacyRequestParity/WAL-restart (26.01s)
+    --- PASS: TestLegacyRequestParity/S3-restart (25.47s)
+    --- PASS: TestLegacyRequestParity/compacted (25.47s)
+    --- PASS: TestLegacyRequestParity/compacted-S3-restart (25.53s)
+    --- PASS: TestLegacyRequestParity/S3-outage-backpressure (6.65s)

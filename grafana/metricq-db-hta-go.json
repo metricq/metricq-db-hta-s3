@@ -2234,8 +2234,8 @@
     },
     {
       "type": "timeseries",
-      "title": "Last successful job",
-      "description": "",
+      "title": "Level locality",
+      "description": "Jobs laying out consecutive blocks of a metric level contiguously (fewer GETs per FLEX query).",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -2245,6 +2245,65 @@
         "w": 8,
         "x": 16,
         "y": 99
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(metricq_db_compaction_locality_jobs_total{token=\"$token\"}[$__rate_interval]))",
+          "legendFormat": "locality jobs/s",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
+        },
+        {
+          "expr": "max(metricq_db_compaction_locality_pending_streams{token=\"$token\"})",
+          "legendFormat": "streams to inspect",
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "none"
+            }
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Last successful job",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 107
       },
       "targets": [
         {
@@ -2290,7 +2349,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 107
+        "y": 115
       },
       "panels": []
     },
@@ -2306,7 +2365,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 108
+        "y": 116
       },
       "targets": [
         {
@@ -2356,7 +2415,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 108
+        "y": 116
       },
       "targets": [
         {
@@ -2411,7 +2470,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 116
+        "y": 124
       },
       "panels": []
     },
@@ -2427,7 +2486,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 117
+        "y": 125
       },
       "targets": [
         {
@@ -2486,7 +2545,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 117
+        "y": 125
       },
       "targets": [
         {
@@ -2554,7 +2613,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 117
+        "y": 125
       },
       "targets": [
         {
@@ -2600,7 +2659,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 125
+        "y": 133
       },
       "panels": []
     },
@@ -2616,7 +2675,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 126
+        "y": 134
       },
       "targets": [
         {
@@ -2675,7 +2734,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 126
+        "y": 134
       },
       "targets": [
         {
@@ -2725,7 +2784,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 126
+        "y": 134
       },
       "targets": [
         {

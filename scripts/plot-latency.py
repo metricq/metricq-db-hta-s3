@@ -11,8 +11,8 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 
-source = Path(sys.argv[1] if len(sys.argv) > 1 else "docs/latency-baseline.csv")
-target = Path(sys.argv[2] if len(sys.argv) > 2 else "docs/latency-baseline.svg")
+source = Path(sys.argv[1] if len(sys.argv) > 1 else "measurements/latency-baseline.csv")
+target = Path(sys.argv[2] if len(sys.argv) > 2 else "measurements/latency-baseline.svg")
 with source.open(newline="") as stream:
     rows = list(csv.DictReader(stream))
 

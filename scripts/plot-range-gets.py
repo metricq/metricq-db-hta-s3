@@ -11,8 +11,8 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 
-source = Path(sys.argv[1] if len(sys.argv) > 1 else "docs/latency-scale.csv")
-target = Path(sys.argv[2] if len(sys.argv) > 2 else "docs/latency-scale-gets.svg")
+source = Path(sys.argv[1] if len(sys.argv) > 1 else "measurements/latency-scale.csv")
+target = Path(sys.argv[2] if len(sys.argv) > 2 else "measurements/latency-scale-gets.svg")
 with source.open(newline="") as stream:
     rows = [row for row in csv.DictReader(stream) if row["backend"] == "s3"]
 

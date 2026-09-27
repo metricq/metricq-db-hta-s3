@@ -180,7 +180,7 @@ GOCACHE=/tmp/metricq-go-build-cache go test -tags=review ./engine \
 
 docker compose -f compose.test.yml up -d
 GOCACHE=/tmp/metricq-go-build-cache METRICQ_COMPACTION_METRICS=1500 \
-  METRICQ_COMPACTION_OUTPUT=docs/compaction-capacity-c0d3a3d.csv \
+  METRICQ_COMPACTION_OUTPUT=measurements/compaction-capacity-c0d3a3d.csv \
   METRICQ_COMPACTION_CPU_PROFILE=/tmp/hta-compaction-capacity.pprof \
   go test -tags=integration ./integration -run '^TestCompactionS3$' \
   -count=1 -v -timeout=15m

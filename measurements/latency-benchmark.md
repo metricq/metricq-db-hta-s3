@@ -62,10 +62,10 @@ To rerun on the local development setup:
 
 ```sh
 docker compose -f compose.test.yml up -d
-METRICQ_BENCH_OUTPUT=docs/latency-current.csv \
+METRICQ_BENCH_OUTPUT=measurements/latency-current.csv \
   go test -tags=integration ./integration -run '^TestRequestLatency$' -count=1
 MPLCONFIGDIR=/tmp/metricq-matplotlib python3 scripts/plot-latency.py \
-  docs/latency-current.csv docs/latency-current.svg
+  measurements/latency-current.csv measurements/latency-current.svg
 docker compose -f compose.test.yml down
 ```
 

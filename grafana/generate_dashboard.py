@@ -187,6 +187,9 @@ panel("Job duration", [
     (cfg("compaction_max_duration_seconds"), "timeout")], "s")
 panel("Active and source-object limit", [(f"max(metricq_db_compaction_active{T})", "active"),
                                          (f"max(metricq_db_compaction_object_limit{T})", "object limit")], "short")
+panel("Level locality", [(f"sum(rate(metricq_db_compaction_locality_jobs_total{T}[$__rate_interval]))", "locality jobs/s"),
+                         (f"max(metricq_db_compaction_locality_pending_streams{T})", "streams to inspect")], "short",
+      description="Jobs laying out consecutive blocks of a metric level contiguously (fewer GETs per FLEX query).")
 panel("Last successful job", [(f"time() - (max(metricq_db_compaction_last_success_timestamp_seconds{T}) > 0)", "age")], "s")
 
 newrow("Reclamation")

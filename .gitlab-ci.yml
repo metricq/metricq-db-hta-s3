@@ -1,0 +1,27 @@
+# Documentation: built on every branch, published with GitLab Pages from the
+# default branch. Sources are the Markdown files in docs/ (mkdocs.yml).
+stages:
+  - build
+  - deploy
+
+.mkdocs:
+  image: python:3.12-slim
+  before_script:
+    - pip install --no-cache-dir -r requirements-docs.txt
+  script:
+    - mkdocs build --strict --site-dir public
+
+docs:
+  extends: .mkdocs
+  stage: build
+  rules:
+    - if: $CI_COMMIT_BRANCH != $CI_DEFAULT_BRANCH
+
+pages:
+  extends: .mkdocs
+  stage: deploy
+  artifacts:
+    paths:
+      - public
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH

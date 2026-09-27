@@ -84,12 +84,12 @@ METRICQ_BENCH_HTA_MAX_SECONDS=10000000 \
 METRICQ_BENCH_OBJECT_TARGET_BYTES=134217728 \
 METRICQ_BENCH_WAL_TARGET_BYTES=268435456 \
 METRICQ_BENCH_REPETITIONS=20 \
-METRICQ_BENCH_OUTPUT=docs/latency-scale.csv \
-METRICQ_BENCH_INGEST_OUTPUT=docs/ingest-scale.csv \
+METRICQ_BENCH_OUTPUT=measurements/latency-scale.csv \
+METRICQ_BENCH_INGEST_OUTPUT=measurements/ingest-scale.csv \
   go test -tags=integration ./integration -run '^TestRequestLatency$' -count=1 -timeout=90m
 MPLCONFIGDIR=/tmp/metricq-matplotlib python3 scripts/plot-latency.py \
-  docs/latency-scale.csv docs/latency-scale.svg
+  measurements/latency-scale.csv measurements/latency-scale.svg
 MPLCONFIGDIR=/tmp/metricq-matplotlib python3 scripts/plot-range-gets.py \
-  docs/latency-scale.csv docs/latency-scale-gets.svg
+  measurements/latency-scale.csv measurements/latency-scale-gets.svg
 docker compose -f compose.test.yml down
 ```

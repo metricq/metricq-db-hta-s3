@@ -30,6 +30,9 @@ var compactionAbortGrace = time.Minute
 // per job; the limit halves after a publication exceeds the catalog budget.
 const maxCompactionObjects = 256
 
+// CompactionJob is the persisted description of a reserved compaction job. It
+// names the inputs and every output prefix so an interrupted job can be fenced
+// and its staging objects deleted.
 type CompactionJob struct {
 	Locality    bool
 	Consecutive [][2]blob
@@ -1165,6 +1168,9 @@ func (e *Engine) recoverCompaction(ctx context.Context) error {
 	})
 }
 
+// CompactOnce reserves, copies and publishes at most one compaction job. It
+// returns nil when there is nothing to do. A failed job is aborted; its
+// staging objects are removed by recovery after a grace period.
 func (e *Engine) CompactOnce(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, time.Duration(e.options.Compaction.defaults().MaxDurationSeconds)*time.Second)
 	defer cancel()
@@ -1233,6 +1239,9 @@ func (e *Engine) CompactOnce(ctx context.Context) error {
 	return err
 }
 
+// Reclaim runs one garbage collection pass: it deletes a batch of objects from
+// the trash journal that no running query can reference and publishes the
+// progress.
 func (e *Engine) Reclaim(ctx context.Context) error {
 	e.maintenanceMu.Lock()
 	defer e.maintenanceMu.Unlock()

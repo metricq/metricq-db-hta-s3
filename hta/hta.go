@@ -1,4 +1,8 @@
-// Package hta implements MetricQ's right-endpoint, time-weighted aggregation.
+// Package hta implements MetricQ's hierarchical timeline aggregation (HTA)
+// for one metric: raw samples and a chain of aggregate levels
+// interval_min, interval_min*factor, ... up to interval_max. Aggregation is
+// right-endpoint and time-weighted, like the C++ metricq-db-hta. It performs
+// no I/O and is deterministic, which WAL replay relies on.
 package hta
 
 import (
@@ -6,6 +10,8 @@ import (
 	"math"
 )
 
+// Config is the aggregation configuration of one metric, in nanoseconds.
+// Input selects the incoming MetricQ metric; it is not part of the layout.
 type Config struct {
 	Input          string `json:"input,omitempty"`
 	IntervalMin    int64  `json:"interval_min"`
@@ -13,6 +19,7 @@ type Config struct {
 	IntervalFactor int64  `json:"interval_factor"`
 }
 
+// Defaults fills unset intervals with the legacy defaults.
 func (c Config) Defaults() Config {
 	if c.IntervalMin == 0 {
 		c.IntervalMin = 10_000_000_000
@@ -25,6 +32,8 @@ func (c Config) Defaults() Config {
 	}
 	return c
 }
+
+// Validate checks that the levels form a proper hierarchy.
 func (c Config) Validate() error {
 	if c.IntervalMin <= 0 || c.IntervalMax < c.IntervalMin || c.IntervalFactor < 2 || c.IntervalMin%c.IntervalFactor != 0 {
 		return fmt.Errorf("invalid HTA intervals: %+v", c)
@@ -32,10 +41,14 @@ func (c Config) Validate() error {
 	return nil
 }
 
+// Point is one sample.
 type Point struct {
 	Time  int64
 	Value float64
 }
+
+// Aggregate summarizes an interval. Integral and ActiveTime are in value times
+// nanoseconds and nanoseconds.
 type Aggregate struct {
 	Minimum, Maximum, Sum float64
 	Count                 uint64
@@ -43,7 +56,11 @@ type Aggregate struct {
 	ActiveTime            int64
 }
 
+// Empty returns the neutral aggregate.
 func Empty() Aggregate { return Aggregate{Minimum: math.Inf(1), Maximum: math.Inf(-1)} }
+
+// Value returns the aggregate of value v held for duration nanoseconds and
+// counting count samples.
 func Value(v float64, duration int64, count uint64) Aggregate {
 	sum := float64(0)
 	if count > 0 {
@@ -51,6 +68,8 @@ func Value(v float64, duration int64, count uint64) Aggregate {
 	}
 	return Aggregate{v, v, sum, count, v * float64(duration), duration}
 }
+
+// Add merges b into a.
 func (a *Aggregate) Add(b Aggregate) {
 	a.Minimum = math.Min(a.Minimum, b.Minimum)
 	a.Maximum = math.Max(a.Maximum, b.Maximum)
@@ -59,6 +78,8 @@ func (a *Aggregate) Add(b Aggregate) {
 	a.Integral += b.Integral
 	a.ActiveTime += b.ActiveTime
 }
+
+// Times returns the aggregate of n consecutive intervals equal to a.
 func (a Aggregate) Times(n int64) Aggregate {
 	a.Sum *= float64(n)
 	a.Count *= uint64(n)
@@ -75,6 +96,8 @@ type Record struct {
 	Aggregate           Aggregate
 }
 
+// LastTime is the start of the last interval a record covers; for raw records
+// the sample time.
 func (r Record) LastTime() int64 {
 	if r.Level == 0 {
 		return r.Time
@@ -82,17 +105,28 @@ func (r Record) LastTime() int64 {
 	return r.Time + (r.Repeat-1)*r.Level
 }
 
+// Level is the open (incomplete) interval of one aggregate level.
 type Level struct {
 	Time      int64
 	Aggregate Aggregate
 }
+
+// Series is the aggregation state of one metric: its configuration, the open
+// interval of every level and the first and last accepted sample.
 type Series struct {
 	Config      Config
 	First, Last Point
 	Levels      map[int64]Level
 }
 
+// New returns an empty series.
 func New(c Config) *Series { return &Series{Config: c, Levels: make(map[int64]Level)} }
+
+// Insert adds a sample. It returns false, without changing state, for samples
+// the legacy database skips (not strictly increasing, non-finite). Every record
+// completed by the sample is passed to emit: the raw record first, then
+// completed aggregate intervals from fine to coarse, with runs of identical
+// empty intervals as one record.
 func (s *Series) Insert(p Point, emit func(Record)) bool {
 	if p.Time <= s.Last.Time || math.IsNaN(p.Value) || math.IsInf(p.Value, 0) {
 		return false

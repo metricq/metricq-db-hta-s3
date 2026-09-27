@@ -17,12 +17,15 @@ var errCatalogBudget = errors.New("catalog metadata byte budget exceeded")
 
 const catalogLeafTargetBytes = 256 << 10
 
+// BlockInfo locates one data block or index page of a stream in an object.
 type BlockInfo struct {
 	Metric string
 	Level  int64
 	Entry  indexEntry
 	Index  bool
 }
+
+// ObjectInfo is the catalog entry of one object: its live blocks and sizes.
 type ObjectInfo struct {
 	Key               string
 	Size, LiveBytes   int64

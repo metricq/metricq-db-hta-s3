@@ -16,6 +16,7 @@ import (
 	"github.com/aws/smithy-go"
 )
 
+// S3Config selects the bucket and key prefix of one database.
 type S3Config struct {
 	Bucket    string `json:"bucket"`
 	Prefix    string `json:"prefix"`
@@ -23,12 +24,16 @@ type S3Config struct {
 	Region    string `json:"region"`
 	PathStyle bool   `json:"path_style"`
 }
+
+// S3 implements Store, RangeGetter, Deleter, Statter and Lister with the AWS
+// SDK. Conditional writes use If-None-Match and If-Match.
 type S3 struct {
 	client         *s3.Client
 	bucket, prefix string
 	identity       string
 }
 
+// NewS3 creates a client using the AWS SDK credential chain.
 func NewS3(ctx context.Context, c S3Config) (*S3, error) {
 	if c.Bucket == "" {
 		return nil, fmt.Errorf("S3 bucket required")
@@ -73,6 +78,8 @@ func translate(err error) error {
 	}
 	return err
 }
+
+// Get reads an object and returns its ETag as version.
 func (s *S3) Get(ctx context.Context, key string) ([]byte, string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
@@ -84,6 +91,8 @@ func (s *S3) Get(ctx context.Context, key string) ([]byte, string, error) {
 	b, err := io.ReadAll(out.Body)
 	return b, aws.ToString(out.ETag), err
 }
+
+// GetRange reads length bytes at offset.
 func (s *S3) GetRange(ctx context.Context, key string, offset, length int64) ([]byte, error) {
 	if offset < 0 || length <= 0 || offset > int64(^uint64(0)>>1)-length {
 		return nil, fmt.Errorf("invalid object range")
@@ -109,6 +118,8 @@ func (s *S3) GetRange(ctx context.Context, key string, offset, length int64) ([]
 	}
 	return b, nil
 }
+
+// Put writes an object; see Store for the meaning of expected.
 func (s *S3) Put(ctx context.Context, key string, b []byte, expected *string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
@@ -133,8 +144,10 @@ func (s *S3) Put(ctx context.Context, key string, b []byte, expected *string) (s
 	return aws.ToString(out.ETag), nil
 }
 
+// Identity names endpoint, region, bucket and prefix, without credentials.
 func (s *S3) Identity() string { return s.identity }
 
+// Delete removes an object; deleting a missing object succeeds.
 func (s *S3) Delete(ctx context.Context, key string) error {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
@@ -145,6 +158,7 @@ func (s *S3) Delete(ctx context.Context, key string) error {
 	return translate(err)
 }
 
+// Stat returns the size of an object.
 func (s *S3) Stat(ctx context.Context, key string) (int64, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
@@ -155,6 +169,7 @@ func (s *S3) Stat(ctx context.Context, key string) (int64, error) {
 	return aws.ToInt64(out.ContentLength), nil
 }
 
+// List returns up to limit keys below prefix after the continuation token.
 func (s *S3) List(ctx context.Context, prefix, token string, limit int32) ([]string, string, error) {
 	if limit < 1 || limit > 1000 {
 		return nil, "", fmt.Errorf("invalid inventory page size")

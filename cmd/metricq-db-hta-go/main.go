@@ -1,3 +1,11 @@
+// Command metricq-db-hta-go is the MetricQ HTA history database with S3
+// object storage. It registers with the MetricQ manager under its token,
+// stores the configured metrics and answers history requests.
+//
+// Options come from flags, METRICQ_* environment variables (also from .metricq
+// files) and an optional JSON file (--config); run with --help for the list.
+// Prometheus metrics are served on --metrics-listen at /metrics, readiness at
+// /readyz. See docs/operations in the repository.
 package main
 
 import (

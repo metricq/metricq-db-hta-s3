@@ -6,6 +6,8 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
+// Metrics holds the engine's Prometheus collectors. The executable registers
+// them with a token label; docs/operations/monitoring.md lists them.
 type Metrics struct {
 	CandidateObjects, SmallBlocks, SmallBlockBytes                                          prometheus.Gauge
 	CompactionInputBlocks, CompactionOutputBlocks, CompactionNoop                           prometheus.Counter
@@ -54,6 +56,7 @@ type Metrics struct {
 	LocalityPendingStreams                      prometheus.Gauge
 }
 
+// NewMetrics creates and registers all engine metrics with r.
 func NewMetrics(r prometheus.Registerer) *Metrics {
 	gauge := func(name, help string) prometheus.Gauge {
 		v := prometheus.NewGauge(prometheus.GaugeOpts{Namespace: "metricq_db", Name: name, Help: help})

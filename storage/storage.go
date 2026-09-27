@@ -1,4 +1,7 @@
-// Package storage defines the durable object contract used by the engine.
+// Package storage defines the object store contract of the engine and an S3
+// implementation. The engine needs strongly consistent reads, create-only
+// writes and a compare-and-swap PUT for its manifest; range reads, deletes,
+// size queries and prefix listings are optional capabilities.
 package storage
 
 import (
@@ -6,7 +9,10 @@ import (
 	"errors"
 )
 
+// ErrNotFound is returned by Get for a missing object.
 var ErrNotFound = errors.New("object not found")
+
+// ErrConflict is returned by a conditional Put whose expectation failed.
 var ErrConflict = errors.New("object version conflict")
 
 // Store must provide strongly consistent GET and atomic conditional PUT.

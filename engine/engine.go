@@ -1,5 +1,3 @@
-// Package engine implements a single-writer HTA database with a bounded local
-// WAL and immutable, size-sealed objects. RabbitMQ owns backlog beyond the WAL.
 package engine
 
 import (
@@ -22,6 +20,9 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
+// ErrPressure reports that the WAL high watermark or the builder memory limit
+// refuses further deliveries. The caller should run Flush and retry; the
+// deliveries not processed must not be acknowledged.
 var ErrPressure = errors.New("WAL or builder high watermark reached")
 
 // pendingRecordBytes estimates builder memory per unflushed record: an 80-byte
@@ -29,7 +30,11 @@ var ErrPressure = errors.New("WAL or builder high watermark reached")
 // carry their metric name.
 const pendingRecordBytes = 96
 
+// Options configures an Engine. Zero values select the defaults documented in
+// docs/operations/configuration.md; Open validates the combination.
 type Options struct {
+	// AppendOnlyAggregates appends new aggregate blocks at checkpoints instead
+	// of extending the last partial block; compaction merges them later.
 	AppendOnlyAggregates bool `json:"append_only_aggregates"`
 	// HoldSeconds > 0 keeps streams in memory until they fill a block or their
 	// oldest record reaches this age; held records persist in held/ deltas.
@@ -38,16 +43,27 @@ type Options struct {
 	HoldExpiryBatchSeconds int64 `json:"hold_expiry_batch_seconds"`
 	// HoldBytes bounds held records (estimated); above it the largest streams
 	// are written early. Zero means half of BuilderHard.
-	HoldBytes             int64             `json:"hold_bytes"`
+	HoldBytes int64 `json:"hold_bytes"`
+	// BackgroundMaintenance enables the catalog, compaction and the trash
+	// journal (RunMaintenance); required for holding.
 	BackgroundMaintenance bool              `json:"background_maintenance"`
 	Compaction            CompactionOptions `json:"compaction"`
-	WALDirectory          string            `json:"wal_directory"`
-	WALTarget             int64             `json:"wal_target_bytes"`
-	WALHigh               int64             `json:"wal_high_bytes"`
-	WALHard               int64             `json:"wal_hard_bytes"`
-	ObjectTarget          int64             `json:"object_target_bytes"`
-	BuilderHard           int64             `json:"builder_hard_bytes"`
-	MaxQueryRows          int               `json:"max_query_rows"`
+	// WALDirectory holds the WAL segments; it must be on durable local storage.
+	WALDirectory string `json:"wal_directory"`
+	// WALTarget is the active segment size that triggers a checkpoint.
+	WALTarget int64 `json:"wal_target_bytes"`
+	// WALHigh is the total WAL size above which deliveries are refused.
+	WALHigh int64 `json:"wal_high_bytes"`
+	// WALHard is the absolute WAL limit; larger deliveries are rejected.
+	WALHard int64 `json:"wal_hard_bytes"`
+	// ObjectTarget is the estimated size of records only in the WAL that
+	// triggers a checkpoint.
+	ObjectTarget int64 `json:"object_target_bytes"`
+	// BuilderHard bounds the estimated memory of all records not yet in
+	// blocks (pending, held, uploading); deliveries are refused above it.
+	BuilderHard int64 `json:"builder_hard_bytes"`
+	// MaxQueryRows is the largest number of rows in one history response.
+	MaxQueryRows int `json:"max_query_rows"`
 }
 
 func (o Options) defaults() Options {
@@ -129,6 +145,8 @@ func aggregationConfig(c hta.Config) hta.Config {
 	return c
 }
 
+// Engine is one open database. All exported methods are safe for concurrent
+// use; only one Engine (one process) may own a WAL directory and store prefix.
 type Engine struct {
 	mu                       sync.Mutex
 	maintenanceMu            sync.Mutex
@@ -216,6 +234,11 @@ func decode(b []byte, v any) error {
 	defer z.Close()
 	return gob.NewDecoder(io.LimitReader(z, 512<<20)).Decode(v)
 }
+
+// Open loads the committed state from s, restores held records, replays the
+// WAL in o.WALDirectory and configures the given metrics. It fails without
+// modifying data if the WAL belongs to another store namespace, is damaged, or
+// contradicts the stored configuration.
 func Open(ctx context.Context, s storage.Store, o Options, configs map[string]hta.Config, m *Metrics) (*Engine, error) {
 	o = o.defaults()
 	if o.WALDirectory == "" || o.WALTarget <= 0 || o.WALTarget >= o.WALHigh || o.WALHigh >= o.WALHard || o.ObjectTarget <= 0 || o.BuilderHard < o.ObjectTarget || o.MaxQueryRows < 1 {
@@ -345,6 +368,9 @@ func (e *Engine) configure(configs map[string]hta.Config) error {
 	}
 	return nil
 }
+
+// Configure adds metrics. Changing the aggregation parameters of an existing
+// metric is rejected.
 func (e *Engine) Configure(configs map[string]hta.Config) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -410,6 +436,8 @@ func (e *Engine) apply(b batch) error {
 	}
 	return nil
 }
+
+// Ingest makes one delivery durable; see IngestBatch.
 func (e *Engine) Ingest(ctx context.Context, name string, chunk *metricq.DataChunk) error {
 	_, err := e.IngestBatch(ctx, []Delivery{{Metric: name, Chunk: chunk}})
 	return err
@@ -606,11 +634,21 @@ func (e *Engine) put(ctx context.Context, key string, b []byte, v *string) (stri
 	}
 	return version, err
 }
+
+// NeedsFlush reports whether a checkpoint is due: WAL or object target
+// reached, a held stream expired, or held memory above its budget.
 func (e *Engine) NeedsFlush() bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return e.wal.size >= e.options.WALTarget || e.unsavedBytes() >= e.options.ObjectTarget || e.holdDue() || e.holdPressure()
 }
+
+// Flush writes a checkpoint: it freezes the records to write and the active
+// WAL segment, uploads blocks, index pages, held deltas and metadata without
+// holding the ingestion mutex, publishes a new manifest and releases the
+// covered WAL segments. On failure nothing is released and the next Flush
+// retries. Flush calls are serialized with each other and with maintenance
+// publications.
 func (e *Engine) Flush(ctx context.Context) (err error) {
 	e.publishMu.Lock()
 	defer e.publishMu.Unlock()
@@ -985,6 +1023,9 @@ func (e *Engine) RunFlush(ctx context.Context) {
 		}
 	}
 }
+
+// Close stops accepting work and closes the WAL. It does not flush; call
+// Flush first for a final checkpoint.
 func (e *Engine) Close() error {
 	e.publishMu.Lock()
 	defer e.publishMu.Unlock()

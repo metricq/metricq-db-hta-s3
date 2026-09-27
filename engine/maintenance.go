@@ -13,6 +13,8 @@ import (
 	"github.com/metricq/metricq-db-hta-go/storage"
 )
 
+// CompactionOptions configures background compaction; see
+// docs/operations/tuning.md for the effect of each option.
 type CompactionOptions struct {
 	MaxDurationSeconds int64 `json:"max_duration_seconds"`
 	MaxCycleSeconds    int64 `json:"max_cycle_seconds"`
@@ -421,6 +423,7 @@ func (e *Engine) updateMaintenanceMetrics(m manifest) {
 	e.metrics.DeadObjectBytes.Set(float64(m.StoredObjectBytes - m.LiveObjectBytes))
 }
 
+// MaintenanceStatus summarizes checkpoint and maintenance state.
 type MaintenanceStatus struct {
 	SmallBlockStatsAvailable bool   `json:"small_block_stats_available"`
 	SmallBlocks              int64  `json:"small_data_blocks"`
@@ -434,6 +437,7 @@ type MaintenanceStatus struct {
 	JobPending               bool   `json:"job_pending"`
 }
 
+// MaintenanceStatus returns the current checkpoint and maintenance state.
 func (e *Engine) MaintenanceStatus() MaintenanceStatus {
 	e.mu.Lock()
 	defer e.mu.Unlock()

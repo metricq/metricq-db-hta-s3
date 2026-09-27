@@ -1,5 +1,9 @@
-// check-ceph-s3 probes the exact S3 operations required by the manifest commit.
-// It creates the requested bucket if needed, then writes and deletes one random object.
+// Command check-ceph-s3 probes whether an S3 endpoint supports the operations
+// the database needs: create-only and If-Match conditional PUT, read-after-
+// write consistency and deletion. It creates the bucket if needed and writes
+// and deletes one random object. Configure it with S3_CHECK_URL
+// (https://host/bucket), S3_CHECK_KEY, S3_CHECK_SECRET and optionally
+// S3_CHECK_REGION.
 package main
 
 import (

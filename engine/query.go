@@ -366,6 +366,10 @@ func (q *reader) aggregate(begin, end int64) (hta.Aggregate, error) {
 	}
 	return a, nil
 }
+
+// Query answers a MetricQ history request for the canonical metric name from
+// a snapshot: stored blocks of the chosen HTA level plus records not yet
+// written. It does not block ingestion or checkpoints.
 func (e *Engine) Query(ctx context.Context, name string, req *metricq.HistoryRequest) (resp *metricq.HistoryResponse, err error) {
 	start := time.Now()
 	e.metrics.Queries.Inc()

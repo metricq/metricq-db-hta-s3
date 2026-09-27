@@ -442,6 +442,11 @@ func (e *Engine) setConfigMetrics() {
 		e.metrics.Config.WithLabelValues(name).Set(v)
 	}
 	e.metrics.CompactionObjectLimit.Set(maxCompactionObjects)
+	continuous := float64(0)
+	if c.Continuous {
+		continuous = 1
+	}
+	e.metrics.Config.WithLabelValues("compaction_continuous").Set(continuous)
 }
 func (e *Engine) apply(b batch) error {
 	if e.oldestWAL == 0 {

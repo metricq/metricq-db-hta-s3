@@ -97,7 +97,24 @@ func (e *Engine) writeObjectInventory(ctx context.Context, o *ObjectInfo, old Ob
 		p = nil
 		return err
 	}
-	write := func(blocks []BlockInfo, first, last int64) error {
+	var write func([]BlockInfo, int64, int64) error
+	write = func(blocks []BlockInfo, first, last int64) error {
+		if len(blocks) > inventoryPageBlocks {
+			for start := 0; start < len(blocks); start += inventoryPageBlocks {
+				end := min(start+inventoryPageBlocks, len(blocks))
+				a, z := blocks[start].Entry.Blob.Offset, blocks[end-1].Entry.Blob.Offset
+				if start == 0 {
+					a = first
+				}
+				if end == len(blocks) {
+					z = last
+				}
+				if err := write(blocks[start:end], a, z); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
 		if len(blocks) == 0 {
 			return nil
 		}

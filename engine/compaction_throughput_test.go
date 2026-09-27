@@ -268,3 +268,32 @@ func TestContinuousMaintenanceWakesOnCheckpointAndStops(t *testing.T) {
 	}
 	t.Fatal("continuous worker waited for its one-hour ticker instead of the checkpoint wakeup")
 }
+
+func TestPartialBootstrapCanExtendPagedInventory(t *testing.T) {
+	e, _ := heldMetadataEngine(t)
+	ctx := context.Background()
+	old := ObjectInfo{Key: "data/bootstrap", Size: 256 * 128, LiveBytes: 256 * 64}
+	for i := 0; i < 256; i++ {
+		old.Blocks = append(old.Blocks, BlockInfo{Entry: indexEntry{Blob: blob{Key: old.Key, Offset: int64(i) * 128, Length: 64}}})
+	}
+	if _, err := e.writeObjectInventory(ctx, &old, ObjectInfo{}); err != nil {
+		t.Fatal(err)
+	}
+	next := old
+	next.Blocks = append([]BlockInfo{}, old.Blocks...)
+	for i := 0; i < 100; i++ {
+		next.Blocks = append(next.Blocks, BlockInfo{Entry: indexEntry{Blob: blob{Key: old.Key, Offset: int64(i)*128 + 64, Length: 64}}})
+	}
+	next.LiveBytes += 100 * 64
+	if _, err := e.writeObjectInventory(ctx, &next, old); err != nil {
+		t.Fatal(err)
+	}
+	loaded := next
+	loaded.Blocks = nil
+	if err := e.loadObjectInventory(ctx, &loaded); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(loaded.Blocks, next.Blocks) {
+		t.Fatal("partial bootstrap dropped discovered descriptors")
+	}
+}

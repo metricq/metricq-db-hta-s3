@@ -37,6 +37,7 @@ For conditional manifest updates, the S3 adapter sends `If-Match` with the ETag'
 2. Append the accepted points as one checksummed WAL frame per chunk and `fsync` them. All deliveries of one prefetched batch share one sync ([group commit](docs/ingest-group-commit.md)).
 3. Apply them to per-metric aggregation states, then ACK the AMQP deliveries.
 4. At object-size or WAL-target thresholds, freeze the pending records and rename the active WAL segment `ingest.wal` to `ingest.wal.<last sequence>`; ingestion continues in a new segment. Outside the ingestion lock, pack independently compressed blocks by canonical metric and HTA level into immutable data objects. Append their references to copy-on-write index pages and upload the index pack. Repeated gap aggregates are stored as runs.
+   With `hold_seconds`, streams are written only in full blocks or after the hold interval; the rest stays in memory and is persisted as one `held/` delta per checkpoint ([holding streams back](docs/hold-back.md)).
 5. Atomically publish the manifest with its sequence, per-stream index roots and open aggregation states using a conditional S3 PUT.
 6. Persist the local GC checkpoint, then delete the published WAL segments and sync the directory. A failed upload keeps its segment and records for the next flush.
 

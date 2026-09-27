@@ -30,7 +30,13 @@ var ErrPressure = errors.New("WAL or builder high watermark reached")
 const pendingRecordBytes = 96
 
 type Options struct {
-	AppendOnlyAggregates  bool              `json:"append_only_aggregates"`
+	AppendOnlyAggregates bool `json:"append_only_aggregates"`
+	// HoldSeconds > 0 keeps streams in memory until they fill a block or their
+	// oldest record reaches this age; held records persist in held/ deltas.
+	HoldSeconds           int64             `json:"hold_seconds"`
+	// HoldBytes bounds held records (estimated); above it the largest streams
+	// are written early. Zero means half of BuilderHard.
+	HoldBytes             int64             `json:"hold_bytes"`
 	BackgroundMaintenance bool              `json:"background_maintenance"`
 	Compaction            CompactionOptions `json:"compaction"`
 	WALDirectory          string            `json:"wal_directory"`
@@ -62,6 +68,9 @@ func (o Options) defaults() Options {
 	if o.MaxQueryRows == 0 {
 		o.MaxQueryRows = 1_000_000
 	}
+	if o.HoldBytes == 0 {
+		o.HoldBytes = o.BuilderHard / 2
+	}
 	return o
 }
 
@@ -72,6 +81,10 @@ type entry struct {
 type manifest struct {
 	TrashOffset  int
 	TrashCleanup string
+	// Held-record deltas still needed after a restart, oldest first, and the
+	// last written record time of every stream with held delta records.
+	Held           []blob
+	HeldWatermarks map[string]int64
 	// Finished journal pages, deleted by the next reclamation pass.
 	TrashCleanups []string
 
@@ -147,6 +160,9 @@ type Engine struct {
 	pendingBytes             int64
 	flushing                 pendingSet // frozen by a running Flush, still queryable
 	flushWanted              chan struct{}
+	held                     map[string]*heldStream
+	coveredRecords           int64
+	now                      func() time.Time
 	flushingBytes            int64
 	oldestWAL                int64
 	closed                   bool
@@ -191,6 +207,12 @@ func Open(ctx context.Context, s storage.Store, o Options, configs map[string]ht
 	o = o.defaults()
 	if o.WALDirectory == "" || o.WALTarget <= 0 || o.WALTarget >= o.WALHigh || o.WALHigh >= o.WALHard || o.ObjectTarget <= 0 || o.BuilderHard < o.ObjectTarget || o.MaxQueryRows < 1 {
 		return nil, fmt.Errorf("invalid engine options")
+	}
+	if o.HoldSeconds < 0 || (o.HoldSeconds > 0 && !o.BackgroundMaintenance) {
+		return nil, fmt.Errorf("holding streams requires background maintenance")
+	}
+	if o.HoldBytes < 0 || o.HoldBytes >= o.BuilderHard {
+		return nil, fmt.Errorf("hold_bytes must be below builder_hard_bytes")
 	}
 	if o.AppendOnlyAggregates && (!o.BackgroundMaintenance || !o.Compaction.Enabled || !o.Compaction.MergeSmallBlocks) {
 		return nil, fmt.Errorf("append-only aggregates require enabled background block consolidation")
@@ -241,6 +263,10 @@ func Open(ctx context.Context, s storage.Store, o Options, configs map[string]ht
 		return nil, err
 	}
 	e.sequence = e.state.Sequence
+	// Held records precede the WAL frames after the checkpoint.
+	if err = e.loadHeld(ctx); err != nil {
+		return nil, err
+	}
 	err = w.replay(func(seq uint64, b []byte) error {
 		if seq <= e.state.Sequence {
 			return nil
@@ -332,8 +358,7 @@ func (e *Engine) apply(b batch) error {
 	s := e.state.Series[b.Metric]
 	for _, p := range b.Points {
 		if !s.Insert(p, func(r hta.Record) {
-			e.pending.add(b.Metric, r)
-			e.pendingBytes += pendingRecordBytes
+			e.addPending(b.Metric, r)
 		}) {
 			return fmt.Errorf("WAL contains unprocessable point for %q at %d", b.Metric, p.Time)
 		}
@@ -499,9 +524,8 @@ func (e *Engine) IngestBatch(ctx context.Context, deliveries []Delivery) (int, e
 		e.sequence++
 		e.state.Series[plan.metric] = plan.series
 		for _, en := range plan.prepared {
-			e.pending.add(en.Metric, en.Record)
+			e.addPending(en.Metric, en.Record)
 		}
-		e.pendingBytes += plan.extra
 		if e.oldestWAL == 0 {
 			e.oldestWAL = plan.received
 		}
@@ -510,7 +534,7 @@ func (e *Engine) IngestBatch(ctx context.Context, deliveries []Delivery) (int, e
 	e.updateMetrics()
 	// Wake the flush loop as soon as a threshold is crossed, instead of letting
 	// the builder grow towards its hard limit until the next tick.
-	if e.wal.size >= e.options.WALTarget || e.pendingBytes >= e.options.ObjectTarget {
+	if e.wal.size >= e.options.WALTarget || e.unsavedBytes() >= e.options.ObjectTarget {
 		select {
 		case e.flushWanted <- struct{}{}:
 		default:
@@ -531,7 +555,7 @@ func (e *Engine) put(ctx context.Context, key string, b []byte, v *string) (stri
 func (e *Engine) NeedsFlush() bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	return e.wal.size >= e.options.WALTarget || e.pendingBytes >= e.options.ObjectTarget
+	return e.wal.size >= e.options.WALTarget || e.unsavedBytes() >= e.options.ObjectTarget || e.holdDue() || e.holdPressure()
 }
 func (e *Engine) Flush(ctx context.Context) (err error) {
 	e.publishMu.Lock()
@@ -546,7 +570,7 @@ func (e *Engine) Flush(ctx context.Context) (err error) {
 		e.mu.Unlock()
 		return err
 	}
-	if e.sequence == e.state.Sequence && e.version != "" {
+	if e.sequence == e.state.Sequence && e.version != "" && !e.holdDue() && !e.holdPressure() {
 		if !e.options.BackgroundMaintenance {
 			e.collectGarbage(ctx)
 		}
@@ -572,9 +596,34 @@ func (e *Engine) Flush(ctx context.Context) (err error) {
 	next := cloneManifest(e.state)
 	next.Sequence = e.sequence
 	next.Generation++
-	frozen, frozenOldest := e.pending, e.oldestWAL
-	e.flushing, e.flushingBytes = frozen, e.pendingBytes
-	e.pending, e.pendingBytes, e.oldestWAL = pendingSet{}, 0, 0
+	deltaPack, err := newPack("held")
+	if err != nil {
+		e.mu.Unlock()
+		return err
+	}
+	// Move each stream's written prefix to the frozen set; held suffixes and
+	// newer records stay pending and queryable.
+	plan := e.planHold(deltaPack.key)
+	var frozen pendingSet
+	for metric, levels := range plan.write {
+		for level, k := range levels {
+			records := e.pending.streams[metric][level]
+			if frozen.streams == nil {
+				frozen.streams = make(map[string]map[int64][]hta.Record)
+			}
+			if frozen.streams[metric] == nil {
+				frozen.streams[metric] = make(map[int64][]hta.Record)
+			}
+			frozen.streams[metric][level] = records[:k:k]
+			frozen.records += k
+			e.pending.streams[metric][level] = records[k:]
+			e.pending.records -= k
+		}
+	}
+	frozenOldest := e.oldestWAL
+	e.flushing, e.flushingBytes = frozen, int64(frozen.records)*pendingRecordBytes
+	e.pendingBytes -= e.flushingBytes
+	e.oldestWAL = 0
 	e.mu.Unlock()
 	refDelta := make(map[string]int64)
 	var publishedData, publishedIndex *pack
@@ -724,6 +773,26 @@ func (e *Engine) Flush(ctx context.Context) (err error) {
 			}
 		}
 
+		if e.holding() {
+			next.Held = plan.live
+			if len(plan.delta.Streams) > 0 {
+				b, err := encode(plan.delta)
+				if err != nil {
+					return err
+				}
+				next.Held = append(append([]blob(nil), plan.live...), deltaPack.add(b))
+				empty := ""
+				if _, err = e.put(ctx, deltaPack.key, deltaPack.buf.Bytes(), &empty); err != nil {
+					return err
+				}
+				e.metrics.Objects.Inc()
+				e.metrics.Bytes.Add(float64(deltaPack.buf.Len()))
+			}
+			next.HeldWatermarks = plan.watermarks
+			if err := e.appendTrash(ctx, &next, plan.obsolete, 0); err != nil {
+				return err
+			}
+		}
 		b, err := encode(next)
 		if err != nil {
 			return err
@@ -784,6 +853,7 @@ func (e *Engine) Flush(ctx context.Context) (err error) {
 		e.pinTailPaths(stagedTails, publishedIndex.nodes)
 		publishedIndex.nodes = nil
 	}
+	e.commitHold(plan)
 	e.flushing, e.flushingBytes = pendingSet{}, 0
 	if err = e.wal.checkpoint(next.Sequence); err != nil {
 		e.fatal = err

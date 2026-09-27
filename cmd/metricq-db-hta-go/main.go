@@ -42,6 +42,7 @@ func run() error {
 	}
 	var cfg localConfig
 	cfg.Engine.AppendOnlyAggregates = true
+	cfg.Engine.HoldSeconds = 3600
 	cfg.Engine.Compaction.Enabled = true
 	cfg.Engine.Compaction.MergeSmallBlocks = true
 	cfg.Engine.Compaction.CooldownSeconds = 60

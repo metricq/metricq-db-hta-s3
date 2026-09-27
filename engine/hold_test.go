@@ -1,0 +1,236 @@
+package engine
+
+import (
+	"context"
+	"math"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/metricq/metricq-db-hta-go/hta"
+	metricq "github.com/metricq/metricq-go"
+	"google.golang.org/protobuf/proto"
+)
+
+type holdFixture struct {
+	t         *testing.T
+	ctx       context.Context
+	store     *gcStore
+	dir       string
+	options   Options
+	now       time.Time
+	e         *Engine
+	reference *Engine
+	next      map[string]int64
+}
+
+func newHoldFixture(t *testing.T) *holdFixture {
+	f := &holdFixture{t: t, ctx: context.Background(), store: &gcStore{memoryStore: newStore()}, dir: t.TempDir(), now: time.Unix(1000, 0), next: map[string]int64{"x": 100, "y": 100}}
+	f.options = maintenanceOptions(f.dir, true)
+	f.options.HoldSeconds = 3600
+	f.options.BuilderHard = 64 << 20
+	f.open()
+	var err error
+	f.reference, err = Open(f.ctx, newStore(), Options{WALDirectory: t.TempDir(), BuilderHard: 64 << 20}, batchConfig, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { f.reference.Close() })
+	return f
+}
+
+func (f *holdFixture) open() {
+	f.t.Helper()
+	e, err := Open(f.ctx, f.store, f.options, batchConfig, nil)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	e.now = func() time.Time { return f.now }
+	// Open ran before the clock was injected; held streams restart their age now.
+	for _, h := range e.held {
+		h.since = f.now
+	}
+	f.e = e
+	f.t.Cleanup(func() { e.Close() })
+}
+
+// restart simulates a crash: no final flush, WAL and S3 remain.
+func (f *holdFixture) restart() {
+	f.t.Helper()
+	f.e.Close()
+	f.open()
+}
+
+func (f *holdFixture) ingest(metric string, n int) {
+	f.t.Helper()
+	points := make([]hta.Point, n)
+	for i := range points {
+		points[i] = hta.Point{Time: f.next[metric], Value: math.Sin(float64(f.next[metric]) / 700)}
+		f.next[metric] += 10
+	}
+	for _, e := range []*Engine{f.e, f.reference} {
+		if err := e.Ingest(f.ctx, metric, chunk(points...)); err != nil {
+			f.t.Fatal(err)
+		}
+	}
+}
+
+func (f *holdFixture) flush() {
+	f.t.Helper()
+	if err := f.e.Flush(f.ctx); err != nil {
+		f.t.Fatal(err)
+	}
+}
+
+func (f *holdFixture) check(label string) {
+	f.t.Helper()
+	end := max(f.next["x"], f.next["y"]) + 1000
+	requests := []*metricq.HistoryRequest{
+		{Type: metricq.HistoryRequest_LAST_VALUE},
+		{Type: metricq.HistoryRequest_FLEX_TIMELINE, EndTime: end, IntervalMax: 50},
+		{Type: metricq.HistoryRequest_FLEX_TIMELINE, EndTime: end, IntervalMax: 100},
+		{Type: metricq.HistoryRequest_FLEX_TIMELINE, EndTime: end, IntervalMax: 1000},
+		{Type: metricq.HistoryRequest_AGGREGATE, StartTime: 150, EndTime: end},
+	}
+	for _, name := range []string{"x", "y"} {
+		for _, req := range requests {
+			want, err := f.reference.Query(f.ctx, name, req)
+			if err != nil {
+				f.t.Fatal(err)
+			}
+			got, err := f.e.Query(f.ctx, name, req)
+			if err != nil || !proto.Equal(want, got) {
+				f.t.Fatalf("%s: %s %v differs: %v (%v)", label, name, req.Type, err, len(got.GetTimeDelta()))
+			}
+		}
+	}
+}
+
+func (f *holdFixture) blocks(metric string, level int64) []blob {
+	return streamBlocks(f.t, f.e, metric, level)
+}
+
+func (f *holdFixture) heldObjects() int {
+	f.store.mu.Lock()
+	defer f.store.mu.Unlock()
+	n := 0
+	for key := range f.store.objects {
+		if strings.HasPrefix(key, "held/") {
+			n++
+		}
+	}
+	return n
+}
+
+func TestHoldWritesFullBlocksAndRecoversHeldRecords(t *testing.T) {
+	f := newHoldFixture(t)
+	f.ingest("x", 2500)
+	f.ingest("y", 10)
+	f.flush()
+	// Two full raw blocks; the remainder of x and all of y are held.
+	if n := len(f.blocks("x", 0)); n != 2 {
+		t.Fatalf("x raw blocks %d", n)
+	}
+	if n := len(f.blocks("y", 0)); n != 0 {
+		t.Fatalf("y raw blocks %d", n)
+	}
+	if len(f.e.state.Held) != 1 || f.e.unsavedBytes() != 0 || f.e.wal.total() != 0 {
+		t.Fatalf("held deltas %d unsaved %d WAL %d", len(f.e.state.Held), f.e.unsavedBytes(), f.e.wal.total())
+	}
+	f.check("held")
+	// Newer records exist only in the WAL; the older ones in the delta.
+	f.ingest("x", 300)
+	f.ingest("y", 5)
+	f.restart()
+	f.check("restart from delta and WAL")
+	f.flush()
+	f.check("second flush")
+	f.restart()
+	f.check("restart after second flush")
+	// The hold limit expires: everything is written, deltas become obsolete.
+	f.now = f.now.Add(2 * time.Hour)
+	f.e.mu.Lock()
+	due := f.e.holdDue()
+	f.e.mu.Unlock()
+	if !due || !f.e.NeedsFlush() {
+		t.Fatal("expired hold not due")
+	}
+	f.flush()
+	if f.e.pending.len() != 0 || len(f.e.state.Held) != 0 || len(f.e.held) != 0 && f.e.coveredRecords != 0 {
+		t.Fatalf("pending %d deltas %d covered %d", f.e.pending.len(), len(f.e.state.Held), f.e.coveredRecords)
+	}
+	drain(t, f.e)
+	if n := f.heldObjects(); n != 0 {
+		t.Fatalf("%d obsolete held objects remain", n)
+	}
+	f.check("all written")
+	f.restart()
+	f.check("restart after all written")
+	checkCatalog(t, f.e)
+}
+
+func TestHoldDeltaStillNeededSkipsWrittenRecords(t *testing.T) {
+	f := newHoldFixture(t)
+	// One delta covers both streams.
+	f.ingest("x", 900)
+	f.ingest("y", 20)
+	f.flush()
+	first := f.e.state.Held[0].Key
+	// x fills a block from records in the first delta; y stays held there.
+	f.ingest("x", 300)
+	f.flush()
+	if len(f.blocks("x", 0)) != 1 {
+		t.Fatal("x did not write its full block")
+	}
+	found := false
+	for _, ref := range f.e.state.Held {
+		found = found || ref.Key == first
+	}
+	if !found {
+		t.Fatal("delta still covering y was dropped")
+	}
+	if _, ok := f.e.state.HeldWatermarks[streamKey("x", 0)]; !ok {
+		t.Fatal("no watermark for x")
+	}
+	// Recovery must not restore x records from the first delta again.
+	f.restart()
+	f.check("restart with partly written delta")
+	f.flush()
+	f.restart()
+	f.check("restart after next flush")
+}
+
+func TestHoldWritesLargestStreamsUnderMemoryPressure(t *testing.T) {
+	f := newHoldFixture(t)
+	f.e.options.HoldBytes = 200 * pendingRecordBytes
+	f.ingest("x", 300)
+	f.ingest("y", 40)
+	if !f.e.NeedsFlush() {
+		t.Fatal("memory pressure does not request a flush")
+	}
+	f.flush()
+	if len(f.blocks("x", 0)) != 1 || f.e.pendingBytes > f.e.options.HoldBytes {
+		t.Fatalf("largest stream not written: blocks %d pending %d", len(f.blocks("x", 0)), f.e.pendingBytes)
+	}
+	f.check("after pressure flush")
+	f.restart()
+	f.check("restart after pressure flush")
+}
+
+func TestHoldFailedManifestKeepsDeltaStateConsistent(t *testing.T) {
+	f := newHoldFixture(t)
+	f.ingest("x", 1500)
+	f.ingest("y", 7)
+	f.flush()
+	f.ingest("x", 700)
+	f.store.fail = "manifest"
+	if err := f.e.Flush(f.ctx); err == nil {
+		t.Fatal("flush succeeded during outage")
+	}
+	f.check("after failed flush")
+	f.store.fail = ""
+	f.flush()
+	f.check("after retry")
+	f.restart()
+	f.check("restart after retry")
+}

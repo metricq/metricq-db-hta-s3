@@ -16,7 +16,9 @@
     "wal_high_bytes": 67108864,
     "wal_hard_bytes": 83886080,
     "object_target_bytes": 4194304,
-    "builder_hard_bytes": 33554432,
+    "builder_hard_bytes": 805306368,
+    "hold_seconds": 3600,
+    "hold_bytes": 536870912,
     "max_query_rows": 1000000,
     "compaction": {
       "enabled": true,

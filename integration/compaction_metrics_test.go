@@ -66,7 +66,7 @@ func measureCompactionMetrics(t *testing.T, r *prometheus.Registry) func() {
 			return
 		}
 		for _, f := range families {
-			if f.GetName() != "metricq_db_compaction_phase_seconds" && f.GetName() != "metricq_db_metadata_cache_requests_total" {
+			if f.GetName() != "metricq_db_compaction_phase_seconds" && f.GetName() != "metricq_db_metadata_cache_requests_total" && f.GetName() != "metricq_db_checkpoint_metadata_pages_total" {
 				continue
 			}
 			for _, m := range f.Metric {
@@ -78,7 +78,11 @@ func measureCompactionMetrics(t *testing.T, r *prometheus.Registry) func() {
 					t.Logf("phase %s count=%d seconds=%.6f", strings.Join(labels, ","), h.GetSampleCount(), h.GetSampleSum())
 				}
 				if c := m.Counter; c != nil {
-					t.Logf("cache %s calls=%.0f", strings.Join(labels, ","), c.GetValue())
+					if f.GetName() == "metricq_db_checkpoint_metadata_pages_total" {
+						t.Logf("metadata pages %s count=%.0f", strings.Join(labels, ","), c.GetValue())
+					} else {
+						t.Logf("cache %s calls=%.0f", strings.Join(labels, ","), c.GetValue())
+					}
 				}
 			}
 		}

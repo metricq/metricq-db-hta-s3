@@ -111,6 +111,10 @@ type entry struct {
 type manifest struct {
 	seriesDirty      map[string]bool
 	seriesDirtyKnown bool
+	// Transient publication hints. Known dirtiness must include additions and
+	// deletions; arbitrary snapshots use the full comparison fallback.
+	rootDirty      map[string]bool
+	rootDirtyKnown bool
 	// Immutable metadata roots; the CAS object omits the hydrated maps below.
 	CheckpointState, StreamIndex, HeldState blob
 	heldPages                               heldTrees
@@ -775,6 +779,12 @@ func (e *Engine) Flush(ctx context.Context) (err error) {
 	e.oldestWAL = 0
 	frozenDirty := e.dirtySeries
 	next.seriesDirty, next.seriesDirtyKnown = frozenDirty, true
+	next.rootDirty, next.rootDirtyKnown = make(map[string]bool), true
+	for name := range next.Roots {
+		if _, ok := e.committed.Roots[name]; !ok {
+			next.rootDirty[name] = true
+		}
+	}
 	e.dirtySeries = nil
 	e.mu.Unlock()
 	refDelta := make(map[string]int64)
@@ -896,6 +906,7 @@ func (e *Engine) Flush(ctx context.Context) (err error) {
 					return appendErr
 				}
 				next.Roots[metric][level] = root
+				next.rootDirty[metric] = true
 				stagedTails[streamKey(metric, level)] = rightmostPath(root, indexPack.nodes)
 			}
 			if _, err = e.put(ctx, indexPack.key, indexPack.buf.Bytes(), &empty); err != nil {

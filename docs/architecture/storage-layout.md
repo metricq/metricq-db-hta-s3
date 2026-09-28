@@ -36,8 +36,9 @@ so concurrent readers keep a consistent view.
 
 ## Data/index block codec
 
-New data and index ranges begin with a six-byte envelope: ASCII `MQHB`, version
-byte `1`, and kind byte (`1` data, `2` index). An independent gzip BestSpeed
+New data, index and root metadata pages begin with a six-byte envelope: ASCII
+`MQHB`, version byte `1`, and kind byte (`1` data, `2` index, `3` root page).
+An independent gzip BestSpeed
 stream follows. The range SHA-256 covers the envelope and compressed stream.
 Unknown versions/kinds, wrong destination types, truncation, invalid counts,
 invalid key IDs, gzip CRC errors and trailing payload bytes fail decoding.
@@ -58,6 +59,14 @@ length followed by its original bytes. Keys are shared within a page. Each
 Length (`int64`), SHA-256 (32 bytes), and Records (`uint32`). Keys are bounded to
 65535 bytes, and total decompressed size is bounded before allocation grows.
 Existing index ordering/reference validation remains in its callers.
+
+Root pages contain a `uint32` metric count and a `uint32` dictionary-key count,
+then sorted dictionary keys (`uint16` byte length plus bytes). Each sorted
+metric has a `uint16` name length, name bytes and a `uint16` level count. Each
+level has a 60-byte entry: level (`int64`), dictionary key ID (`uint32`),
+offset and length (`int64` each), and SHA-256 (32 bytes). Decoded pages are
+bounded to 32 MiB; the key dictionary avoids repeating pack names across
+metrics and levels. Legacy gzip/Gob root pages remain readable.
 
 Metadata, checkpoint state, held deltas, compaction jobs and WAL batches retain
 their existing gzip/Gob representation. Manifest CAS publication and WAL fsync

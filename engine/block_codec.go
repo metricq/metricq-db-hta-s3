@@ -17,6 +17,7 @@ const blockMagic = "MQHB"
 const blockVersion byte = 1
 const recordKind byte = 1
 const indexKind byte = 2
+const rootKind byte = 3
 const recordWireBytes = 80
 const maxIndexKeyBytes = 65535
 
@@ -78,6 +79,13 @@ func encodeBinaryBlock(v any) ([]byte, bool, error) {
 			payload = append(payload, entry.Blob.Hash[:]...)
 			payload = binary.LittleEndian.AppendUint32(payload, uint32(entry.Records))
 		}
+	case map[string]map[int64]blob:
+		kind = rootKind
+		var err error
+		payload, err = encodeRootPayload(value)
+		if err != nil {
+			return nil, true, err
+		}
 	default:
 		return nil, false, nil
 	}
@@ -116,6 +124,11 @@ func decodeBinaryBlock(b []byte, v any) error {
 			return fmt.Errorf("block payload type mismatch")
 		}
 		limit = 5 + indexFanout*(maxIndexKeyBytes+2+70)
+	case *map[string]map[int64]blob:
+		if kind != rootKind {
+			return fmt.Errorf("block payload type mismatch")
+		}
+		limit = maxRootPayloadBytes
 	default:
 		return fmt.Errorf("block payload type mismatch")
 	}
@@ -214,6 +227,8 @@ func decodeBinaryPayload(b []byte, v any) error {
 			n.Entries[i] = entry
 		}
 		*value = n
+	case *map[string]map[int64]blob:
+		return decodeRootPayload(b, value)
 	default:
 		return fmt.Errorf("unsupported binary block destination")
 	}

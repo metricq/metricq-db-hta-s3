@@ -103,17 +103,29 @@ func (e *Engine) encodeManifest(ctx context.Context, next *manifest, base manife
 			seriesChanged[metadataShard(name)] = true
 		}
 	}
-	for name, v := range next.Roots {
-		i := metadataShard(name)
-		if base.StreamIndex.Key == "" || !reflect.DeepEqual(v, base.Roots[name]) {
-			rootsChanged[i] = true
-		}
-	}
-	for name := range base.Roots {
-		if _, ok := next.Roots[name]; !ok {
+	if base.StreamIndex.Key == "" {
+		for name := range next.Roots {
 			rootsChanged[metadataShard(name)] = true
 		}
+	} else if next.rootDirtyKnown {
+		for name, dirty := range next.rootDirty {
+			if dirty {
+				rootsChanged[metadataShard(name)] = true
+			}
+		}
+	} else {
+		for name, v := range next.Roots {
+			if !reflect.DeepEqual(v, base.Roots[name]) {
+				rootsChanged[metadataShard(name)] = true
+			}
+		}
+		for name := range base.Roots {
+			if _, ok := next.Roots[name]; !ok {
+				rootsChanged[metadataShard(name)] = true
+			}
+		}
 	}
+
 	for name, v := range next.Series {
 		i := metadataShard(name)
 		if seriesChanged[i] {
@@ -123,13 +135,19 @@ func (e *Engine) encodeManifest(ctx context.Context, next *manifest, base manife
 			series[i][name] = v
 		}
 	}
-	for name, v := range next.Roots {
-		i := metadataShard(name)
-		if rootsChanged[i] {
-			if roots[i] == nil {
-				roots[i] = make(map[string]map[int64]blob)
+	rootChanges := false
+	for _, dirty := range rootsChanged {
+		rootChanges = rootChanges || dirty
+	}
+	if rootChanges {
+		for name, v := range next.Roots {
+			i := metadataShard(name)
+			if rootsChanged[i] {
+				if roots[i] == nil {
+					roots[i] = make(map[string]map[int64]blob)
+				}
+				roots[i][name] = v
 			}
-			roots[i][name] = v
 		}
 	}
 	var err error
@@ -170,6 +188,7 @@ func (e *Engine) encodeManifest(ctx context.Context, next *manifest, base manife
 	wire.Held, wire.HeldWatermarks = nil, nil
 	next.stagingNamespace = ""
 	next.seriesDirty, next.seriesDirtyKnown = nil, false
+	next.rootDirty, next.rootDirtyKnown = nil, false
 	return encode(wire)
 }
 

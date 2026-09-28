@@ -150,6 +150,7 @@ func TestCompactionS3(t *testing.T) {
 			}
 			metrics.CompactionPhases.Reset()
 			metrics.MetadataCache.Reset()
+			metrics.MetadataPages.Reset()
 			finishMetrics := measureCompactionMetrics(t, registry)
 			backend.reset()
 			started := time.Now()

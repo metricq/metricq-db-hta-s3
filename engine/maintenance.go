@@ -238,6 +238,7 @@ func (e *Engine) bootstrapCatalog(ctx context.Context) error {
 			return nil
 		}
 		next := cloneMaintenanceManifest(e.committed)
+		next.rootDirtyKnown = true
 		next.Generation = e.state.Generation + 1
 		retired, err := e.catalogChanges(ctx, &next, changes)
 		if err != nil {
@@ -332,6 +333,7 @@ func (e *Engine) bootstrapCatalog(ctx context.Context) error {
 		return nil
 	}
 	next := cloneMaintenanceManifest(e.committed)
+	next.rootDirtyKnown = true
 	next.Generation = e.state.Generation + 1
 	next.CatalogReady = true
 	var legacy []string

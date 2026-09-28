@@ -464,6 +464,7 @@ func (e *Engine) reserveCompaction(ctx context.Context) (CompactionJob, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	next := cloneMaintenanceManifest(e.committed)
+	next.rootDirtyKnown = true
 	next.Generation = e.state.Generation + 1
 	next.CompactionJob = ref
 	next.stagingNamespace = job.ID
@@ -941,6 +942,7 @@ func (e *Engine) prepareCompaction(ctx context.Context, job CompactionJob, repla
 	e.activeMaintenance = job.ID
 	defer func() { e.activeMaintenance = "" }()
 	next := cloneMaintenanceManifest(e.committed)
+	next.rootDirtyKnown = true
 	next.Generation = e.state.Generation + 1
 	next.stagingNamespace = job.ID
 	p, err := newPack("index/compact-" + job.ID)
@@ -977,6 +979,10 @@ func (e *Engine) prepareCompaction(ctx context.Context, job CompactionJob, repla
 			copied[level] = ref
 		}
 		next.Roots[metric] = copied
+		if next.rootDirty == nil {
+			next.rootDirty = make(map[string]bool)
+		}
+		next.rootDirty[metric] = true
 		for level, repl := range levels {
 			p.metric, p.level = metric, level
 			edges, err := e.replaceHistorical(ctx, next.Roots[metric][level], repl, p, used, &pages)
@@ -1196,6 +1202,7 @@ func (e *Engine) abortCompaction(ctx context.Context) error {
 			return manifest{}, err
 		}
 		next := cloneMaintenanceManifest(snapshot.committed)
+		next.rootDirtyKnown = true
 		if job.Stage == "aborted" {
 			return manifest{}, errMaintenanceNoop
 		}
@@ -1270,6 +1277,7 @@ func (e *Engine) recoverCompaction(ctx context.Context) error {
 			return manifest{}, fmt.Errorf("recovery job changed")
 		}
 		next := cloneMaintenanceManifest(snapshot.committed)
+		next.rootDirtyKnown = true
 		next.Generation++
 		next.CompactionJob = blob{}
 		keys = append(keys, snapshot.state.CompactionJob.Key)
@@ -1488,6 +1496,7 @@ func (e *Engine) Reclaim(ctx context.Context) error {
 	}
 	e.mu.Lock()
 	next := cloneMaintenanceManifest(e.committed)
+	next.rootDirtyKnown = true
 	next.Generation = e.state.Generation + 1
 	next.TrashCleanup = ""
 	next.TrashCleanups = remaining

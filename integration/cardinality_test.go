@@ -95,6 +95,9 @@ type layoutStats struct{ rawBlocks, rawRecords, aggregateBlocks, aggregateRecord
 
 func auditDecode(b []byte, v any) error {
 	if bytes.HasPrefix(b, []byte("MQHB")) {
+		if len(b) >= 6 && b[5] == 3 {
+			return auditBinaryRoots(b, v)
+		}
 		return auditBinaryIndex(b, v)
 	}
 	r, err := gzip.NewReader(bytes.NewReader(b))
@@ -547,4 +550,84 @@ func TestMetricCardinality(t *testing.T) {
 			t.Logf("metrics=%d ingestion=%.1fs rate=%.0f/s raw records/block=%.1f obsolete data=%.1f%% PUT/input=%.2f", count, elapsed, float64(count)*float64(points)/elapsed, mean(layout.rawRecords, layout.rawBlocks), 100*mean(dataWritten-layout.liveDataBytes, dataWritten), mean(dataWritten+indexWritten+manifestWritten, logical))
 		})
 	}
+}
+
+func auditBinaryRoots(b []byte, v any) error {
+	dst, ok := v.(*map[string]map[int64]auditBlob)
+	if !ok || len(b) < 6 || b[4] != 1 || b[5] != 3 {
+		return fmt.Errorf("invalid audit root envelope")
+	}
+	z, err := gzip.NewReader(bytes.NewReader(b[6:]))
+	if err != nil {
+		return err
+	}
+	defer z.Close()
+	payload, err := io.ReadAll(io.LimitReader(z, (32<<20)+1))
+	if err != nil {
+		return err
+	}
+	if len(payload) > 32<<20 {
+		return fmt.Errorf("audit root page exceeds limit")
+	}
+	r := bytes.NewReader(payload)
+	var count, keyCount uint32
+	if err = binary.Read(r, binary.LittleEndian, &count); err != nil {
+		return err
+	}
+	if err = binary.Read(r, binary.LittleEndian, &keyCount); err != nil {
+		return err
+	}
+	if count > 65535 || keyCount > (32<<20)/60 {
+		return fmt.Errorf("invalid audit root counts")
+	}
+	text := func() (string, error) {
+		var size uint16
+		if err := binary.Read(r, binary.LittleEndian, &size); err != nil {
+			return "", err
+		}
+		bytes := make([]byte, int(size))
+		if _, err := io.ReadFull(r, bytes); err != nil {
+			return "", err
+		}
+		return string(bytes), nil
+	}
+	keys := make([]string, int(keyCount))
+	for i := range keys {
+		keys[i], err = text()
+		if err != nil {
+			return err
+		}
+	}
+	roots := make(map[string]map[int64]auditBlob)
+	for i := uint32(0); i < count; i++ {
+		name, err := text()
+		if err != nil {
+			return err
+		}
+		var levels uint16
+		if err = binary.Read(r, binary.LittleEndian, &levels); err != nil {
+			return err
+		}
+		roots[name] = make(map[int64]auditBlob)
+		for j := uint16(0); j < levels; j++ {
+			var wire struct {
+				Level          int64
+				Key            uint32
+				Offset, Length int64
+				Hash           [32]byte
+			}
+			if err = binary.Read(r, binary.LittleEndian, &wire); err != nil {
+				return err
+			}
+			if wire.Key >= uint32(len(keys)) {
+				return fmt.Errorf("invalid audit root key")
+			}
+			roots[name][wire.Level] = auditBlob{Key: keys[wire.Key], Offset: wire.Offset, Length: wire.Length, Hash: wire.Hash}
+		}
+	}
+	if r.Len() != 0 {
+		return fmt.Errorf("trailing audit roots")
+	}
+	*dst = roots
+	return nil
 }

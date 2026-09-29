@@ -740,7 +740,7 @@ func (e *Engine) copyJob(ctx context.Context, job CompactionJob) (map[blob]repla
 				}
 				for j, r := range records {
 					if r.Level != g.info.Level || (j > 0 && r.Time <= records[j-1].LastTime()) {
-						g.err = fmt.Errorf("invalid consolidation order")
+						g.err = fmt.Errorf("invalid consolidation order in %s level %d at record %d (time %d)", g.info.Metric, g.info.Level, j, r.Time)
 						break
 					}
 				}

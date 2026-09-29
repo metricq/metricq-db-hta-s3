@@ -231,3 +231,37 @@ func TestFailedLocalityJobDoesNotLoseItsSelection(t *testing.T) {
 		t.Fatalf("aborted selection was lost: %d raw source objects", len(keys))
 	}
 }
+
+func TestLocalityCooldownAfterEnoughRangesSelectsNothing(t *testing.T) {
+	ctx := context.Background()
+	opts := maintenanceOptions(t.TempDir(), true)
+	opts.CompactionOptions.OutputObjectBytes = 4 << 20
+	opts.CompactionOptions.MergeCooldownSeconds = 1
+	e, err := Open(ctx, &gcStore{memoryStore: newStore()}, opts, testConfig, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer e.Close()
+	appendBlock := func(i int) {
+		points := make([]hta.Point, maxDataBlockRecords)
+		for j := range points {
+			points[j] = hta.Point{Time: int64(i*maxDataBlockRecords + j + 1), Value: float64(j)}
+		}
+		if err = e.Ingest(ctx, "x", chunk(points...)); err != nil {
+			t.Fatal(err)
+		}
+		if err = e.Flush(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := 0; i < 4; i++ {
+		appendBlock(i)
+	}
+	time.Sleep(1100 * time.Millisecond)
+	// The fifth object is still cooling down after four scattered ranges.
+	appendBlock(4)
+	e.compactionCompletions = 3
+	if err = e.CompactOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+}

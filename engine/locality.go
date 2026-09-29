@@ -103,7 +103,7 @@ scanStreams:
 		flush := func() ([]BlockInfo, bool) {
 			// An isolated full block offers no range reduction. Four physical ranges
 			// amortize publication/rewrite cost, without waiting for a temporal boundary.
-			if spans >= options.LocalityMinRanges {
+			if len(group) > 0 && spans >= options.LocalityMinRanges {
 				return group, true
 			}
 			return nil, false
@@ -163,6 +163,7 @@ scanStreams:
 					e.localityScans[s.Key] = localityScan{Root: root, After: after, RetryAt: o.Modified + int64(time.Duration(options.MergeCooldownSeconds)*time.Second), ObjectLimit: objectLimit}
 					cooldown = true
 					group = nil
+					spans = 0
 					break
 				}
 			}

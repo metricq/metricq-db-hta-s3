@@ -20,10 +20,13 @@ import (
 // ones are persisted in the listed delta objects (oldest first); the rest
 // exist only in the WAL. After a restart, delta records at or before a
 // stream's watermark (its last written record) are already in blocks.
+// Deltas are shared between streams, so a delta may outlive the segments of
+// a stream it contains: the watermark is kept while any of them is live.
 type heldStream struct {
 	since     time.Time // arrival of the oldest held record
 	covered   int
 	segments  []heldSegment
+	deltas    []string // live delta objects containing records of this stream
 	watermark int64
 	written   bool
 }
@@ -49,6 +52,7 @@ type holdPlan struct {
 	delta      heldDelta                // newly covered held records
 	segments   map[string][]heldSegment // after commit
 	covered    map[string]int
+	deltas     map[string][]string
 	watermarks map[string]int64
 	live       []blob // delta objects still needed, oldest first
 	obsolete   []string
@@ -168,6 +172,7 @@ func (e *Engine) planHold(deltaKey string) holdPlan {
 	}
 	plan.segments = make(map[string][]heldSegment)
 	plan.covered = make(map[string]int)
+	plan.deltas = make(map[string][]string)
 	plan.watermarks = make(map[string]int64)
 	live := make(map[string]bool)
 	for _, s := range streams {
@@ -190,6 +195,7 @@ func (e *Engine) planHold(deltaKey string) holdPlan {
 		if fresh := records[covered:s.n]; len(fresh) > 0 {
 			plan.delta.Streams = append(plan.delta.Streams, deltaStream{Metric: s.metric, Level: s.level, Records: fresh})
 			segments = append(segments, heldSegment{deltaKey, len(fresh)})
+			plan.deltas[key] = append(append([]string(nil), h.deltas...), deltaKey)
 		}
 		if len(segments) == 0 {
 			continue
@@ -199,10 +205,29 @@ func (e *Engine) planHold(deltaKey string) holdPlan {
 		for _, seg := range segments {
 			live[seg.key] = true
 		}
-		switch {
-		case k > 0:
-			plan.watermarks[key] = records[k-1].Time
-		case h.written:
+	}
+	// Written records stay in their deltas while other streams need them, and
+	// streams without pending records may still appear in live deltas.
+	for key, h := range e.held {
+		deltas, ok := plan.deltas[key]
+		if !ok {
+			deltas = h.deltas
+		}
+		var kept []string
+		for _, d := range deltas {
+			if live[d] {
+				kept = append(kept, d)
+			}
+		}
+		if len(kept) == 0 {
+			delete(plan.deltas, key)
+			continue
+		}
+		plan.deltas[key] = kept
+		metric, level := splitStreamKey(key)
+		if k := plan.write[metric][level]; k > 0 {
+			plan.watermarks[key] = e.pending.streams[metric][level][k-1].Time
+		} else if h.written {
 			plan.watermarks[key] = h.watermark
 		}
 	}
@@ -232,8 +257,9 @@ func (e *Engine) commitHold(plan holdPlan) {
 		}
 		h.segments = plan.segments[key]
 		h.covered = plan.covered[key]
+		h.deltas = plan.deltas[key]
 		e.coveredRecords += int64(h.covered)
-		if len(h.segments) == 0 && len(e.pending.streams[metric][level]) == 0 && !h.written {
+		if len(h.segments) == 0 && len(h.deltas) == 0 && len(e.pending.streams[metric][level]) == 0 {
 			delete(e.held, key)
 		}
 	}
@@ -280,16 +306,17 @@ func (e *Engine) loadHeld(ctx context.Context) error {
 				e.pendingBytes += pendingRecordBytes
 				kept++
 			}
+			h := e.heldStream(s.Metric, s.Level)
+			h.deltas = append(h.deltas, ref.Key)
+			h.watermark, h.written = watermark, written
 			if kept == 0 {
 				continue
 			}
-			h := e.heldStream(s.Metric, s.Level)
 			if h.covered == 0 {
 				h.since = now
 			}
 			h.covered += kept
 			h.segments = append(h.segments, heldSegment{ref.Key, kept})
-			h.watermark, h.written = watermark, written
 			e.coveredRecords += int64(kept)
 		}
 	}

@@ -200,6 +200,68 @@ func TestHoldDeltaStillNeededSkipsWrittenRecords(t *testing.T) {
 	f.check("restart after next flush")
 }
 
+// checkOrdered fails when consecutive index entries of any stream overlap,
+// i.e. records were written twice.
+func (f *holdFixture) checkOrdered(label string) {
+	f.t.Helper()
+	for metric, levels := range f.e.state.Roots {
+		for level, root := range levels {
+			entries, err := f.e.indexEntriesAfter(f.ctx, root, math.MinInt64, math.MaxInt32)
+			if err != nil {
+				f.t.Fatal(err)
+			}
+			for i := 1; i < len(entries); i++ {
+				if entries[i].First <= entries[i-1].Last {
+					f.t.Fatalf("%s: %s level %d blocks overlap: %d after %d", label, metric, level, entries[i].First, entries[i-1].Last)
+				}
+			}
+		}
+	}
+}
+
+func TestHoldFullyWrittenStreamKeepsWatermarkForSharedDelta(t *testing.T) {
+	f := newHoldFixture(t)
+	f.ingest("x", 20)
+	f.flush()
+	// The second delta holds records of both streams.
+	f.now = f.now.Add(40 * time.Minute)
+	f.ingest("x", 5)
+	f.ingest("y", 20)
+	f.flush()
+	shared := f.e.state.Held[len(f.e.state.Held)-1].Key
+	// x expires and is written completely; y keeps the shared delta alive.
+	f.now = f.now.Add(40 * time.Minute)
+	f.flush()
+	if len(f.blocks("x", 0)) == 0 || len(f.blocks("y", 0)) != 0 {
+		t.Fatalf("x blocks %d, y blocks %d", len(f.blocks("x", 0)), len(f.blocks("y", 0)))
+	}
+	found := false
+	for _, ref := range f.e.state.Held {
+		found = found || ref.Key == shared
+	}
+	if !found {
+		t.Fatal("delta still covering y was dropped")
+	}
+	if _, ok := f.e.state.HeldWatermarks[streamKey("x", 0)]; !ok {
+		t.Fatal("no watermark for fully written x")
+	}
+	// A later checkpoint without new x records must keep the watermark too.
+	f.ingest("y", 5)
+	f.flush()
+	if _, ok := f.e.state.HeldWatermarks[streamKey("x", 0)]; !ok {
+		t.Fatal("watermark for x lost while the shared delta is live")
+	}
+	f.restart()
+	f.check("restart with fully written stream in shared delta")
+	f.now = f.now.Add(2 * time.Hour)
+	f.flush()
+	f.checkOrdered("after writing all")
+	f.check("all written")
+	if len(f.e.state.Held) != 0 || len(f.e.state.HeldWatermarks) != 0 || len(f.e.held) != 0 {
+		t.Fatalf("deltas %d watermarks %d held %d remain", len(f.e.state.Held), len(f.e.state.HeldWatermarks), len(f.e.held))
+	}
+}
+
 func TestHoldWritesLargestStreamsUnderMemoryPressure(t *testing.T) {
 	f := newHoldFixture(t)
 	f.e.options.HoldMemoryBytes = 200 * pendingRecordBytes

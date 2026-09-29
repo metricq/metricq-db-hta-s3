@@ -123,16 +123,16 @@ not a total memory limit. Errors cancel the queue, join all workers and prevent
 publication; failed PUTs are not retried. The catalog is written only after all
 inventory uploads succeed. Partly live metadata packs are retained until their
 last page is retired.
-The [throughput measurement](../../measurements/compaction-throughput.md) records
+The throughput measurement (`measurements/compaction-throughput.md`) records
 both bytes and requests; it is a local S3 fragmentation fixture, not a sustained
 production capacity guarantee.
 
-The [inventory upload comparison](../../measurements/inventory-upload-pipeline.md)
+The inventory upload comparison (`measurements/inventory-upload-pipeline.md`)
 measures the four-slot pipeline separately: catalog-phase latency decreases,
 while total local compaction/GC time remains effectively unchanged.
 
 Data blocks and index pages use a versioned binary codec with gzip BestSpeed.
 Legacy Gob blocks remain readable and are rewritten only by ordinary appends or
 compaction. Fixed fields avoid per-block Gob schemas; full raw blocks can still
-be slightly larger. See the [codec measurements](../../measurements/binary-block-codec.md)
+be slightly larger. See the codec measurements (`measurements/binary-block-codec.md`)
 for allocation, byte-volume and compaction results.

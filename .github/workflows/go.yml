@@ -26,3 +26,13 @@ jobs:
         # Integration tests need RabbitMQ, CouchDB, the manager and S3; they
         # are run locally (see docs/development/testing.md).
         run: go test -race ./...
+
+  alerts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Test alerting rules
+        run: |
+          docker run --rm -v "$PWD/docker/monitoring:/w" -w /w --entrypoint promtool prom/prometheus:v3.15.0 check rules alerts.yml
+          docker run --rm -v "$PWD/docker/monitoring:/w" -w /w --entrypoint promtool prom/prometheus:v3.15.0 test rules alerts_test.yml

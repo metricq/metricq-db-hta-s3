@@ -48,42 +48,20 @@ provisioned (`--profile monitoring`, see [Deployment](deployment.md)).
 
 ## Alerts
 
-Suggested rules; adjust durations to your checkpoint cadence.
+The rules live in `docker/monitoring/alerts.yml`, which the monitoring profile
+of the development stack loads; `docker/monitoring/alerts_test.yml` checks
+them with `promtool test rules`. Adjust durations to your checkpoint cadence.
+
+- **MetricQDBUncleanRestart**: a clean shutdown checkpoints the WAL, so
+  replayed frames at startup mean a crash, panic or kill. Check the log.
+- **MetricQDBCompactionFailing**: jobs fail and none succeeds within an hour.
+  A deterministic failure repeats on every cycle and stops all compaction,
+  long before **MetricQDBCompactionStuck** fires.
+- **MetricQDBCompactionJobPending**: an aborted job was not recovered; no new
+  job can start.
 
 ```yaml
-groups:
-  - name: metricq-db-hta-s3
-    rules:
-      - alert: MetricQDBBackpressure
-        expr: max by (token) (metricq_db_ingest_backpressure) == 1
-        for: 5m
-        annotations:
-          summary: "{{ $labels.token }} refuses deliveries (WAL or ingest memory limit)"
-      - alert: MetricQDBCheckpointsFailing
-        expr: increase(metricq_db_checkpoint_errors_total[15m]) > 0 and increase(metricq_db_checkpoint_commits_total[15m]) == 0
-        annotations:
-          summary: "{{ $labels.token }} cannot publish checkpoints; data accumulates in the WAL"
-      - alert: MetricQDBNoCheckpoint
-        expr: time() - metricq_db_checkpoint_last_timestamp_seconds > 2 * 3600 and rate(metricq_db_ingest_samples_total[15m]) > 0
-        annotations:
-          summary: "{{ $labels.token }} has not checkpointed for two hours"
-      - alert: MetricQDBWALError
-        expr: increase(metricq_db_wal_errors_total[5m]) > 0
-        annotations:
-          summary: "{{ $labels.token }} WAL write failed; the process must be restarted"
-      - alert: MetricQDBCompactionStuck
-        expr: time() - metricq_db_compaction_job_last_success_timestamp_seconds > 6 * 3600 and metricq_db_compaction_candidate_objects > 0
-        annotations:
-          summary: "{{ $labels.token }} compaction has not published a job for six hours"
-      - alert: MetricQDBFragmentationGrowing
-        expr: deriv(metricq_db_storage_small_blocks[6h]) > 0 and delta(metricq_db_storage_small_blocks[24h]) > 0.2 * metricq_db_storage_small_blocks
-        annotations:
-          summary: "{{ $labels.token }} small blocks grow faster than compaction merges them"
-      - alert: MetricQDBObjectStoreErrors
-        expr: sum by (token) (rate(metricq_db_store_errors_total[10m])) > 0.1
-        for: 10m
-        annotations:
-          summary: "{{ $labels.token }} object store requests fail"
+--8<-- "docker/monitoring/alerts.yml"
 ```
 
 ## Metric reference

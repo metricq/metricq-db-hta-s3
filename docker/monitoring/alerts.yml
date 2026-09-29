@@ -1,0 +1,63 @@
+# Prometheus alerting rules for metricq-db-hta-s3. Loaded by the monitoring
+# profile of compose.metricq-dev.yml, included in docs/operations/monitoring.md
+# and tested by alerts_test.yml (promtool test rules alerts_test.yml).
+groups:
+  - name: metricq-db-hta-s3
+    rules:
+      - alert: MetricQDBBackpressure
+        expr: max by (token) (metricq_db_ingest_backpressure) == 1
+        for: 5m
+        annotations:
+          summary: "{{ $labels.token }} refuses deliveries (WAL or ingest memory limit)"
+
+      - alert: MetricQDBCheckpointsFailing
+        expr: increase(metricq_db_checkpoint_errors_total[15m]) > 0 and increase(metricq_db_checkpoint_commits_total[15m]) == 0
+        annotations:
+          summary: "{{ $labels.token }} cannot publish checkpoints; data accumulates in the WAL"
+
+      - alert: MetricQDBNoCheckpoint
+        expr: time() - metricq_db_checkpoint_last_timestamp_seconds > 2 * 3600 and rate(metricq_db_ingest_samples_total[15m]) > 0
+        annotations:
+          summary: "{{ $labels.token }} has not checkpointed for two hours"
+
+      - alert: MetricQDBWALError
+        expr: increase(metricq_db_wal_errors_total[5m]) > 0
+        annotations:
+          summary: "{{ $labels.token }} WAL write failed; the process must be restarted"
+
+      # A clean shutdown checkpoints the WAL, so frames replayed at startup
+      # mean the process crashed or was killed. Check the log for a panic.
+      - alert: MetricQDBUncleanRestart
+        expr: increase(metricq_db_wal_replayed_frames_total[15m]) > 0
+        annotations:
+          summary: "{{ $labels.token }} restarted without a final checkpoint (crash, panic or kill)"
+
+      # Every job fails and none succeeds: typically the same selection fails
+      # deterministically, so compaction makes no progress at all.
+      - alert: MetricQDBCompactionFailing
+        expr: increase(metricq_db_compaction_job_errors_total[1h]) >= 3 and increase(metricq_db_compaction_jobs_total[1h]) == 0
+        annotations:
+          summary: "{{ $labels.token }} compaction jobs keep failing; see the \"background compaction failed\" log"
+
+      # Aborted jobs are recovered after a one minute grace period.
+      - alert: MetricQDBCompactionJobPending
+        expr: metricq_db_compaction_job_pending == 1 and metricq_db_compaction_active == 0
+        for: 15m
+        annotations:
+          summary: "{{ $labels.token }} has an unrecovered compaction job; new jobs are blocked"
+
+      - alert: MetricQDBCompactionStuck
+        expr: time() - metricq_db_compaction_job_last_success_timestamp_seconds > 6 * 3600 and metricq_db_compaction_candidate_objects > 0
+        annotations:
+          summary: "{{ $labels.token }} compaction has not published a job for six hours"
+
+      - alert: MetricQDBFragmentationGrowing
+        expr: deriv(metricq_db_storage_small_blocks[6h]) > 0 and delta(metricq_db_storage_small_blocks[24h]) > 0.2 * metricq_db_storage_small_blocks
+        annotations:
+          summary: "{{ $labels.token }} small blocks grow faster than compaction merges them"
+
+      - alert: MetricQDBObjectStoreErrors
+        expr: sum by (token) (rate(metricq_db_store_errors_total[10m])) > 0.1
+        for: 10m
+        annotations:
+          summary: "{{ $labels.token }} object store requests fail"

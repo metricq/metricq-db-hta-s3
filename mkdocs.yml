@@ -4,6 +4,10 @@ docs_dir: docs
 site_dir: public
 strict: true
 
+plugins:
+  - search
+  - mermaid2
+
 theme:
   name: material
   features:
@@ -33,7 +37,7 @@ markdown_extensions:
       custom_fences:
         - name: mermaid
           class: mermaid
-          format: !!python/name:pymdownx.superfences.fence_code_format
+          format: !!python/name:mermaid2.fence_mermaid
 
 nav:
   - Overview: index.md

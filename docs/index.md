@@ -1,8 +1,8 @@
 # metricq-db-hta-s3
 
 `metricq-db-hta-s3` is a [MetricQ](https://github.com/metricq/metricq) history
-database. It receives time series from MetricQ over AMQP, aggregates them into
-the HTA hierarchy (hierarchical timeline aggregation) and stores them as
+database. It receives data points for metrics from MetricQ sources over AMQP,
+aggregates them into the HTA hierarchy (hierarchical timeline aggregation) and stores them as
 immutable objects in S3-compatible object storage. It answers all MetricQ
 history request types, including `FLEX_TIMELINE`, and is a drop-in
 replacement for the file-based C++ `metricq-db-hta` for the same manager
@@ -43,6 +43,9 @@ Properties that shape its operation:
 | Fix backpressure, slow queries or backlog | [Tuning](operations/tuning.md), [Troubleshooting](operations/troubleshooting.md) |
 | Understand the design | [Architecture](architecture/overview.md) |
 | Change the code | [Code structure](development/code-structure.md), [Testing](development/testing.md) |
+
+The [data model](architecture/data-model.md) defines the terms used for MetricQ
+data points and the database's internal records, streams, blocks and WAL files.
 
 Benchmark reports and the design history are kept outside this site, in the
 `measurements/` directory of the repository.

@@ -22,11 +22,11 @@ sequenceDiagram
 
 ## Ingest and group commit
 
-The `metricq-go` client takes one delivery and every delivery that RabbitMQ
+The `metricq-go` client takes one data delivery and every delivery that RabbitMQ
 has already prefetched (waiting at most 500 µs, bounded by the prefetch count
 and 16 MiB) and hands them to the engine as one batch. `IngestBatch`:
 
-1. decodes each chunk and runs the HTA aggregation on a copy of the metric's
+1. decodes each DataChunk and runs the HTA aggregation on a copy of the metric's
    state (several deliveries of one metric chain their states);
 2. encodes one WAL frame per delivery with its own sequence number;
 3. checks WAL and ingest memory limits cumulatively — if they are exceeded it stops
@@ -41,11 +41,13 @@ therefore mostly bounded by CPU, not by fsync latency.
 
 ## WAL
 
-The WAL directory contains the active segment `ingest.wal`, frozen segments
-`ingest.wal.<last sequence>`, a `lock` file, the backend `identity` and the
-last local `checkpoint`. Frames carry a sequence number, length and CRC32C
-checksums. On startup the engine replays all frames after the manifest's
-sequence. A torn or corrupt frame stops startup instead of discarding data
+The WAL directory contains the active WAL segment `ingest.wal`, frozen WAL
+segments `ingest.wal.<last sequence>`, a `lock` file, the backend `identity`
+and the last local `checkpoint`. A WAL segment is a file containing one or
+more WAL frames. Each WAL frame records one data delivery and carries a
+sequence number, length and CRC32C checksum. On startup the engine replays all
+frames after the manifest's sequence. A torn or corrupt frame stops startup
+instead of discarding data
 (see [Troubleshooting](../operations/troubleshooting.md#wal-does-not-replay)).
 
 ## Checkpoints

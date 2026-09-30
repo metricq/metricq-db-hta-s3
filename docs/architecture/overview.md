@@ -29,10 +29,10 @@ flowchart TB
 
 | Component | Responsibility |
 | --- | --- |
-| MetricQ adapter (`cmd/metricq-db-hta-s3`) | Registers the database with the manager, receives the metric configuration, maps MetricQ input names to stored metric names, passes batches of data deliveries to the engine, answers history requests, serves Prometheus metrics. |
+| MetricQ adapter (`cmd/metricq-db-hta-s3`) | Registers the database with the manager, receives the metric configuration, maps incoming metric names to stored metric names, passes batches of data deliveries to the engine, answers history requests, serves Prometheus metrics. |
 | `metricq-go` `DB` client | AMQP connections, prefetch, batched data consumption with one multiple ACK per batch, parallel history workers. |
-| Ingest (`IngestBatch`) | Validates samples, runs the HTA aggregation, appends one WAL frame per delivery and fsyncs once per batch, then publishes the new state in memory. |
-| WAL (`wal.go`) | Local, checksummed, segmented log of accepted samples. Guarantees that acknowledged samples survive a crash until a checkpoint stores them. |
+| Ingest (`IngestBatch`) | Validates samples, runs the HTA aggregation, appends one WAL frame per data delivery and fsyncs once per batch, then publishes the new state in memory. |
+| WAL (`wal.go`) | Local, checksummed log of accepted data deliveries. Each WAL frame is one log entry; each WAL segment is a file containing one or more frames. Acknowledged samples survive a crash until a checkpoint stores them. |
 | Checkpoint (`Flush`) | Writes pending records as data blocks and index pages to S3, persists held records as deltas, publishes a new manifest, releases WAL segments. |
 | Query | Reads the index of one metric level and the needed data blocks, plus unflushed records in memory. |
 | Maintenance (`RunMaintenance`) | Compaction (merging small blocks, level locality, reclaiming partly dead objects), deletion of retired objects, recovery of interrupted jobs. |

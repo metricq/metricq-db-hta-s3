@@ -2,6 +2,18 @@
 
 ## Metrics, inputs and configuration
 
+MetricQ uses *metric* for a named time series and *data point* for a
+timestamp/value pair. This document uses *sample* when describing the database
+engine's ingest and aggregation behavior; it refers to the same data point.
+
+The storage engine uses these terms precisely:
+
+- A **record** is a stored raw value or an HTA aggregate (including a gap run).
+- A **stream** is one metric at one HTA level.
+- A **block** contains up to 1024 records from one stream.
+- A **WAL frame** is one checksummed log entry for one data delivery. A **WAL
+  segment** is a local file containing one or more frames.
+
 The MetricQ manager sends the database a configuration with one entry per
 stored metric:
 
@@ -49,9 +61,8 @@ arrives. The newest, still open interval is part of the in-memory HTA state,
 not a record. Runs of identical empty intervals (gaps) are stored as one
 record with a repeat count.
 
-A **stream** is one metric and one level. It is the unit of storage: each
-stream has its own time index, and each data block holds records of exactly
-one stream.
+A stream is the unit of storage: each stream has its own time index, and each
+data block holds records from exactly one stream.
 
 The number of records depends on the rate and the configuration:
 

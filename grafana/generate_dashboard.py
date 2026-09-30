@@ -164,9 +164,11 @@ panel("Stored bytes", [(f"max(metricq_db_storage_live_bytes{T})", "live"), (f"ma
       "bytes", stack=True,
       description="Dead bytes are unreferenced parts of partly live objects; compaction reclaims them above compaction_reclaim_dead_fraction.")
 panel("Objects", [(f"max(metricq_db_storage_objects{T})", "live objects"), (f"max(metricq_db_maintenance_delete_pending_objects{T})", "awaiting deletion")], "short")
-panel("Fragmentation", [(f"max(metricq_db_storage_small_blocks{T})", "blocks below 1024 records"),
+panel("Fragmentation", [(f"max(metricq_db_storage_fragment_blocks{T})", "fragments (compaction work)"),
+                        (f"max(metricq_db_storage_tail_blocks{T})", "open stream tails"),
                         (f"max(metricq_db_compaction_candidate_objects{T})", "candidate objects")], "short",
-      description="Includes one unmergeable tail per stream; a steady rise means compaction falls behind.")
+      description="Fragments are small blocks inside a stream and should return towards zero; a steady rise means compaction falls behind. "
+                  "Open tails are the newest partial block of each stream and only fill with new records.")
 panel("Small block share", [(f"max(metricq_db_storage_small_block_bytes{T}) / max(metricq_db_storage_live_bytes{T})", "small / live")],
       "percentunit")
 

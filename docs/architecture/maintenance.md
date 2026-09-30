@@ -34,6 +34,13 @@ In order of preference:
 - **Merges.** Consecutive small blocks of one stream (below 1024 records) whose
   objects are older than `compaction_merge_cooldown_seconds`. Found through candidate
   objects, resumable across calls.
+- **Rechunking.** A small block (at most 512 records) inside a stream that no
+  neighbor can absorb, because full blocks follow it, is rewritten together
+  with its successors into full blocks and one remainder at the end of the run.
+  The fragment thus moves towards the stream's end, where the next checkpoint
+  completes it (see [Write path](write-path.md#completing-partial-tails)). Such
+  fragments stem from data written before tails were tracked or from races with
+  concurrent merges; `compaction_rechunked_blocks_total` counts the rewrite.
 - **Level locality.** Consecutive blocks of one metric level, including full
   blocks, spread over at least `compaction_locality_min_ranges` physical ranges,
   are rewritten into one contiguous section. Sealed sections are not rewritten

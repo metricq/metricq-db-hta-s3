@@ -52,9 +52,9 @@ groups:
           summary: "{{ $labels.token }} compaction has not published a job for six hours"
 
       - alert: MetricQDBFragmentationGrowing
-        expr: deriv(metricq_db_storage_small_blocks[6h]) > 0 and delta(metricq_db_storage_small_blocks[24h]) > 0.2 * metricq_db_storage_small_blocks
+        expr: deriv(metricq_db_storage_fragment_blocks[6h]) > 0 and delta(metricq_db_storage_fragment_blocks[24h]) > 0.2 * metricq_db_storage_fragment_blocks and metricq_db_storage_fragment_blocks > 100
         annotations:
-          summary: "{{ $labels.token }} small blocks grow faster than compaction merges them"
+          summary: "{{ $labels.token }} fragments grow faster than compaction merges them"
 
       - alert: MetricQDBObjectStoreErrors
         expr: sum by (token) (rate(metricq_db_store_errors_total[10m])) > 0.1

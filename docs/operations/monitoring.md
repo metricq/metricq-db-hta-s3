@@ -97,6 +97,7 @@ This table is generated from `engine/metrics.go` by
 | `metricq_db_checkpoint_commits_total` | counter |  | Successful durable manifest commits. |
 | `metricq_db_checkpoint_errors_total` | counter |  | Failed object-store commits. |
 | `metricq_db_checkpoint_last_timestamp_seconds` | gauge |  | Unix time of last successful object-store commit. |
+| `metricq_db_checkpoint_metadata_pages_total` | counter | kind | Immutable metadata pages encoded, including failed publication attempts. |
 | `metricq_db_checkpoint_object_bytes_total` | counter |  | Uploaded compressed data bytes. |
 | `metricq_db_checkpoint_objects_total` | counter |  | Successfully uploaded data objects including retried uploads. |
 | `metricq_db_checkpoint_pinned_index_entries` | gauge |  | Index entries of rightmost paths kept in memory for checkpoints. |
@@ -118,16 +119,21 @@ This table is generated from `engine/metrics.go` by
 | `metricq_db_store_manifest_bytes` | gauge |  | Size of the last published manifest. |
 | `metricq_db_store_put_seconds` | histogram |  | Backend PUT latency including failures. |
 | `metricq_db_store_requests_total` | counter | op, kind | Object store requests by operation and object kind. |
+| **Metadata cache** | | | |
+| `metricq_db_metadata_cache_requests_total` | counter | kind, result | Decoded metadata cache lookups. |
 | **Storage state** | | | |
 | `metricq_db_storage_dead_bytes` | gauge |  | Unreferenced bytes inside partially live data/index objects. |
+| `metricq_db_storage_fragment_blocks` | gauge |  | Small data blocks followed by a newer block of their stream; compaction work. |
 | `metricq_db_storage_live_bytes` | gauge |  | Referenced compressed data/index bytes in the maintenance catalog. |
 | `metricq_db_storage_objects` | gauge |  | Data and index objects tracked by the maintenance catalog. |
 | `metricq_db_storage_small_block_bytes` | gauge |  | Compressed bytes in live data blocks below 1024 records. |
 | `metricq_db_storage_small_blocks` | gauge |  | Live data blocks below 1024 records, including single stream tails. |
+| `metricq_db_storage_tail_blocks` | gauge |  | Streams whose newest data block is below 1024 records: open tails, filled by later records, not compaction work. |
 | **Compaction** | | | |
 | `metricq_db_compaction_active` | gauge |  | One while a background compaction job runs. |
 | `metricq_db_compaction_candidate_objects` | gauge |  | Tracked candidate objects, including cooldown and single tails. |
 | `metricq_db_compaction_conflicts_total` | counter |  | Metadata proposals rebuilt after concurrent publication. |
+| `metricq_db_compaction_deferred_merges_total` | counter |  | Large tail merge candidates deferred until sufficient growth or age. |
 | `metricq_db_compaction_input_blocks_total` | counter |  | Source blocks in successfully published jobs. |
 | `metricq_db_compaction_io_read_bytes_total` | counter |  | Compressed data/index bytes read by compaction. |
 | `metricq_db_compaction_io_write_bytes_total` | counter |  | Data/index pack bytes uploaded by compaction. |
@@ -142,6 +148,7 @@ This table is generated from `engine/metrics.go` by
 | `metricq_db_compaction_locality_pending_streams` | gauge |  | Changed stream roots awaiting layout inspection; not necessarily actionable fragmentation. |
 | `metricq_db_compaction_noop_total` | counter |  | Candidate scans with no actionable job. |
 | `metricq_db_compaction_output_blocks_total` | counter |  | Copied or consolidated source replacements in successfully published jobs. |
+| `metricq_db_compaction_rechunked_blocks_total` | counter |  | Source blocks rewritten to move a fragment towards the end of its stream. |
 | **Maintenance (deletion of retired objects)** | | | |
 | `metricq_db_maintenance_delete_errors_total` | counter |  | Failed retired-object deletion attempts. |
 | `metricq_db_maintenance_delete_pending_objects` | gauge |  | Fully retired objects awaiting deletion, including reader-pinned objects. |

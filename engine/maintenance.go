@@ -350,6 +350,9 @@ func (e *Engine) bootstrapCatalog(ctx context.Context) error {
 // RunMaintenance owns compaction and physical deletion. Neither operation is
 // invoked by ingest/history handlers or the ordinary flush loop in this mode.
 func (e *Engine) RunMaintenance(ctx context.Context) {
+	if err := e.bootstrapTails(ctx); err != nil && ctx.Err() == nil {
+		slog.Warn("stream tail classification failed; fragment metrics unavailable", "error", err)
+	}
 	gcTicker := time.NewTicker(time.Second)
 	defer gcTicker.Stop()
 	options := e.options.CompactionOptions.defaults()
@@ -441,6 +444,7 @@ func (e *Engine) updateMaintenanceMetrics(m manifest) {
 	e.metrics.CandidateObjects.Set(float64(m.CandidateObjects))
 	e.metrics.SmallBlocks.Set(float64(m.SmallBlocks))
 	e.metrics.SmallBlockBytes.Set(float64(m.SmallBlockBytes))
+	e.updateTailMetrics(m)
 	if !m.MaintenanceStatsReady {
 		e.metrics.CandidateObjects.Set(math.NaN())
 		e.metrics.SmallBlocks.Set(math.NaN())

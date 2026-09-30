@@ -201,6 +201,8 @@ type Engine struct {
 	tailPages                map[blob]indexNode
 	tailPaths                map[string]tailPath
 	tailEntries              int
+	tails                    map[string]streamTail
+	tailsKnown               bool
 	state                    manifest
 	committed                manifest
 	pins                     map[uint64]int
@@ -854,6 +856,10 @@ func (e *Engine) Flush(ctx context.Context) (err error) {
 						blocks = append(blocks, block{stream: i, records: append(part, records[:n]...)})
 						records = records[n:]
 					}
+				}
+				if first := min(plan.first[stream.metric][level], len(records)); first > 0 && !updates[i].replaceTail {
+					blocks = append(blocks, block{stream: i, records: records[:first]})
+					records = records[first:]
 				}
 				for k := 0; k < len(records); k += maxDataBlockRecords {
 					blocks = append(blocks, block{stream: i, records: records[k:min(k+maxDataBlockRecords, len(records))]})

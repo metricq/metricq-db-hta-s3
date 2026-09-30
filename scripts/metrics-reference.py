@@ -22,6 +22,7 @@ groups = [
     ("Checkpoints", ("checkpoint_",)),
     ("Holding", ("hold_",)),
     ("Object store", ("store_",)),
+    ("Metadata cache", ("metadata_",)),
     ("Storage state", ("storage_",)),
     ("Compaction", ("compaction_",)),
     ("Maintenance (deletion of retired objects)", ("maintenance_",)),

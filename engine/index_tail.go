@@ -1,6 +1,11 @@
 package engine
 
-import "fmt"
+import (
+	"context"
+	"fmt"
+	"math"
+	"sync"
+)
 
 // maxTailEntries bounds the pinned rightmost index paths (about 90 bytes per
 // decoded entry). Streams beyond it fall back to the shared cache and store.
@@ -46,6 +51,11 @@ func (e *Engine) pinTailPaths(staged map[string]tailPath, nodes map[blob]indexNo
 		e.tailPaths = make(map[string]tailPath)
 	}
 	for stream, path := range staged {
+		if len(path.pages) > 0 {
+			if leaf, ok := nodes[path.pages[len(path.pages)-1]]; ok && leaf.Leaf && len(leaf.Entries) > 0 {
+				e.setTail(stream, path.pages[0], leaf.Entries[len(leaf.Entries)-1])
+			}
+		}
 		if old, ok := e.tailPaths[stream]; ok {
 			for _, ref := range old.pages {
 				delete(e.tailPages, ref)
@@ -74,4 +84,128 @@ func (e *Engine) singletonTailRoots() map[blob]bool {
 		}
 	}
 	return roots
+}
+
+// streamTail records the size of a stream's newest data block. Every stream
+// has such an open tail until it fills, so partial tails are reported apart
+// from fragments inside a stream, which compaction repairs. Checkpoints use
+// the size to complete a partial tail instead of appending behind it.
+type streamTail struct {
+	root    blob
+	records int
+}
+
+func (t streamTail) partial() bool { return t.records > 0 && t.records < maxDataBlockRecords }
+
+// setTail records the newest entry of a stream under root. Caller holds mu.
+func (e *Engine) setTail(stream string, root blob, last indexEntry) {
+	if e.tails == nil {
+		e.tails = make(map[string]streamTail)
+	}
+	e.tails[stream] = streamTail{root: root, records: last.Records}
+}
+
+// refreshTails reads the newest entry of the given streams from their current
+// roots. Roots replaced meanwhile are skipped: their writer records them.
+func (e *Engine) refreshTails(ctx context.Context, roots map[string]blob) error {
+	type result struct {
+		stream string
+		root   blob
+		last   indexEntry
+	}
+	work := make(chan result)
+	results := make(chan result)
+	var errOnce sync.Once
+	var firstErr error
+	var workers sync.WaitGroup
+	for i := 0; i < maxParallelBlockFetches; i++ {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			r := &Engine{store: e.store, metrics: e.metrics, options: e.options, sharedNodes: e.sharedNodes, nodeCache: make(map[blob]indexNode)}
+			for w := range work {
+				last, err := r.lastIndexEntry(ctx, w.root)
+				if err != nil {
+					errOnce.Do(func() { firstErr = err })
+					continue
+				}
+				w.last = last
+				results <- w
+			}
+		}()
+	}
+	go func() {
+		defer close(work)
+		for stream, root := range roots {
+			if ctx.Err() != nil {
+				return
+			}
+			work <- result{stream: stream, root: root}
+		}
+	}()
+	go func() { workers.Wait(); close(results) }()
+	for r := range results {
+		metric, level := splitStreamKey(r.stream)
+		e.mu.Lock()
+		if e.state.Roots[metric][level] == r.root {
+			e.setTail(r.stream, r.root, r.last)
+		}
+		e.mu.Unlock()
+	}
+	if firstErr != nil {
+		return firstErr
+	}
+	return ctx.Err()
+}
+
+// bootstrapTails classifies the tail of every stream once after startup.
+func (e *Engine) bootstrapTails(ctx context.Context) error {
+	roots := make(map[string]blob)
+	e.mu.Lock()
+	for metric, levels := range e.state.Roots {
+		for level, root := range levels {
+			stream := streamKey(metric, level)
+			if tail, ok := e.tails[stream]; root.Key != "" && (!ok || tail.root != root) {
+				roots[stream] = root
+			}
+		}
+	}
+	e.mu.Unlock()
+	if err := e.refreshTails(ctx, roots); err != nil {
+		return err
+	}
+	e.mu.Lock()
+	e.tailsKnown = true
+	e.updateTailMetrics(e.state)
+	e.mu.Unlock()
+	return nil
+}
+
+// updateTailMetrics splits small blocks into open tails and fragments. Tails
+// are exact once bootstrapped; the catalog count may briefly lag. Caller holds mu.
+func (e *Engine) updateTailMetrics(m manifest) {
+	if !e.tailsKnown || !m.MaintenanceStatsReady {
+		e.metrics.TailBlocks.Set(math.NaN())
+		e.metrics.FragmentBlocks.Set(math.NaN())
+		return
+	}
+	tails := 0
+	for stream, tail := range e.tails {
+		metric, level := splitStreamKey(stream)
+		if tail.partial() && e.state.Roots[metric][level] == tail.root {
+			tails++
+		}
+	}
+	e.metrics.TailBlocks.Set(float64(tails))
+	e.metrics.FragmentBlocks.Set(float64(max(0, m.SmallBlocks-int64(tails))))
+}
+
+// tailGap returns how many records complete the partial tail of a stream under
+// root, or zero when the tail is full or unknown. Caller holds mu.
+func (e *Engine) tailGap(metric string, level int64, root blob) int {
+	tail, ok := e.tails[streamKey(metric, level)]
+	if !ok || tail.root != root || !tail.partial() {
+		return 0
+	}
+	return maxDataBlockRecords - tail.records
 }

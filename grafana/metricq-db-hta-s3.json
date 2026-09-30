@@ -1783,7 +1783,7 @@
     {
       "type": "timeseries",
       "title": "Fragmentation",
-      "description": "Includes one unmergeable tail per stream; a steady rise means compaction falls behind.",
+      "description": "Fragments are small blocks inside a stream and should return towards zero; a steady rise means compaction falls behind. Open tails are the newest partial block of each stream and only fill with new records.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -1796,9 +1796,18 @@
       },
       "targets": [
         {
-          "expr": "max(metricq_db_storage_small_blocks{token=\"$token\"})",
-          "legendFormat": "blocks below 1024 records",
+          "expr": "max(metricq_db_storage_fragment_blocks{token=\"$token\"})",
+          "legendFormat": "fragments (compaction work)",
           "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
+        },
+        {
+          "expr": "max(metricq_db_storage_tail_blocks{token=\"$token\"})",
+          "legendFormat": "open stream tails",
+          "refId": "B",
           "datasource": {
             "type": "prometheus",
             "uid": "${datasource}"
@@ -1807,7 +1816,7 @@
         {
           "expr": "max(metricq_db_compaction_candidate_objects{token=\"$token\"})",
           "legendFormat": "candidate objects",
-          "refId": "B",
+          "refId": "C",
           "datasource": {
             "type": "prometheus",
             "uid": "${datasource}"

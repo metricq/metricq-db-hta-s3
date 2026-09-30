@@ -42,6 +42,7 @@ type pack struct {
 	blocks      int64
 	retired     []blob
 	descriptors []BlockInfo
+	replaced    map[blob]bool // source data blocks found by a compaction index rewrite
 	metric      string
 	level       int64
 	nodes       map[blob]indexNode // decoded pages, only when requested

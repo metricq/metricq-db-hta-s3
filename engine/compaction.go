@@ -36,6 +36,9 @@ const maxCompactionObjects = 256
 type CompactionJob struct {
 	Locality    bool
 	Consecutive [][2]blob
+	// First blocks of runs rewritten into full blocks plus one remainder at
+	// the run's end; each run's blocks are consecutive in Consecutive.
+	Rechunk []blob
 
 	CleanupAfter int64
 
@@ -50,6 +53,23 @@ type replacement struct {
 	Entry indexEntry
 	Drop  bool
 	Index bool
+	// Old is the replaced data block; rechunked replacements cover a
+	// different time range than their source.
+	Old       indexEntry
+	Rechunked bool
+}
+
+// overlaps reports whether an index edge covering first..last may contain the
+// replaced block or must contain its replacement.
+func (r replacement) overlaps(first, last int64) bool {
+	if r.Index {
+		return r.Entry.First >= first && r.Entry.Last <= last
+	}
+	lo, hi := r.Entry.First, r.Entry.Last
+	if r.Old.Blob.Key != "" {
+		lo, hi = min(lo, r.Old.First), max(hi, r.Old.Last)
+	}
+	return hi >= first && lo <= last
 }
 
 func (e *Engine) readJob(ctx context.Context) (CompactionJob, error) {
@@ -141,7 +161,12 @@ func (e *Engine) reserveCompaction(ctx context.Context) (CompactionJob, error) {
 	var inputs []BlockInfo
 	selected := make(map[blob]bool)
 	var consecutive [][2]blob
+	var rechunk []blob
+	// Seeds are tried individually: a stream's first seed (often its tail) must
+	// not hide its other fragments. One group per stream and job keeps groups
+	// disjoint.
 	tried := make(map[string]bool)
+	selectedStreams := make(map[string]bool)
 	var copied int64
 	previousCandidate := scanAfter
 	resumeCandidate, resumeObject := "", ""
@@ -263,7 +288,8 @@ func (e *Engine) reserveCompaction(ctx context.Context) (CompactionJob, error) {
 						continue
 					}
 					stream := fmt.Sprintf("%s/%020d", seed.Metric, seed.Level)
-					if tried[stream] {
+					seedKey := fmt.Sprintf("%s/%020d", stream, seed.Entry.First)
+					if selectedStreams[stream] || tried[seedKey] {
 						continue
 					}
 					root := snapshot.state.Roots[seed.Metric][seed.Level]
@@ -279,7 +305,7 @@ func (e *Engine) reserveCompaction(ctx context.Context) (CompactionJob, error) {
 							continue
 						}
 					}
-					tried[stream] = true
+					tried[seedKey] = true
 					begin := seed.Entry.First
 					prior, err := snapshot.indexNeighborEntry(ctx, root, begin, true)
 					if err != nil {
@@ -289,7 +315,8 @@ func (e *Engine) reserveCompaction(ctx context.Context) (CompactionJob, error) {
 					if prior.Records > 0 && prior.Records+seed.Entry.Records <= maxDataBlockRecords {
 						begin = prior.First
 					}
-					entries, err := snapshot.indexEntriesAfter(ctx, root, begin, options.JobMaxBlocks-len(inputs))
+					requested := options.JobMaxBlocks - len(inputs)
+					entries, err := snapshot.indexEntriesAfter(ctx, root, begin, requested)
 					if err != nil {
 						selectErr = err
 						return false
@@ -309,6 +336,36 @@ func (e *Engine) reserveCompaction(ctx context.Context) (CompactionJob, error) {
 						if !selected[entry.Blob] {
 							bytes += entry.Blob.Length
 						}
+					}
+					// A fragment inside the stream that no neighbor can absorb (it
+					// precedes full blocks, e.g. after memory pressure) is rewritten
+					// with its successors into full blocks; the remainder moves to the
+					// run's end and, at the stream's tail, is completed by the next
+					// checkpoint.
+					// Merging inside a stream into 513..1023 records would leave a
+					// block that is no merge seed; rechunk such runs as well.
+					rechunked := false
+					interior := len(entries) > len(group)
+					total := 0
+					for _, b := range group {
+						total += b.Entry.Records
+					}
+					if interior && ((len(group) == 1 && entries[0].Blob == seed.Entry.Blob) || (len(group) > 1 && total > maxDataBlockRecords/2 && total < maxDataBlockRecords)) {
+						group = group[:1]
+						bytes = 0
+						if !selected[group[0].Entry.Blob] {
+							bytes = group[0].Entry.Blob.Length
+						}
+						for _, entry := range entries[1:] {
+							if entry.Records <= 0 || entry.Blob.Length > options.JobMaxBytes-copied-bytes {
+								break
+							}
+							group = append(group, BlockInfo{Metric: seed.Metric, Level: seed.Level, Entry: entry})
+							if !selected[entry.Blob] {
+								bytes += entry.Blob.Length
+							}
+						}
+						rechunked = len(group) > 1
 					}
 					// Keep the job's source objects within the adaptive limit.
 					fresh := make(map[string]bool)
@@ -343,7 +400,29 @@ func (e *Engine) reserveCompaction(ctx context.Context) (CompactionJob, error) {
 						}
 						group = group[:len(group)-1]
 					}
-					if len(group) > 1 {
+					if rechunked {
+						// Unless the run ends at the stream's tail, its remainder stays
+						// inside the stream and must remain a merge seed (at most 512
+						// records) for the next step. Cutting right after the first
+						// fragment always qualifies.
+						var tail blob
+						if len(entries) < requested {
+							tail = entries[len(entries)-1].Blob
+						}
+						total := 0
+						for _, b := range group {
+							total += b.Entry.Records
+						}
+						for len(group) > 1 {
+							rest := total % maxDataBlockRecords
+							if group[len(group)-1].Entry.Blob == tail || rest <= maxDataBlockRecords/2 {
+								break
+							}
+							total -= group[len(group)-1].Entry.Records
+							group = group[:len(group)-1]
+						}
+					}
+					if len(group) > 1 && !rechunked {
 						nextRecords := 0
 						if len(entries) > len(group) {
 							nextRecords = entries[len(group)].Records
@@ -357,6 +436,10 @@ func (e *Engine) reserveCompaction(ctx context.Context) (CompactionJob, error) {
 						for i := 1; i < len(group); i++ {
 							consecutive = append(consecutive, [2]blob{group[i-1].Entry.Blob, group[i].Entry.Blob})
 						}
+						if rechunked {
+							rechunk = append(rechunk, group[0].Entry.Blob)
+						}
+						selectedStreams[stream] = true
 						for _, b := range group {
 							add(b)
 						}
@@ -449,7 +532,7 @@ func (e *Engine) reserveCompaction(ctx context.Context) (CompactionJob, error) {
 			consecutive = append(consecutive, [2]blob{inputs[i-1].Entry.Blob, inputs[i].Entry.Blob})
 		}
 	}
-	job := CompactionJob{Consecutive: consecutive, Locality: locality, ID: id, Stage: "reserved", Generation: generation, Inputs: inputs, Created: time.Now().UnixNano()}
+	job := CompactionJob{Consecutive: consecutive, Rechunk: rechunk, Locality: locality, ID: id, Stage: "reserved", Generation: generation, Inputs: inputs, Created: time.Now().UnixNano()}
 	// Register all staging namespaces before uploads, including COW metadata.
 	for _, prefix := range []string{"data/", "index/", "catalog/", "candidates/", "trash/", "state/", "roots/", "held-state/"} {
 		job.OutputPrefixes = append(job.OutputPrefixes, prefix+"compact-"+id+"/")
@@ -668,12 +751,30 @@ func (e *Engine) copyJob(ctx context.Context, job CompactionJob) (map[blob]repla
 		start, end int
 		encoded    []byte
 		err        error
+		// Rechunked runs produce several blocks.
+		rechunk bool
+		parts   []BlockInfo
+		encodes [][]byte
+	}
+	rechunkStart := make(map[blob]bool, len(job.Rechunk))
+	for _, ref := range job.Rechunk {
+		rechunkStart[ref] = true
 	}
 	var groups []mergeGroup
 	for i := 0; i < len(inputs); {
 		b := inputs[i]
 		encoded := encodedInputs[i]
 		end := i + 1
+		if rechunkStart[b.Entry.Blob] && !b.Index {
+			for end < len(inputs) && !inputs[end].Index && inputs[end].Metric == b.Metric && inputs[end].Level == b.Level && proven[[2]blob{inputs[end-1].Entry.Blob, inputs[end].Entry.Blob}] {
+				end++
+			}
+			if end > i+1 {
+				groups = append(groups, mergeGroup{info: b, start: i, end: end, encoded: encoded, rechunk: true})
+				i = end
+				continue
+			}
+		}
 		// Only adjacent blocks proven consecutive in the pinned index may merge.
 		if options.MergeEnabled && !b.Index && b.Entry.Records > 0 && b.Entry.Records < maxDataBlockRecords {
 			for end < len(inputs) && !inputs[end].Index && inputs[end].Metric == b.Metric && inputs[end].Level == b.Level && inputs[end].Entry.Records > 0 && b.Entry.Records+inputs[end].Entry.Records <= maxDataBlockRecords {
@@ -734,7 +835,14 @@ func (e *Engine) copyJob(ctx context.Context, job CompactionJob) (map[blob]repla
 				if g.err != nil {
 					continue
 				}
-				if len(records) != g.info.Entry.Records || len(records) > maxDataBlockRecords {
+				want := g.info.Entry.Records
+				if g.rechunk {
+					want = 0
+					for j := g.start; j < g.end; j++ {
+						want += inputs[j].Entry.Records
+					}
+				}
+				if len(records) != want || (!g.rechunk && len(records) > maxDataBlockRecords) {
 					g.err = fmt.Errorf("invalid consolidation record count")
 					continue
 				}
@@ -744,8 +852,19 @@ func (e *Engine) copyJob(ctx context.Context, job CompactionJob) (map[blob]repla
 						break
 					}
 				}
-				if g.err == nil {
+				if g.err != nil {
+					continue
+				}
+				if !g.rechunk {
 					g.encoded, g.err = encode(records)
+					continue
+				}
+				for k := 0; k < len(records) && g.err == nil; k += maxDataBlockRecords {
+					part := records[k:min(k+maxDataBlockRecords, len(records))]
+					var b []byte
+					b, g.err = encode(part)
+					g.encodes = append(g.encodes, b)
+					g.parts = append(g.parts, BlockInfo{Metric: g.info.Metric, Level: g.info.Level, Entry: indexEntry{First: part[0].Time, Last: part[len(part)-1].LastTime(), Records: len(part)}})
 				}
 			}
 		}()
@@ -759,13 +878,29 @@ func (e *Engine) copyJob(ctx context.Context, job CompactionJob) (map[blob]repla
 		if g.err != nil {
 			return nil, nil, g.err
 		}
+		if g.rechunk {
+			// At most as many full blocks as sources: outputs replace the leading
+			// sources in order, the rest are dropped.
+			for k, part := range g.parts {
+				target, err := add(part, g.encodes[k])
+				if err != nil {
+					return nil, nil, err
+				}
+				source := inputs[g.start+k].Entry
+				replacements[source.Blob] = replacement{Entry: target, Old: source, Rechunked: true}
+			}
+			for j := g.start + len(g.parts); j < g.end; j++ {
+				replacements[inputs[j].Entry.Blob] = replacement{Drop: true, Entry: inputs[j].Entry, Old: inputs[j].Entry, Rechunked: true}
+			}
+			continue
+		}
 		target, err := add(g.info, g.encoded)
 		if err != nil {
 			return nil, nil, err
 		}
-		replacements[inputs[g.start].Entry.Blob] = replacement{Entry: target, Index: g.info.Index}
+		replacements[inputs[g.start].Entry.Blob] = replacement{Entry: target, Index: g.info.Index, Old: inputs[g.start].Entry}
 		for j := g.start + 1; j < g.end; j++ {
-			replacements[inputs[j].Entry.Blob] = replacement{Drop: true, Entry: inputs[j].Entry}
+			replacements[inputs[j].Entry.Blob] = replacement{Drop: true, Entry: inputs[j].Entry, Old: inputs[j].Entry}
 		}
 	}
 	if err := upload(); err != nil {
@@ -794,7 +929,7 @@ func (e *Engine) replaceHistorical(ctx context.Context, root blob, replacements 
 				relevant = true
 			}
 			for old, r := range replacements {
-				if old != root && ((r.Index && r.Entry.First >= edge.First && r.Entry.Last <= edge.Last) || (!r.Index && r.Entry.Last >= edge.First && r.Entry.First <= edge.Last)) {
+				if old != root && r.overlaps(edge.First, edge.Last) {
 					relevant = true
 					break
 				}
@@ -811,6 +946,9 @@ func (e *Engine) replaceHistorical(ctx context.Context, root blob, replacements 
 		if n.Leaf {
 			if r, ok := replacements[edge.Blob]; ok {
 				changed = true
+				if p.replaced != nil {
+					p.replaced[edge.Blob] = true
+				}
 				if !r.Drop {
 					entries = append(entries, r.Entry)
 					used[r.Entry.Blob] = true
@@ -826,7 +964,7 @@ func (e *Engine) replaceHistorical(ctx context.Context, root blob, replacements 
 				if old == root {
 					continue
 				}
-				if old != root && ((r.Index && r.Entry.First >= edge.First && r.Entry.Last <= edge.Last) || (!r.Index && r.Entry.Last >= edge.First && r.Entry.First <= edge.Last)) {
+				if old != root && r.overlaps(edge.First, edge.Last) {
 					relevant = true
 					break
 				}
@@ -951,6 +1089,7 @@ func (e *Engine) prepareCompaction(ctx context.Context, job CompactionJob, repla
 	}
 	e.stagingKeys = append(e.stagingKeys, p.key)
 	p.nodes = make(map[blob]indexNode)
+	p.replaced = make(map[blob]bool)
 	used := make(map[blob]bool)
 	affected := make(map[string]map[int64]map[blob]replacement)
 	for _, input := range job.Inputs {
@@ -999,6 +1138,13 @@ func (e *Engine) prepareCompaction(ctx context.Context, job CompactionJob, repla
 				return manifest{}, fmt.Errorf("compaction removed entire history")
 			}
 			next.Roots[metric][level] = edges[0].Blob
+		}
+	}
+	// Every source data block must have been found in its stream's index;
+	// otherwise the old block would stay referenced after its retirement.
+	for _, input := range job.Inputs {
+		if !input.Index && !p.replaced[input.Entry.Blob] {
+			return manifest{}, fmt.Errorf("compaction source %s not found in index of %s level %d", input.Entry.Blob.Key, input.Metric, input.Level)
 		}
 	}
 	if int64(p.buf.Len()) > e.options.CompactionOptions.JobMaxBytes {
@@ -1149,12 +1295,16 @@ func (e *Engine) applyCompaction(ctx context.Context, job CompactionJob, replace
 				e.metrics.LocalityJobs.Inc()
 			}
 			e.metrics.CompactionInputBlocks.Add(float64(len(job.Inputs)))
-			outputBlocks := 0
+			outputBlocks, rechunked := 0, 0
 			for _, r := range replacements {
 				if !r.Drop {
 					outputBlocks++
 				}
+				if r.Rechunked {
+					rechunked++
+				}
 			}
+			e.metrics.CompactionRechunkedBlocks.Add(float64(rechunked))
 			e.metrics.CompactionOutputBlocks.Add(float64(outputBlocks))
 		}
 		return err
@@ -1321,6 +1471,22 @@ func (e *Engine) CompactOnce(ctx context.Context) error {
 	replacements, packs, err := e.copyJob(ctx, job)
 	if err == nil {
 		err = e.applyCompaction(ctx, job, replacements, packs)
+	}
+	if err == nil {
+		// Rewritten streams may end in a different block. Their new pages are
+		// cached; reading happens outside publishMu so checkpoints are not held.
+		roots := make(map[string]blob)
+		e.mu.Lock()
+		for _, input := range job.Inputs {
+			roots[streamKey(input.Metric, input.Level)] = e.state.Roots[input.Metric][input.Level]
+		}
+		e.mu.Unlock()
+		if tailErr := e.refreshTails(ctx, roots); tailErr != nil && ctx.Err() == nil {
+			slog.Warn("stream tail classification failed", "error", tailErr)
+		}
+		e.mu.Lock()
+		e.updateTailMetrics(e.state)
+		e.mu.Unlock()
 	}
 	// Publication needed more catalog metadata than allowed: use fewer source
 	// objects next time. A job over two objects always fits, so this converges;

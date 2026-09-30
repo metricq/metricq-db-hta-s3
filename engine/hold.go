@@ -49,6 +49,7 @@ type deltaStream struct {
 // holdPlan is decided at freeze time and applied only after a successful commit.
 type holdPlan struct {
 	write      map[string]map[int64]int // leading records to write per stream
+	first      map[string]map[int64]int // records completing a partial tail block
 	delta      heldDelta                // newly covered held records
 	segments   map[string][]heldSegment // after commit
 	covered    map[string]int
@@ -148,8 +149,25 @@ func (e *Engine) planHold(deltaKey string) holdPlan {
 		}
 		plan.write[metric][level] = k
 	}
+	// A stream ending in a partial block first writes the records completing
+	// it, so compaction merges both into a full block instead of leaving a
+	// fragment behind the next full block (e.g. after memory pressure).
+	gap := func(metric string, level int64) int {
+		g := e.tailGap(metric, level, e.state.Roots[metric][level])
+		if g > 0 {
+			if plan.first == nil {
+				plan.first = make(map[string]map[int64]int)
+			}
+			if plan.first[metric] == nil {
+				plan.first[metric] = make(map[int64]int)
+			}
+			plan.first[metric][level] = g
+		}
+		return g
+	}
 	if !e.holding() {
 		for _, s := range streams {
+			gap(s.metric, s.level)
 			set(s.metric, s.level, s.n)
 		}
 		return plan
@@ -161,7 +179,7 @@ func (e *Engine) planHold(deltaKey string) holdPlan {
 	pressure := e.holdPressure()
 	for _, s := range streams {
 		h := e.heldStream(s.metric, s.level)
-		k := s.n - s.n%maxDataBlockRecords
+		k := alignedWrite(s.n, gap(s.metric, s.level))
 		if h.since.Before(limit) || (pressure && remaining > e.options.HoldMemoryBytes/2) {
 			k = s.n
 		}
@@ -239,6 +257,18 @@ func (e *Engine) planHold(deltaKey string) holdPlan {
 		}
 	}
 	return plan
+}
+
+// alignedWrite returns how many of n held records form complete blocks when
+// the first gap records complete the stream's partial tail block.
+func alignedWrite(n, gap int) int {
+	if gap <= 0 {
+		return n - n%maxDataBlockRecords
+	}
+	if n < gap {
+		return 0
+	}
+	return n - (n-gap)%maxDataBlockRecords
 }
 
 // commitHold applies a published plan. Caller holds mu.

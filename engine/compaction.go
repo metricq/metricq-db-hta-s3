@@ -49,6 +49,10 @@ type CompactionJob struct {
 	OutputPrefixes []string
 	Created        int64
 }
+
+// deferredSeedRecheck bounds how long a deferred merge seed is skipped.
+const deferredSeedRecheck = 10 * time.Minute
+
 type replacement struct {
 	Entry indexEntry
 	Drop  bool
@@ -226,6 +230,12 @@ func (e *Engine) reserveCompaction(ctx context.Context) (CompactionJob, error) {
 	}
 	cursor := scanAfter
 	var err error
+	// Seeds merged or rewritten meanwhile are never looked up again.
+	for key, retry := range e.deferredSeeds {
+		if time.Now().UnixNano() >= retry {
+			delete(e.deferredSeeds, key)
+		}
+	}
 	if len(inputs) == 0 {
 		// Stop at the catalog share (once something is selected) or the hard
 		// budget, and resume at the interrupted candidate/seed next time.
@@ -291,6 +301,14 @@ func (e *Engine) reserveCompaction(ctx context.Context) (CompactionJob, error) {
 					seedKey := fmt.Sprintf("%s/%020d", stream, seed.Entry.First)
 					if selectedStreams[stream] || tried[seedKey] {
 						continue
+					}
+					// Deferred tail merges are rechecked later instead of consuming
+					// the search budget on every pass.
+					if retry, ok := e.deferredSeeds[seedKey]; ok {
+						if time.Now().UnixNano() < retry {
+							continue
+						}
+						delete(e.deferredSeeds, seedKey)
 					}
 					root := snapshot.state.Roots[seed.Metric][seed.Level]
 					// An immutable single-block root cannot supply a merge partner.
@@ -430,6 +448,13 @@ func (e *Engine) reserveCompaction(ctx context.Context) (CompactionJob, error) {
 						if !mergeWorthwhile(group, nextRecords, newestModified, time.Now(), options.MergeCooldownSeconds) {
 							group = nil
 							e.metrics.CompactionDeferredMerges.Inc()
+							// Due by age at the latest; a growing tail changes the group
+							// earlier, so recheck within minutes.
+							due := min(newestModified+int64(max(time.Hour, time.Duration(options.MergeCooldownSeconds)*4*time.Second)), time.Now().Add(deferredSeedRecheck).UnixNano())
+							if e.deferredSeeds == nil {
+								e.deferredSeeds = make(map[string]int64)
+							}
+							e.deferredSeeds[seedKey] = due
 						}
 					}
 					if len(group) > 1 {
@@ -478,6 +503,24 @@ func (e *Engine) reserveCompaction(ctx context.Context) (CompactionJob, error) {
 			return len(inputs) < options.JobMaxBlocks && copied < options.JobMaxBytes
 		})
 	}
+	fragmentMore := false
+	if len(inputs) == 0 && options.MergeEnabled {
+		reader := &Engine{store: snapshot.store, options: snapshot.options, metrics: snapshot.metrics, state: snapshot.state, sharedNodes: snapshot.sharedNodes, sharedCatalog: snapshot.sharedCatalog, nodeCache: make(map[blob]indexNode), nodeReadLimit: 4096, catalogReadBudget: compactionCatalogBudget}
+		run, more, err := e.selectFragment(ctx, reader, options, objectLimit, cutoff)
+		if err != nil {
+			return CompactionJob{}, err
+		}
+		fragmentMore = more
+		if len(run) > 1 {
+			for i := 1; i < len(run); i++ {
+				consecutive = append(consecutive, [2]blob{run[i-1].Entry.Blob, run[i].Entry.Blob})
+			}
+			rechunk = append(rechunk, run[0].Entry.Blob)
+			for _, b := range run {
+				add(b)
+			}
+		}
+	}
 	if len(inputs) == 0 && !options.LocalityDisabled && !localityChecked {
 		var localityErr error
 		inputs, localityMore, localityErr = selectLocality()
@@ -494,7 +537,7 @@ func (e *Engine) reserveCompaction(ctx context.Context) (CompactionJob, error) {
 	if resumeObject != "" {
 		e.candidateCursor = resumeCandidate
 	}
-	e.compactionScanMore = len(inputs) == 0 && (seedLimited || cursor != "" || localityMore)
+	e.compactionScanMore = len(inputs) == 0 && (seedLimited || cursor != "" || localityMore || fragmentMore)
 	if e.closed {
 		e.mu.Unlock()
 		return CompactionJob{}, fmt.Errorf("engine closed")

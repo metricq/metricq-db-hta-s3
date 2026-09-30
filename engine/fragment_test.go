@@ -200,3 +200,34 @@ func TestRechunkManyFragmentsShiftsAcrossLeaves(t *testing.T) {
 	f.check("many fragments after restart")
 	checkCatalog(t, f.e)
 }
+
+func TestFragmentScanRechunksLargeInteriorFragment(t *testing.T) {
+	f := newHoldFixture(t)
+	f.ingest("x", 700)
+	f.flush()
+	f.now = f.now.Add(2 * time.Hour)
+	f.flush()
+	f.e.mu.Lock()
+	f.e.tails = nil
+	f.e.mu.Unlock()
+	f.ingest("x", 3000)
+	f.flush()
+	// 700 records exceed the merge seed size: only the fragment scan finds it.
+	if got := f.blockRecords("x", 0); len(got) != 3 || got[0] != 700 || interiorFragments(got) != 1 {
+		t.Fatalf("fixture: %v", got)
+	}
+	f.compactAll()
+	if got := f.blockRecords("x", 0); interiorFragments(got) != 0 || got[len(got)-1] != 700 {
+		t.Fatalf("large fragment not moved to the tail: %v", got)
+	}
+	f.checkOrdered("large fragment")
+	f.check("large fragment")
+	f.ingest("x", 1000)
+	f.flush()
+	f.compactAll()
+	if got := f.blockRecords("x", 0); interiorFragments(got) != 0 {
+		t.Fatalf("after completing the tail: %v", got)
+	}
+	f.check("large fragment completed")
+	checkCatalog(t, f.e)
+}

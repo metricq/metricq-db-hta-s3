@@ -41,6 +41,12 @@ In order of preference:
   completes it (see [Write path](write-path.md#completing-partial-tails)). Such
   fragments stem from data written before tails were tracked or from races with
   concurrent merges; `compaction_rechunked_blocks_total` counts the rewrite.
+  Candidate objects only lead to fragments up to 512 records, so a fragment scan
+  additionally walks changed streams (64 per pass, only entries newer than the
+  part known to be clean) and finds fragments of any size.
+- **Deferred merges.** A large tail and a small new block are merged only after
+  25 % growth or an hour; such seeds are skipped for up to 10 minutes instead of
+  being re-examined on every pass.
 - **Level locality.** Consecutive blocks of one metric level, including full
   blocks, spread over at least `compaction_locality_min_ranges` physical ranges,
   are rewritten into one contiguous section. Sealed sections are not rewritten

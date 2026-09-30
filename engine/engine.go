@@ -181,6 +181,9 @@ type Engine struct {
 	compactionCompletions    uint64
 	compactionScanMore       bool
 	localityScans            map[string]localityScan
+	deferredSeeds            map[string]int64 // merge seeds deferred until this time (unix ns)
+	fragmentScans            map[string]fragmentScan
+	fragmentCursor           string
 	localityCursor           string
 	compactionObjectLimit    int // source objects per job, adapted to the catalog budget
 	lastReclaim              time.Time

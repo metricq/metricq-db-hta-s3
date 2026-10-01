@@ -38,7 +38,7 @@ func defaultConfig() localConfig {
 	var cfg localConfig
 	cfg.Token = "db-hta-s3"
 	cfg.Listen = "127.0.0.1:9090"
-	cfg.Prefetch = 100
+	cfg.Prefetch = 400
 	cfg.Engine.WALDirectory = "/var/lib/metricq-db-hta-s3/wal"
 	cfg.Engine.CheckpointAppendOnlyAggregates = true
 	cfg.Engine.HoldMaxAgeSeconds = 3600
@@ -86,7 +86,7 @@ func parseOptions(args []string, getenv func(string) string, stderr io.Writer) (
 		return err
 	})
 	def("metrics-listen", "address of the Prometheus /metrics and /readyz endpoint (default 127.0.0.1:9090)", func(v string) error { cfg.Listen = v; return nil })
-	def("ingest-prefetch", "AMQP data prefetch; deliveries of one batch share a WAL fsync (default 100)", func(v string) error { return setInt(&cfg.Prefetch, v) })
+	def("ingest-prefetch", "AMQP data prefetch; deliveries of one batch share a WAL fsync (default 400, as metricq-go and the file database)", func(v string) error { return setInt(&cfg.Prefetch, v) })
 	def("wal-dir", "local WAL directory on durable storage (default /var/lib/metricq-db-hta-s3/wal)", func(v string) error { cfg.Engine.WALDirectory = v; return nil })
 	def("s3-bucket", "S3 bucket", func(v string) error { cfg.S3.Bucket = v; return nil })
 	def("s3-prefix", "key prefix inside the bucket; one database per prefix", func(v string) error { cfg.S3.Prefix = v; return nil })

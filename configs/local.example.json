@@ -2,7 +2,7 @@
   "server": "amqp://admin:admin@localhost/",
   "token": "db-hta-s3",
   "metrics_listen": "127.0.0.1:9090",
-  "ingest_prefetch": 100,
+  "ingest_prefetch": 400,
   "s3": {
     "bucket": "metricq",
     "prefix": "db-hta-s3",

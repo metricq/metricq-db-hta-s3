@@ -10,7 +10,7 @@ so the dashboard draws them next to the measured values.
 | Symptom (dashboard panel / metric) | Likely cause | What to change |
 | --- | --- | --- |
 | **Backpressure** = 1, `ingest_backpressure_events_total` rising, RabbitMQ queue grows | WAL or ingest memory limit reached: checkpoints too slow or S3 down | Check *Checkpoint errors* and *Object store → Errors* first. If S3 is healthy: raise `wal_high_bytes`/`wal_hard_bytes` (disk) or `ingest_memory_limit_bytes` (memory). |
-| *Deliveries per fsync* p50 ≈ 1 while samples/s is high | batches too small, fsync-bound | Raise `ingest_prefetch` (50–200 is a good range). |
+| *Deliveries per fsync* p50 ≈ 1 while samples/s is high | batches too small, fsync-bound | Raise `ingest_prefetch` (default 400; single-sample deliveries need several hundred per fsync). |
 | *Deliveries per fsync* p95 = prefetch and backpressure events | batches reach the ingest memory limit | Lower `ingest_prefetch` or raise `ingest_memory_limit_bytes`. |
 | *WAL fsync latency* p99 > 10 ms | slow WAL disk | Move the WAL to an SSD; batching (prefetch) amortizes it. |
 | Many *Checkpoints by trigger* `wal`/`object_target` per minute, *Blocks written* mostly `partial` | holding disabled or too small | Enable/raise `hold_max_age_seconds`; check `hold_memory_bytes`. |

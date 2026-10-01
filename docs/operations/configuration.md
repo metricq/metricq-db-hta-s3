@@ -20,7 +20,7 @@ manager ([Deployment](deployment.md#2-register-the-database-with-the-manager)).
 | `--token` | `METRICQ_TOKEN` | `db-hta-s3` | Client token; the manager's configuration document id. |
 | `-v`, `--verbosity` | `METRICQ_VERBOSITY` | `warning` | `debug`, `info`, `warning`, `error` |
 | `--metrics-listen` | `METRICQ_METRICS_LISTEN` | `127.0.0.1:9090` | Address of `/metrics` and `/readyz` |
-| `--ingest-prefetch` | `METRICQ_INGEST_PREFETCH` | `100` | AMQP data prefetch = largest group-commit batch |
+| `--ingest-prefetch` | `METRICQ_INGEST_PREFETCH` | `400` | AMQP data prefetch = largest group-commit batch |
 | `--wal-dir` | `METRICQ_WAL_DIR` | `/var/lib/metricq-db-hta-s3/wal` | WAL directory on durable local storage |
 | `--s3-bucket` | `METRICQ_S3_BUCKET` | — (required) | Bucket |
 | `--s3-prefix` | `METRICQ_S3_PREFIX` | empty | Key prefix of this database (exclusive) |
@@ -51,7 +51,7 @@ integers. Option names start with the area they affect: `wal_`,
   "server": "amqp://admin:admin@localhost/",
   "token": "db-hta-s3",
   "metrics_listen": "127.0.0.1:9090",
-  "ingest_prefetch": 100,
+  "ingest_prefetch": 400,
   "s3": {
     "bucket": "metricq",
     "prefix": "db-hta-s3",

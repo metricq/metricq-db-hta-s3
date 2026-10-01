@@ -68,9 +68,14 @@ offset and length (`int64` each), and SHA-256 (32 bytes). Decoded pages are
 bounded to 32 MiB; the key dictionary avoids repeating pack names across
 metrics and levels. Legacy gzip/Gob root pages remain readable.
 
-Metadata, checkpoint state, held deltas, compaction jobs and WAL batches retain
-their existing gzip/Gob representation. Manifest CAS publication and WAL fsync
-before acknowledgement are unchanged by the block codec.
+Metadata, checkpoint state, held deltas and compaction jobs retain their
+existing gzip/Gob representation. WAL frames use their own uncompressed binary
+format (magic `MQHW`: receive time, aggregation config, metric name, points
+with varint time deltas); gob plus gzip cost about 50 µs per frame, which
+limited single-sample deliveries to a few thousand per second. Frames written
+before remain readable on replay; a WAL written by this version cannot be
+replayed by older binaries. Manifest CAS publication and WAL fsync before
+acknowledgement are unchanged by the block codec.
 
 ## Paged metadata
 

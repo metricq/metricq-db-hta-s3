@@ -191,7 +191,8 @@ func ingestRun(t *testing.T, ctx context.Context, mode string, prefetch, metricC
 		}
 		return r.TimeDelta[0], nil
 	}
-	for deadline := time.Now().Add(90 * time.Second); ; {
+	// Registering many metrics with the manager takes a while.
+	for deadline := time.Now().Add(90*time.Second + time.Duration(metricCount)*200*time.Millisecond); ; {
 		if _, err = lastValue(inputs[bindings[0].Input]); err == nil {
 			break
 		}

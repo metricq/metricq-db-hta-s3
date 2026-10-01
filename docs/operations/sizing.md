@@ -40,14 +40,10 @@ fragmented data; the catalog dominates its metadata traffic.
 
 ## WAL disk
 
-WAL bytes per sample depend on the chunk size of the sources:
-
-| Samples per DataChunk | WAL bytes per sample |
-| ---: | ---: |
-| 1 | ≈ 280 |
-| 10 | ≈ 43 |
-| 100 | ≈ 17 |
-| 500 | ≈ 14 |
+Each delivery is one WAL frame: a 20-byte header, the metric name and about
+30 bytes of fixed fields, plus 9 to 12 bytes per sample (varint time delta and
+the value). A single-sample delivery of a metric with a 17-character name
+takes about **85 bytes**; large chunks approach **10 to 12 bytes per sample**.
 
 The WAL never exceeds `wal_hard_bytes`; ingestion is refused (backpressure)
 above `wal_high_bytes`. Provision at least `wal_hard_bytes` + 50 % on a
@@ -78,8 +74,10 @@ A reasonable starting point for 1500 metrics at 1 Hz: `hold_memory_bytes` 512 Mi
 
 | Operation | Measured |
 | --- | --- |
-| Ingest, batched, prefetch 50–200 | ≈ 460 000 samples/s |
-| Ingest, one fsync per delivery | ≈ 90 000 samples/s |
+| Ingest, chunks of 500 samples, batched, prefetch 50–200 | ≈ 460 000 samples/s |
+| Ingest, chunks of 500 samples, one fsync per delivery | ≈ 90 000 samples/s |
+| Ingest, 1 sample per delivery, prefetch 400, backlog after a restart (development stack, 1003 metrics) | ≈ 25 000–30 000 deliveries/s |
+| Ingest, 1 sample per delivery, prefetch 100 | ≈ 4 000 deliveries/s (about 50 per fsync) |
 | Checkpoint (write to S3) | 450 000 – 770 000 samples/s of checkpoint time |
 | Compaction | ≈ 100–250 source blocks/s, bounded by catalog metadata |
 | Cold `FLEX_TIMELINE`, compacted layout | 1 data range GET, ≈ 5 ms on local S3 |

@@ -121,6 +121,7 @@ func (e *Engine) setTail(stream string, root blob, leaf []indexEntry) {
 		e.tails = make(map[string]streamTail)
 	}
 	blocks, records := openSuffix(leaf)
+	e.tailBlocks += blocks - e.tails[stream].blocks
 	e.tails[stream] = streamTail{root: root, blocks: blocks, records: records}
 }
 
@@ -215,21 +216,16 @@ func (e *Engine) bootstrapTails(ctx context.Context) error {
 	return nil
 }
 
-// updateTailMetrics splits small blocks into open tails and fragments. Tails
-// are exact once bootstrapped; the catalog count may briefly lag. Caller holds mu.
+// updateTailMetrics splits small blocks into open tails and fragments. Every
+// root change records its stream's tail, so a running total suffices; it runs
+// after each ingest batch. The catalog count may briefly lag. Caller holds mu.
 func (e *Engine) updateTailMetrics(m manifest) {
 	if !e.tailsKnown || !m.MaintenanceStatsReady {
 		e.metrics.TailBlocks.Set(math.NaN())
 		e.metrics.FragmentBlocks.Set(math.NaN())
 		return
 	}
-	tails := 0
-	for stream, tail := range e.tails {
-		metric, level := splitStreamKey(stream)
-		if e.state.Roots[metric][level] == tail.root {
-			tails += tail.blocks
-		}
-	}
+	tails := e.tailBlocks
 	e.metrics.TailBlocks.Set(float64(tails))
 	e.metrics.FragmentBlocks.Set(float64(max(0, m.SmallBlocks-int64(tails))))
 }

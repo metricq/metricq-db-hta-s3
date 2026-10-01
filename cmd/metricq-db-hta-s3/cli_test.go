@@ -46,7 +46,7 @@ func TestOptionsFromEnvironmentOnly(t *testing.T) {
 	if c.Server != "amqp://alice@broker/" || c.Token != "db-alice" || !c.S3.PathStyle || c.Engine.WALDirectory != "/data/wal" || o.verbosity != slog.LevelInfo {
 		t.Fatalf("%+v", c)
 	}
-	if c.Listen != "127.0.0.1:9090" || c.Prefetch != 100 || c.Engine.HoldMaxAgeSeconds != 3600 {
+	if c.Listen != "127.0.0.1:9090" || c.Prefetch != 400 || c.Engine.HoldMaxAgeSeconds != 3600 {
 		t.Fatalf("defaults: %+v", c)
 	}
 }
@@ -84,7 +84,7 @@ func TestExampleConfigAndUnknownKeys(t *testing.T) {
 		t.Fatal(err)
 	}
 	e := o.config.Engine
-	if o.config.Prefetch != 100 || e.CheckpointUnsavedBytes != 4<<20 || e.HoldMemoryBytes != 512<<20 || e.JobMaxBlocks != 512 || e.ReclaimDeadFraction != 0.4 || !e.MergeEnabled {
+	if o.config.Prefetch != 400 || e.CheckpointUnsavedBytes != 4<<20 || e.HoldMemoryBytes != 512<<20 || e.JobMaxBlocks != 512 || e.ReclaimDeadFraction != 0.4 || !e.MergeEnabled {
 		t.Fatalf("example config not fully applied: %+v", o.config)
 	}
 	config := filepath.Join(t.TempDir(), "old.json")

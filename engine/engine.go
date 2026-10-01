@@ -205,6 +205,7 @@ type Engine struct {
 	tailPaths                map[string]tailPath
 	tailEntries              int
 	tails                    map[string]streamTail
+	tailBlocks               int // sum of open suffix blocks over tails
 	tailsKnown               bool
 	state                    manifest
 	committed                manifest
@@ -228,13 +229,16 @@ type Engine struct {
 }
 
 func encode(v any) ([]byte, error) {
+	if b, ok := v.(batch); ok {
+		return encodeWALBatch(b), nil
+	}
 	if b, handled, err := encodeBinaryBlock(v); handled {
 		return b, err
 	}
 	return encodeGob(v)
 }
 
-// Metadata and WAL batches keep their existing gzip/Gob representation.
+// Metadata keeps its existing gzip/Gob representation.
 func encodeGob(v any) ([]byte, error) {
 	var b bytes.Buffer
 	z := gzipWriters.Get().(*gzip.Writer)
@@ -259,6 +263,13 @@ var gzipWriters = sync.Pool{New: func() any {
 }}
 
 func decode(b []byte, v any) error {
+	if bytes.HasPrefix(b, []byte(walMagic)) {
+		out, ok := v.(*batch)
+		if !ok {
+			return fmt.Errorf("WAL frame decoded into %T", v)
+		}
+		return decodeWALBatch(b, out)
+	}
 	if bytes.HasPrefix(b, []byte(blockMagic)) {
 		return decodeBinaryBlock(b, v)
 	}

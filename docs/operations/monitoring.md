@@ -128,7 +128,7 @@ This table is generated from `engine/metrics.go` by
 | `metricq_db_storage_objects` | gauge |  | Data and index objects tracked by the maintenance catalog. |
 | `metricq_db_storage_small_block_bytes` | gauge |  | Compressed bytes in live data blocks below 1024 records. |
 | `metricq_db_storage_small_blocks` | gauge |  | Live data blocks below 1024 records, including single stream tails. |
-| `metricq_db_storage_tail_blocks` | gauge |  | Streams whose newest data block is below 1024 records: open tails, filled by later records, not compaction work. |
+| `metricq_db_storage_tail_blocks` | gauge |  | Partial blocks at the end of streams that together fit into one block: open tails, filled by later records or a deferred merge, not compaction work. |
 | **Compaction** | | | |
 | `metricq_db_compaction_active` | gauge |  | One while a background compaction job runs. |
 | `metricq_db_compaction_candidate_objects` | gauge |  | Tracked candidate objects, including cooldown and single tails. |

@@ -60,8 +60,15 @@ func (e *Engine) selectFragment(ctx context.Context, snapshot *Engine, options C
 			return nil, false, err
 		}
 		complete := len(entries) < limit
+		// The open suffix (a partial tail and blocks whose merge with it is
+		// deferred) is left to the merge policy.
+		end := len(entries) - 1
+		if complete {
+			blocks, _ := openSuffix(entries)
+			end = len(entries) - max(blocks, 1)
+		}
 		fragment := -1
-		for j := 0; j+1 < len(entries); j++ {
+		for j := 0; j < end; j++ {
 			if entries[j].Records > 0 && entries[j].Records < maxDataBlockRecords {
 				fragment = j
 				break
@@ -72,8 +79,8 @@ func (e *Engine) selectFragment(ctx context.Context, snapshot *Engine, options C
 				e.fragmentScans[s.Key] = fragmentScan{Root: root, After: after}
 				continue
 			}
-			// The last entry may still be (or become) an interior partial block.
-			next := fragmentScan{After: entries[len(entries)-1].First}
+			// The open suffix may still become interior partial blocks.
+			next := fragmentScan{After: entries[max(end, 0)].First}
 			if complete {
 				next.Root = root
 			} else {

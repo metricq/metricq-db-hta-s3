@@ -53,7 +53,7 @@ func (e *Engine) pinTailPaths(staged map[string]tailPath, nodes map[blob]indexNo
 	for stream, path := range staged {
 		if len(path.pages) > 0 {
 			if leaf, ok := nodes[path.pages[len(path.pages)-1]]; ok && leaf.Leaf && len(leaf.Entries) > 0 {
-				e.setTail(stream, path.pages[0], leaf.Entries[len(leaf.Entries)-1])
+				e.setTail(stream, path.pages[0], leaf.Entries)
 			}
 		}
 		if old, ok := e.tailPaths[stream]; ok {
@@ -86,23 +86,57 @@ func (e *Engine) singletonTailRoots() map[blob]bool {
 	return roots
 }
 
-// streamTail records the size of a stream's newest data block. Every stream
-// has such an open tail until it fills, so partial tails are reported apart
-// from fragments inside a stream, which compaction repairs. Checkpoints use
-// the size to complete a partial tail instead of appending behind it.
+// streamTail describes the open suffix of a stream: its newest partial
+// blocks that together still fit into one block (a partial tail, possibly
+// followed by a block whose merge is deferred). Such blocks fill or merge in
+// time and are reported apart from fragments inside a stream, which
+// compaction repairs. Checkpoints complete the suffix to a full block instead
+// of appending behind it.
 type streamTail struct {
 	root    blob
-	records int
+	blocks  int // partial blocks in the open suffix
+	records int // records in the open suffix
 }
 
-func (t streamTail) partial() bool { return t.records > 0 && t.records < maxDataBlockRecords }
+func (t streamTail) partial() bool { return t.blocks > 0 }
 
-// setTail records the newest entry of a stream under root. Caller holds mu.
-func (e *Engine) setTail(stream string, root blob, last indexEntry) {
+// openSuffix returns the trailing partial entries that fit into one block.
+func openSuffix(entries []indexEntry) (blocks, records int) {
+	for i := len(entries) - 1; i >= 0; i-- {
+		n := entries[i].Records
+		if n <= 0 || n >= maxDataBlockRecords || records+n > maxDataBlockRecords {
+			break
+		}
+		blocks++
+		records += n
+	}
+	return blocks, records
+}
+
+// setTail records the open suffix of a stream under root from its rightmost
+// leaf entries. A suffix reaching into the previous leaf is undercounted;
+// the fragment scan sees the full suffix. Caller holds mu.
+func (e *Engine) setTail(stream string, root blob, leaf []indexEntry) {
 	if e.tails == nil {
 		e.tails = make(map[string]streamTail)
 	}
-	e.tails[stream] = streamTail{root: root, records: last.Records}
+	blocks, records := openSuffix(leaf)
+	e.tails[stream] = streamTail{root: root, blocks: blocks, records: records}
+}
+
+// rightmostLeaf returns the entries of a stream's newest index leaf.
+func (e *Engine) rightmostLeaf(ctx context.Context, ptr blob) ([]indexEntry, error) {
+	for ptr.Key != "" {
+		n, err := e.readNode(ctx, ptr)
+		if err != nil {
+			return nil, err
+		}
+		if n.Leaf {
+			return n.Entries, nil
+		}
+		ptr = n.Entries[len(n.Entries)-1].Blob
+	}
+	return nil, nil
 }
 
 // refreshTails reads the newest entry of the given streams from their current
@@ -111,7 +145,7 @@ func (e *Engine) refreshTails(ctx context.Context, roots map[string]blob) error 
 	type result struct {
 		stream string
 		root   blob
-		last   indexEntry
+		leaf   []indexEntry
 	}
 	work := make(chan result)
 	results := make(chan result)
@@ -124,12 +158,12 @@ func (e *Engine) refreshTails(ctx context.Context, roots map[string]blob) error 
 			defer workers.Done()
 			r := &Engine{store: e.store, metrics: e.metrics, options: e.options, sharedNodes: e.sharedNodes, nodeCache: make(map[blob]indexNode)}
 			for w := range work {
-				last, err := r.lastIndexEntry(ctx, w.root)
+				leaf, err := r.rightmostLeaf(ctx, w.root)
 				if err != nil {
 					errOnce.Do(func() { firstErr = err })
 					continue
 				}
-				w.last = last
+				w.leaf = leaf
 				results <- w
 			}
 		}()
@@ -148,7 +182,7 @@ func (e *Engine) refreshTails(ctx context.Context, roots map[string]blob) error 
 		metric, level := splitStreamKey(r.stream)
 		e.mu.Lock()
 		if e.state.Roots[metric][level] == r.root {
-			e.setTail(r.stream, r.root, r.last)
+			e.setTail(r.stream, r.root, r.leaf)
 		}
 		e.mu.Unlock()
 	}
@@ -192,16 +226,17 @@ func (e *Engine) updateTailMetrics(m manifest) {
 	tails := 0
 	for stream, tail := range e.tails {
 		metric, level := splitStreamKey(stream)
-		if tail.partial() && e.state.Roots[metric][level] == tail.root {
-			tails++
+		if e.state.Roots[metric][level] == tail.root {
+			tails += tail.blocks
 		}
 	}
 	e.metrics.TailBlocks.Set(float64(tails))
 	e.metrics.FragmentBlocks.Set(float64(max(0, m.SmallBlocks-int64(tails))))
 }
 
-// tailGap returns how many records complete the partial tail of a stream under
-// root, or zero when the tail is full or unknown. Caller holds mu.
+// tailGap returns how many records complete the open suffix of a stream under
+// root to a full block, or zero when there is none or it is unknown. Caller
+// holds mu.
 func (e *Engine) tailGap(metric string, level int64, root blob) int {
 	tail, ok := e.tails[streamKey(metric, level)]
 	if !ok || tail.root != root || !tail.partial() {

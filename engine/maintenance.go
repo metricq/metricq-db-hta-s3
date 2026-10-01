@@ -412,7 +412,8 @@ func (e *Engine) RunMaintenance(ctx context.Context) {
 				slog.Warn("compaction recovery failed", "error", err)
 			}
 			if e.reclaimDue() {
-				if err := e.Reclaim(ctx); err != nil && ctx.Err() == nil {
+				// ErrPressure: a checkpoint holds the publication lock; retried.
+				if err := e.Reclaim(ctx); err != nil && ctx.Err() == nil && !errors.Is(err, ErrPressure) {
 					slog.Warn("background reclaim failed", "error", err)
 				}
 			}

@@ -82,14 +82,13 @@ so the dashboard draws them next to the measured values.
 ## Reading the fragmentation panels
 
 `storage_small_blocks` counts every block below 1024 records. It splits into
-`storage_tail_blocks`, the newest partial block of each stream, which only new
-records fill (a coarse level may take days to years), and
+`storage_tail_blocks`, the open suffix of each stream (its newest partial
+blocks that together still fit into one block: a tail that only new records
+fill, a coarse level may take days to years, plus a small new block whose merge
+with a large tail is deferred for up to an hour), and
 `storage_fragment_blocks`, small blocks inside a stream, which are compaction
-work. Tails around the number of streams are healthy. Fragments should return
-towards zero between checkpoints; a steady rise means compaction falls behind.
-Merges of a large tail with a small new block wait up to an hour (see
-`compaction_merge_cooldown_seconds`), so a few fragments per stream are normal
-shortly after a checkpoint. `checkpoint_blocks_total{size="partial"}` is the
+work. Tails around the number of streams are healthy. Fragments should stay
+near zero; a steady rise means compaction falls behind. `checkpoint_blocks_total{size="partial"}` is the
 inflow of new partial blocks; `compaction_input_blocks_total −
 compaction_output_blocks_total` is the outflow.
 

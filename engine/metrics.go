@@ -129,7 +129,7 @@ func NewMetrics(r prometheus.Registerer) *Metrics {
 		CandidateObjects:          gauge("compaction_candidate_objects", "Tracked candidate objects, including cooldown and single tails."),
 		SmallBlocks:               gauge("storage_small_blocks", "Live data blocks below 1024 records, including single stream tails."),
 		SmallBlockBytes:           gauge("storage_small_block_bytes", "Compressed bytes in live data blocks below 1024 records."),
-		TailBlocks:                gauge("storage_tail_blocks", "Streams whose newest data block is below 1024 records: open tails, filled by later records, not compaction work."),
+		TailBlocks:                gauge("storage_tail_blocks", "Partial blocks at the end of streams that together fit into one block: open tails, filled by later records or a deferred merge, not compaction work."),
 		FragmentBlocks:            gauge("storage_fragment_blocks", "Small data blocks followed by a newer block of their stream; compaction work."),
 		CompactionRechunkedBlocks: counter("compaction_rechunked_blocks_total", "Source blocks rewritten to move a fragment towards the end of its stream."),
 		CompactionInputBlocks:     counter("compaction_input_blocks_total", "Source blocks in successfully published jobs."),

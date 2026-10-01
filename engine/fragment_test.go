@@ -231,3 +231,46 @@ func TestFragmentScanRechunksLargeInteriorFragment(t *testing.T) {
 	f.check("large fragment completed")
 	checkCatalog(t, f.e)
 }
+
+func TestOpenSuffixIsNoFragment(t *testing.T) {
+	f := newHoldFixture(t)
+	f.ingest("x", 700)
+	f.flush()
+	f.now = f.now.Add(2 * time.Hour)
+	f.flush()
+	// A small block behind a large partial tail: its merge may be deferred,
+	// so both form the open suffix, not a fragment.
+	f.ingest("x", 100)
+	f.flush()
+	f.now = f.now.Add(2 * time.Hour)
+	f.flush()
+	if got := f.blockRecords("x", 0); len(got) != 2 || got[0] != 700 || got[1] != 100 {
+		t.Fatalf("fixture: %v", got)
+	}
+	if err := f.e.bootstrapTails(f.ctx); err != nil {
+		t.Fatal(err)
+	}
+	f.e.mu.Lock()
+	f.e.updateMaintenanceMetrics(f.e.state)
+	gap := f.e.tailGap("x", 0, f.e.state.Roots["x"][0])
+	f.e.mu.Unlock()
+	if fragments := metricValue(t, f.e.metrics.FragmentBlocks); fragments != 0 {
+		t.Fatalf("open suffix counted as %v fragments", fragments)
+	}
+	if gap != maxDataBlockRecords-800 {
+		t.Fatalf("gap %d completes the last block only", gap)
+	}
+	options := f.e.options.CompactionOptions.defaults()
+	run, _, err := f.e.selectFragment(f.ctx, f.e, options, 256, time.Now().UnixNano())
+	if err != nil || run != nil {
+		t.Fatalf("fragment scan selected the open suffix: %v %v", run, err)
+	}
+	// The next write completes the suffix; compaction merges it into one block.
+	f.ingest("x", 2000)
+	f.flush()
+	f.compactAll()
+	if got := f.blockRecords("x", 0); interiorFragments(got) != 0 || got[0] != maxDataBlockRecords {
+		t.Fatalf("after completing the suffix: %v", got)
+	}
+	f.check("open suffix completed")
+}

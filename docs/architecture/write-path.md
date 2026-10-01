@@ -108,12 +108,13 @@ blocks are merged later by compaction.
 
 ## Completing partial tails
 
-A stream whose newest block is partial (P records, e.g. written early under
+A stream ending in partial blocks (P records in its open suffix: the newest
+partial blocks that together fit into one block, e.g. written early under
 memory pressure or when its hold expired) would otherwise receive full blocks
-behind it, leaving a fragment that no merge can absorb. The engine tracks the
-size of every stream's newest block, so the next checkpoint writes the
-`1024 − P` completing records first and full blocks after them; one of the two
-partial blocks has at most 512 records, and compaction merges them into a full
-block. Held streams accordingly write once `1024 − P` records are available. With compaction disabled the engine
+behind them, leaving fragments that no merge can absorb. The engine tracks the
+open suffix of every stream, so the next checkpoint writes the `1024 − P`
+completing records first and full blocks after them; compaction merges the
+suffix and the completing block into a full block. Held streams accordingly
+write once `1024 − P` records are available. With compaction disabled the engine
 falls back to reading and extending the last aggregate block at each
 checkpoint.

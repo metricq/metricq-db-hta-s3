@@ -104,7 +104,9 @@ to about 3 per second and object store writes from 4.3 GB to 0.46 GB per hour
 
 Checkpoints append new blocks and never rewrite the last partial block of a
 stream (`checkpoint_append_only_aggregates`, default on in the executable). Partial
-blocks are merged later by compaction.
+blocks are merged later by compaction. With compaction disabled the engine
+falls back to reading and extending the last aggregate block at each
+checkpoint.
 
 ## Completing partial tails
 
@@ -115,6 +117,4 @@ behind them, leaving fragments that no merge can absorb. The engine tracks the
 open suffix of every stream, so the next checkpoint writes the `1024 − P`
 completing records first and full blocks after them; compaction merges the
 suffix and the completing block into a full block. Held streams accordingly
-write once `1024 − P` records are available. With compaction disabled the engine
-falls back to reading and extending the last aggregate block at each
-checkpoint.
+write once `1024 − P` records are available.

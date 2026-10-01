@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -78,25 +79,78 @@ func BenchmarkReviewManifest(b *testing.B) {
 
 type capacityReadStore struct {
 	*rangeGCStore
-	dataGets  atomic.Int64
-	dataBytes atomic.Int64
+	data     capacityReadCounter
+	index    capacityReadCounter
+	metadata capacityReadCounter
+}
+
+type capacityReadCounter struct {
+	gets      atomic.Int64
+	rangeGets atomic.Int64
+	bytes     atomic.Int64
+}
+
+type capacityReadSample struct {
+	gets, rangeGets, bytes int64
+}
+
+func (c *capacityReadCounter) reset() {
+	c.gets.Store(0)
+	c.rangeGets.Store(0)
+	c.bytes.Store(0)
+}
+
+func (c *capacityReadCounter) sample() capacityReadSample {
+	return capacityReadSample{c.gets.Load(), c.rangeGets.Load(), c.bytes.Load()}
+}
+
+func (s *capacityReadStore) counter(key string) *capacityReadCounter {
+	switch {
+	case strings.HasPrefix(key, "data/"):
+		return &s.data
+	case strings.HasPrefix(key, "index/"):
+		return &s.index
+	default:
+		return &s.metadata
+	}
+}
+
+func (s *capacityReadStore) resetReads() {
+	s.data.reset()
+	s.index.reset()
+	s.metadata.reset()
+}
+
+func (s *capacityReadStore) Get(ctx context.Context, key string) ([]byte, string, error) {
+	b, etag, err := s.rangeGCStore.Get(ctx, key)
+	c := s.counter(key)
+	c.gets.Add(1)
+	if err == nil {
+		c.bytes.Add(int64(len(b)))
+	}
+	return b, etag, err
 }
 
 func (s *capacityReadStore) GetRange(ctx context.Context, key string, offset, length int64) ([]byte, error) {
-	if len(key) >= 5 && key[:5] == "data/" {
-		s.dataGets.Add(1)
-		s.dataBytes.Add(length)
+	b, err := s.rangeGCStore.GetRange(ctx, key, offset, length)
+	c := s.counter(key)
+	c.rangeGets.Add(1)
+	if err == nil {
+		c.bytes.Add(int64(len(b)))
 	}
-	return s.rangeGCStore.GetRange(ctx, key, offset, length)
+	return b, err
 }
 
 // Same logical history, full blocks either spread over checkpoints or contiguous.
-// No simulated network delay: count real RangeGetter calls and record CPU/store time.
+// No simulated network delay: count all store GETs and record CPU/store time.
 func TestReviewFullBlockQueryLocality(t *testing.T) {
 	ctx := context.Background()
 	var reference *metricq.HistoryResponse
-	for _, flushes := range []int{16, 1} {
-		t.Run(fmt.Sprintf("flushes=%d", flushes), func(t *testing.T) {
+	for _, scenario := range []struct{ blocks, flushes int }{
+		{16, 16}, {16, 1},
+		{80, 80}, {80, 1}, // More than one 64-entry index leaf.
+	} {
+		t.Run(fmt.Sprintf("blocks=%d/flushes=%d", scenario.blocks, scenario.flushes), func(t *testing.T) {
 			s := &capacityReadStore{rangeGCStore: &rangeGCStore{gcStore: &gcStore{memoryStore: newStore()}}}
 			opts := maintenanceOptions(t.TempDir(), true)
 			opts.CheckpointAppendOnlyAggregates = true
@@ -110,11 +164,11 @@ func TestReviewFullBlockQueryLocality(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer e.Close()
-			const total = 16 * 1024
+			total := scenario.blocks * maxDataBlockRecords
 			const base = int64(1700000000) * int64(time.Second)
-			for start := 0; start < total; start += total / flushes {
+			for start := 0; start < total; start += total / scenario.flushes {
 				c := &metricq.DataChunk{}
-				for j := start; j < start+total/flushes; j++ {
+				for j := start; j < start+total/scenario.flushes; j++ {
 					d := int64(time.Second)
 					if j == start {
 						d = base + int64(j)*int64(time.Second)
@@ -134,12 +188,12 @@ func TestReviewFullBlockQueryLocality(t *testing.T) {
 			req := &metricq.HistoryRequest{Type: metricq.HistoryRequest_FLEX_TIMELINE, StartTime: base, EndTime: base + 9000*int64(time.Second), IntervalMax: 9 * int64(time.Second)}
 			measure := func(label string) {
 				var times []time.Duration
-				var gets, bytes int64
+				var data, index, metadata capacityReadSample
 				for i := 0; i < 10; i++ {
 					e.sharedNodes = newIndexPageCache()
+					e.sharedCatalog = newCatalogPageCache()
 					e.sharedBlocks = newDataBlockCache()
-					s.dataGets.Store(0)
-					s.dataBytes.Store(0)
+					s.resetReads()
 					start := time.Now()
 					r, err := e.Query(ctx, "x", req)
 					elapsed := time.Since(start)
@@ -155,11 +209,27 @@ func TestReviewFullBlockQueryLocality(t *testing.T) {
 						t.Fatal("different response")
 					}
 					times = append(times, elapsed)
-					gets += s.dataGets.Load()
-					bytes += s.dataBytes.Load()
+					d, x, m := s.data.sample(), s.index.sample(), s.metadata.sample()
+					if want := 1 + scenario.blocks/indexFanout; x.rangeGets < int64(want) {
+						t.Fatalf("cold %d-block query used only %d index GETs; expected at least %d levels", scenario.blocks, x.rangeGets, want)
+					}
+					data.gets += d.gets
+					data.rangeGets += d.rangeGets
+					data.bytes += d.bytes
+					index.gets += x.gets
+					index.rangeGets += x.rangeGets
+					index.bytes += x.bytes
+					metadata.gets += m.gets
+					metadata.rangeGets += m.rangeGets
+					metadata.bytes += m.bytes
 				}
 				sort.Slice(times, func(i, j int) bool { return times[i] < times[j] })
-				t.Logf("%s cold FLEX: median=%s data_GETs=%.1f data_bytes=%.0f rows=%d candidates=%d", label, times[5], float64(gets)/10, float64(bytes)/10, len(reference.TimeDelta), e.state.CandidateObjects)
+				t.Logf("%s cold FLEX: median=%s p95=%s total_GETs=%.1f data_GETs=%.1f index_GETs=%.1f metadata_GETs=%.1f total_bytes=%.0f data_bytes=%.0f index_bytes=%.0f metadata_bytes=%.0f full_GETs=%.1f range_GETs=%.1f rows=%d candidates=%d",
+					label, times[5], times[9], float64(data.gets+data.rangeGets+index.gets+index.rangeGets+metadata.gets+metadata.rangeGets)/10,
+					float64(data.gets+data.rangeGets)/10, float64(index.gets+index.rangeGets)/10, float64(metadata.gets+metadata.rangeGets)/10,
+					float64(data.bytes+index.bytes+metadata.bytes)/10, float64(data.bytes)/10, float64(index.bytes)/10, float64(metadata.bytes)/10,
+					float64(data.gets+index.gets+metadata.gets)/10, float64(data.rangeGets+index.rangeGets+metadata.rangeGets)/10,
+					len(reference.TimeDelta), e.state.CandidateObjects)
 			}
 			measure("before")
 			before := e.compactionCompletions
@@ -170,14 +240,15 @@ func TestReviewFullBlockQueryLocality(t *testing.T) {
 			}
 			t.Logf("completed compactions=%d", e.compactionCompletions-before)
 			measure("after")
-			if flushes == 16 {
+			if scenario.flushes > 1 {
 				e.sharedNodes = newIndexPageCache()
+				e.sharedCatalog = newCatalogPageCache()
 				e.sharedBlocks = newDataBlockCache()
-				s.dataGets.Store(0)
+				s.resetReads()
 				if _, err := e.Query(ctx, "x", req); err != nil {
 					t.Fatal(err)
 				}
-				if got := s.dataGets.Load(); got != 1 {
+				if got := s.data.sample().rangeGets; got != 1 {
 					t.Fatalf("locality compaction retains %d data GETs", got)
 				}
 			}

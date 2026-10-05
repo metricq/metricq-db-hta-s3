@@ -54,7 +54,7 @@ func TestReclaimBatchesJournalPagesPerPublication(t *testing.T) {
 	}
 	defer e.Close()
 	fillCompaction(t, e, 2)
-	for e.state.TrashHead != e.state.TrashComplete || e.state.TrashCleanup != "" || len(e.state.TrashCleanups) != 0 {
+	for e.state.TrashHead != e.state.TrashComplete || len(e.state.TrashCleanups) != 0 {
 		if err = e.Reclaim(ctx); err != nil {
 			t.Fatal(err)
 		}
@@ -111,36 +111,6 @@ func TestReclaimBatchesJournalPagesPerPublication(t *testing.T) {
 	}
 	t.Logf("%d passes, %d manifest publications", passes, s.manifests)
 	checkCatalog(t, e)
-}
-
-func TestReclaimFinishesLegacySingleCleanup(t *testing.T) {
-	ctx := context.Background()
-	s := &reclaimStore{gcStore: &gcStore{memoryStore: newStore()}}
-	e, err := Open(ctx, s, maintenanceOptions(t.TempDir(), true), testConfig, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer e.Close()
-	fillCompaction(t, e, 1)
-	if _, err = s.Put(ctx, "trash/legacy-page", []byte{1}, nil); err != nil {
-		t.Fatal(err)
-	}
-	if err = e.editMaintenance(ctx, func(snapshot *Engine) (manifest, error) {
-		next := cloneManifest(snapshot.committed)
-		next.Generation++
-		next.TrashCleanup = "trash/legacy-page"
-		return next, nil
-	}); err != nil {
-		t.Fatal(err)
-	}
-	for i := 0; i < 10 && (e.state.TrashCleanup != "" || len(e.state.TrashCleanups) != 0 || e.state.TrashHead != e.state.TrashComplete); i++ {
-		if err = e.Reclaim(ctx); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if e.state.TrashCleanup != "" || s.objects("trash/legacy-page") != 0 {
-		t.Fatal("legacy journal cleanup was not completed")
-	}
 }
 
 func TestReclaimFoldsPageCleanupIntoNextPublication(t *testing.T) {

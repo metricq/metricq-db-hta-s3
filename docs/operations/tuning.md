@@ -137,7 +137,6 @@ measures the four-slot pipeline separately: catalog-phase latency decreases,
 while total local compaction/GC time remains effectively unchanged.
 
 Data blocks and index pages use a versioned binary codec with gzip BestSpeed.
-Legacy Gob blocks remain readable and are rewritten only by ordinary appends or
-compaction. Fixed fields avoid per-block Gob schemas; full raw blocks can still
+Fixed fields avoid per-block Gob schemas; full raw blocks can still
 be slightly larger. See the codec measurements (`measurements/binary-block-codec.md`)
 for allocation, byte-volume and compaction results.

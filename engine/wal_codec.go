@@ -12,7 +12,7 @@ import (
 // microseconds per frame (type descriptors and Huffman tables per frame),
 // which dominated ingestion of single-sample deliveries under the engine
 // mutex. Frames are CRC-protected already; this format is uncompressed with
-// varint time deltas. Frames written before it remain readable.
+// varint time deltas.
 const walMagic = "MQHW"
 const walVersion byte = 1
 

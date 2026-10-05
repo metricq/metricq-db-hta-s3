@@ -3,13 +3,14 @@ package engine
 import (
 	"context"
 	"fmt"
-	"github.com/metricq/metricq-db-hta-s3/storage"
 	"io"
 	"math"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/metricq/metricq-db-hta-s3/storage"
 
 	"github.com/metricq/metricq-db-hta-s3/hta"
 	metricq "github.com/metricq/metricq-go"

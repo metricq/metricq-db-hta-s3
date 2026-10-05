@@ -26,7 +26,7 @@ func sampleHeldDelta(streams, records int) heldDelta {
 	return d
 }
 
-func TestHeldDeltaBinaryRoundTripAndLegacy(t *testing.T) {
+func TestHeldDeltaBinaryRoundTrip(t *testing.T) {
 	for _, want := range []heldDelta{{Streams: []deltaStream{}}, sampleHeldDelta(1, 1), sampleHeldDelta(30, 200)} {
 		b, err := encode(want)
 		if err != nil {
@@ -53,14 +53,10 @@ func TestHeldDeltaBinaryRoundTripAndLegacy(t *testing.T) {
 			t.Fatal(err)
 		}
 		var old heldDelta
-		if err := decode(legacy, &old); err != nil || !reflect.DeepEqual(old, want) {
-			t.Fatalf("legacy gob delta unreadable: %v", err)
+		if err := decode(legacy, &old); err == nil {
+			t.Fatal("gob-encoded held delta accepted")
 		}
 	}
-	d := sampleHeldDelta(30, 200)
-	b, _ := encode(d)
-	legacy, _ := encodeGob(d)
-	t.Logf("6000 held records: binary %d bytes, gob %d bytes", len(b), len(legacy))
 }
 
 func TestHeldDeltaBinaryRejectsCorruption(t *testing.T) {
@@ -105,13 +101,6 @@ func BenchmarkHeldDeltaEncode(b *testing.B) {
 	b.Run("binary", func(b *testing.B) {
 		for i := 0; i < b.N; i++ {
 			if _, err := encode(d); err != nil {
-				b.Fatal(err)
-			}
-		}
-	})
-	b.Run("gob-gzip", func(b *testing.B) {
-		for i := 0; i < b.N; i++ {
-			if _, err := encodeGob(d); err != nil {
 				b.Fatal(err)
 			}
 		}

@@ -365,21 +365,6 @@ func (e *Engine) loadHeldMetadata(ctx context.Context, m *manifest) error {
 	if err != nil {
 		return err
 	}
-	// Probe the version separately: the old Watermarks field was a map,
-	// whereas the new root stores a blob with that name.
-	var version struct{ Version int }
-	probeErr := decode(b, &version)
-	if probeErr != nil || version.Version == 0 {
-		var old heldMetadata
-		if err = decode(b, &old); err != nil {
-			return err
-		}
-		if len(old.Deltas)+len(old.Watermarks) == 0 {
-			return fmt.Errorf("invalid legacy held metadata")
-		}
-		m.Held, m.HeldWatermarks = old.Deltas, old.Watermarks
-		return nil
-	}
 	var root heldRoot
 	if err = decode(b, &root); err != nil {
 		return err

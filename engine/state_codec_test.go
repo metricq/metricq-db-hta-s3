@@ -26,7 +26,7 @@ func sampleStatePage(n int) map[string]*hta.Series {
 	return m
 }
 
-func TestStatePageBinaryRoundTripAndLegacy(t *testing.T) {
+func TestStatePageBinaryRoundTrip(t *testing.T) {
 	want := sampleStatePage(20)
 	want["empty"] = hta.New(hta.Config{IntervalMin: 1, IntervalMax: 10, IntervalFactor: 10})
 	b, err := encode(want)
@@ -48,13 +48,9 @@ func TestStatePageBinaryRoundTripAndLegacy(t *testing.T) {
 		t.Fatal(err)
 	}
 	var old map[string]*hta.Series
-	if err := decode(legacy, &old); err != nil || len(old) != len(want) || old["load.hta-s3.m0003"].Levels[400e9] != want["load.hta-s3.m0003"].Levels[400e9] {
-		t.Fatalf("legacy gob state page unreadable: %v", err)
+	if err := decode(legacy, &old); err == nil {
+		t.Fatal("gob-encoded state page accepted")
 	}
-	page := sampleStatePage(6)
-	small, _ := encode(page)
-	gob, _ := encodeGob(page)
-	t.Logf("6 series state page: binary %d bytes, gob %d bytes", len(small), len(gob))
 	if _, err := encode(map[string]*hta.Series{"nil": nil}); err == nil {
 		t.Fatal("nil series encoded")
 	}

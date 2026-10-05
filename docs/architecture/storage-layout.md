@@ -42,8 +42,12 @@ An independent gzip BestSpeed
 stream follows. The range SHA-256 covers the envelope and compressed stream.
 Unknown versions/kinds, wrong destination types, truncation, invalid counts,
 invalid key IDs, gzip CRC errors and trailing payload bytes fail decoding.
-Legacy gzip/Gob data and index ranges remain readable; appending or compacting
-writes the new format. Mixed histories need no eager conversion.
+
+Every object type has exactly one format. Data blocks, index, root and state
+pages, held deltas and WAL frames exist only in the binary formats described
+here; Gob-encoded objects of these types fail decoding. A database written by
+a version before these formats cannot be opened; start it with an empty
+prefix and WAL.
 
 All fixed fields use little-endian order. Data payloads start with a `uint32`
 record count, bounded to 1024. Each 80-byte record contains, in order: Time,
@@ -66,7 +70,7 @@ metric has a `uint16` name length, name bytes and a `uint16` level count. Each
 level has a 60-byte entry: level (`int64`), dictionary key ID (`uint32`),
 offset and length (`int64` each), and SHA-256 (32 bytes). Decoded pages are
 bounded to 32 MiB; the key dictionary avoids repeating pack names across
-metrics and levels. Legacy gzip/Gob root pages remain readable.
+metrics and levels.
 
 Held deltas and checkpoint state pages use the same envelope (kinds 4 and 5)
 with varint time deltas and counts: a held raw record stores only its time
@@ -74,15 +78,12 @@ delta and value, aggregate records their repeat and six fields; a state page
 stores per metric its configuration, first and last sample and the open
 interval of each level. Fixed 80-byte records would have been larger than
 Gob, which omits zero fields. Both together had cost about a quarter of the
-engine CPU (see `measurements/metadata-codecs.md`). Legacy Gob deltas and
-pages remain readable. The manifest, catalog and candidate pages, object
+engine CPU (see `measurements/metadata-codecs.md`). The manifest, catalog and candidate pages, object
 inventories, held inventory pages, compaction jobs and the trash journal
 retain their gzip/Gob representation; they are small or rarely written. WAL frames use their own uncompressed binary
 format (magic `MQHW`: receive time, aggregation config, metric name, points
 with varint time deltas); gob plus gzip cost about 50 µs per frame, which
-limited single-sample deliveries to a few thousand per second. Frames written
-before remain readable on replay; a WAL written by this version cannot be
-replayed by older binaries. Manifest CAS publication and WAL fsync before
+limited single-sample deliveries to a few thousand per second. Manifest CAS publication and WAL fsync before
 acknowledgement are unchanged by the block codec.
 
 ## Paged metadata

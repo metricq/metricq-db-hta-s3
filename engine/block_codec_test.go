@@ -3,7 +3,6 @@ package engine
 import (
 	"bytes"
 	"compress/gzip"
-	"context"
 	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
@@ -13,8 +12,6 @@ import (
 	"testing"
 
 	"github.com/metricq/metricq-db-hta-s3/hta"
-	metricq "github.com/metricq/metricq-go"
-	"google.golang.org/protobuf/proto"
 )
 
 func codecRecords(n int, aggregate bool) []hta.Record {
@@ -151,23 +148,16 @@ func TestBinaryBlockRejectsDamageWithoutChangingDestination(t *testing.T) {
 	}
 }
 
-func TestBinaryBlockReadsLegacy(t *testing.T) {
-	for _, v := range []any{codecRecords(17, false), codecRecords(17, true), codecIndex()} {
+func TestBinaryBlockTypesRejectGob(t *testing.T) {
+	for _, v := range []any{codecRecords(17, false), codecIndex()} {
 		old, err := encodeGob(v)
 		if err != nil {
 			t.Fatal(err)
 		}
-		switch want := v.(type) {
-		case []hta.Record:
-			var got []hta.Record
-			if err = decode(old, &got); err != nil || !reflect.DeepEqual(want, got) {
-				t.Fatalf("legacy data: %v", err)
-			}
-		case indexNode:
-			var got indexNode
-			if err = decode(old, &got); err != nil || !reflect.DeepEqual(want, got) {
-				t.Fatalf("legacy index: %v", err)
-			}
+		var records []hta.Record
+		var node indexNode
+		if decode(old, &records) == nil || decode(old, &node) == nil {
+			t.Fatalf("gob-encoded %T accepted", v)
 		}
 	}
 }
@@ -179,13 +169,8 @@ func BenchmarkBlockCodec(b *testing.B) {
 	}{{"raw1024", codecRecords(1024, false)}, {"aggregate1024", codecRecords(1024, true)}, {"index64", codecIndex()}}
 	for _, value := range values {
 		b.Run(value.name, func(b *testing.B) {
-			for _, binaryCodec := range []bool{false, true} {
-				name := "gob"
-				encoder := encodeGob
-				if binaryCodec {
-					name = "binary"
-					encoder = encode
-				}
+			for _, name := range []string{"binary"} {
+				encoder := encode
 				encoded, err := encoder(value.v)
 				if err != nil {
 					b.Fatal(err)
@@ -251,141 +236,4 @@ func FuzzBinaryBlock(f *testing.F) {
 			t.Fatal("unbounded decoder allocation")
 		}
 	})
-}
-
-func TestBinaryBlockMixedHistoryRestartAndCompaction(t *testing.T) {
-	ctx := context.Background()
-	store := &gcStore{memoryStore: newStore()}
-	dir := t.TempDir()
-	e := maintenanceEngine(t, store, dir, true)
-	fillCompaction(t, e, 1)
-	oldRoot := e.state.Roots["x"][0]
-	n, err := e.readNode(ctx, oldRoot)
-	if err != nil || !n.Leaf || len(n.Entries) != 1 {
-		t.Fatalf("initial raw index: %v", err)
-	}
-	oldData := n.Entries[0].Blob
-	data, err := e.readBlob(ctx, oldData)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var records []hta.Record
-	if err = decode(data, &records); err != nil {
-		t.Fatal(err)
-	}
-	legacyData, err := newPack("data")
-	if err != nil {
-		t.Fatal(err)
-	}
-	data, err = encodeGob(records)
-	if err != nil {
-		t.Fatal(err)
-	}
-	n.Entries[0].Blob = legacyData.add(data)
-	legacyData.descriptors = []BlockInfo{{Metric: "x", Entry: n.Entries[0]}}
-	legacyIndex, err := newPack("index")
-	if err != nil {
-		t.Fatal(err)
-	}
-	data, err = encodeGob(n)
-	if err != nil {
-		t.Fatal(err)
-	}
-	root := legacyIndex.add(data)
-	legacyIndex.descriptors = []BlockInfo{{Metric: "x", Index: true, Entry: indexEntry{First: n.Entries[0].First, Last: n.Entries[0].Last, Blob: root}}}
-	legacyIndex.retired = []blob{oldRoot, oldData}
-	absent := ""
-	for _, p := range []*pack{legacyData, legacyIndex} {
-		if _, err = e.put(ctx, p.key, p.buf.Bytes(), &absent); err != nil {
-			t.Fatal(err)
-		}
-	}
-	next := cloneMaintenanceManifest(e.committed)
-	next.Roots["x"] = make(map[int64]blob)
-	for level, ref := range e.state.Roots["x"] {
-		next.Roots["x"][level] = ref
-	}
-	next.Roots["x"][0] = root
-	next.Generation = e.state.Generation + 1
-	if err = e.catalogCheckpoint(ctx, &next, legacyData, legacyIndex); err != nil {
-		t.Fatal(err)
-	}
-	e.mu.Lock()
-	err = e.publishMaintenance(ctx, next)
-	e.mu.Unlock()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err = e.Close(); err != nil {
-		t.Fatal(err)
-	}
-	e = maintenanceEngine(t, store, dir, true)
-	var points []hta.Point
-	for i := 0; i < 40; i++ {
-		points = append(points, hta.Point{Time: int64(i+41) * 100, Value: float64(i % 7)})
-	}
-	ingest(t, e, points...)
-	if err = e.Flush(ctx); err != nil {
-		t.Fatal(err)
-	}
-	n, err = e.readNode(ctx, e.state.Roots["x"][0])
-	if err != nil {
-		t.Fatal(err)
-	}
-	oldCount, newCount := 0, 0
-	for _, entry := range n.Entries {
-		b, err := e.readBlob(ctx, entry.Blob)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if bytes.HasPrefix(b, []byte(blockMagic)) {
-			newCount++
-		} else {
-			oldCount++
-		}
-	}
-	if oldCount == 0 || newCount == 0 {
-		t.Fatalf("not a mixed stream: old=%d new=%d", oldCount, newCount)
-	}
-	requests := []*metricq.HistoryRequest{
-		{Type: metricq.HistoryRequest_FLEX_TIMELINE, StartTime: 100, EndTime: 8100},
-		{Type: metricq.HistoryRequest_FLEX_TIMELINE, StartTime: 150, EndTime: 7950, IntervalMax: 1000},
-		{Type: metricq.HistoryRequest_AGGREGATE_TIMELINE, StartTime: 150, EndTime: 7950, IntervalMax: 1000},
-		{Type: metricq.HistoryRequest_AGGREGATE, StartTime: 150, EndTime: 7950},
-		{Type: metricq.HistoryRequest_LAST_VALUE},
-	}
-	expected := make([]*metricq.HistoryResponse, len(requests))
-	for i, r := range requests {
-		expected[i] = query(t, e, r)
-	}
-	if err = e.Close(); err != nil {
-		t.Fatal(err)
-	}
-	e = maintenanceEngine(t, store, dir, true)
-	for i, r := range requests {
-		if !proto.Equal(expected[i], query(t, e, r)) {
-			t.Fatalf("mixed restart response %d", i)
-		}
-	}
-	if err = e.CompactOnce(ctx); err != nil {
-		t.Fatal(err)
-	}
-	n, err = e.readNode(ctx, e.state.Roots["x"][0])
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(n.Entries) != 1 || n.Entries[0].Records != 80 {
-		t.Fatalf("mixed blocks did not merge: %+v", n)
-	}
-	checkCatalog(t, e)
-	drain(t, e)
-	if err = e.Close(); err != nil {
-		t.Fatal(err)
-	}
-	e = maintenanceEngine(t, store, dir, true)
-	for i, r := range requests {
-		if !proto.Equal(expected[i], query(t, e, r)) {
-			t.Fatalf("compacted mixed response %d", i)
-		}
-	}
 }

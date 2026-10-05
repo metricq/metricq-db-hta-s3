@@ -21,7 +21,7 @@ func codecRootPage() map[string]map[int64]blob {
 	return roots
 }
 
-func TestBinaryRootsStableAndLegacyReadable(t *testing.T) {
+func TestBinaryRootsStable(t *testing.T) {
 	want := codecRootPage()
 	want[""] = map[int64]blob{math.MinInt64: {Key: "", Offset: math.MinInt64, Length: math.MaxInt64, Hash: [32]byte{255}}}
 	want["empty"] = map[int64]blob{}
@@ -35,15 +35,16 @@ func TestBinaryRootsStableAndLegacyReadable(t *testing.T) {
 			t.Fatalf("unstable encoding: %v", err)
 		}
 	}
+	var got map[string]map[int64]blob
+	if err := decode(binaryBytes, &got); err != nil || !reflect.DeepEqual(want, got) {
+		t.Fatalf("root round trip: %v", err)
+	}
 	legacy, err := encodeGob(want)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, encoded := range [][]byte{binaryBytes, legacy} {
-		var got map[string]map[int64]blob
-		if err := decode(encoded, &got); err != nil || !reflect.DeepEqual(want, got) {
-			t.Fatalf("root round trip: %v", err)
-		}
+	if err := decode(legacy, &got); err == nil {
+		t.Fatal("gob-encoded root page accepted")
 	}
 }
 
@@ -97,13 +98,8 @@ func TestBinaryRootsRejectDamageWithoutChangingDestination(t *testing.T) {
 
 func BenchmarkRootPageCodec(b *testing.B) {
 	value := codecRootPage()
-	for _, binaryCodec := range []bool{false, true} {
-		name := "gob"
-		encoder := encodeGob
-		if binaryCodec {
-			name = "binary"
-			encoder = encode
-		}
+	for _, name := range []string{"binary"} {
+		encoder := encode
 		data, err := encoder(value)
 		if err != nil {
 			b.Fatal(err)

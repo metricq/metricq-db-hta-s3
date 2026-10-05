@@ -4,12 +4,13 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
-	"github.com/metricq/metricq-db-hta-s3/hta"
-	metricq "github.com/metricq/metricq-go"
-	"google.golang.org/protobuf/proto"
 	"reflect"
 	"testing"
 	"time"
+
+	"github.com/metricq/metricq-db-hta-s3/hta"
+	metricq "github.com/metricq/metricq-go"
+	"google.golang.org/protobuf/proto"
 )
 
 func heldTestManifest(n int) manifest {
@@ -147,32 +148,11 @@ func TestHeldPagesBoundedPathEdits(t *testing.T) {
 	assertHeldRecovery(t, e, final)
 	t.Logf("10000 descriptors: append changes %d inventory pages, 0 watermark pages", changed)
 }
-func TestHeldPagesLegacyMigrationAndUnknownVersion(t *testing.T) {
+func TestHeldPagesRejectUnknownVersion(t *testing.T) {
 	e, s := heldMetadataEngine(t)
 	ctx := context.Background()
-	base := heldTestManifest(100)
+	b, _ := encode(heldRoot{Version: 99})
 	p, _ := newPack("held-state")
-	b, _ := encode(heldMetadata{base.Held, base.HeldWatermarks})
-	base.HeldState = p.add(b)
-	if _, err := s.Put(ctx, p.key, p.buf.Bytes(), nil); err != nil {
-		t.Fatal(err)
-	}
-	loaded := manifest{HeldState: base.HeldState}
-	if err := e.loadHeldMetadata(ctx, &loaded); err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(base.Held, loaded.Held) {
-		t.Fatal("legacy descriptors lost")
-	}
-	next := loaded
-	next.Generation = 2
-	next.Held = append(append([]blob{}, loaded.Held...), blob{Key: "held/new", Length: 100})
-	if _, err := e.writeHeldMetadata(ctx, &next, loaded); err != nil {
-		t.Fatal(err)
-	}
-	assertHeldRecovery(t, e, next)
-	b, _ = encode(heldRoot{Version: 99})
-	p, _ = newPack("held-state")
 	ref := p.add(b)
 	s.Put(ctx, p.key, p.buf.Bytes(), nil)
 	if err := e.loadHeldMetadata(ctx, &manifest{HeldState: ref}); err == nil {

@@ -437,9 +437,6 @@ func (e *Engine) newMetadataPack(prefix string) (*pack, error) {
 }
 func (e *Engine) updateMaintenanceMetrics(m manifest) {
 	pending := m.TrashObjects
-	if m.TrashCleanup != "" {
-		pending++
-	}
 	pending += int64(len(m.TrashCleanups))
 	e.metrics.GCPending.Set(float64(pending))
 	e.metrics.CandidateObjects.Set(float64(m.CandidateObjects))
@@ -480,9 +477,6 @@ func (e *Engine) MaintenanceStatus() MaintenanceStatus {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	pending := e.state.TrashObjects
-	if e.state.TrashCleanup != "" {
-		pending++
-	}
 	pending += int64(len(e.state.TrashCleanups))
 	return MaintenanceStatus{SmallBlockStatsAvailable: e.state.MaintenanceStatsReady, SmallBlocks: e.state.SmallBlocks, SmallBlockBytes: e.state.SmallBlockBytes, Generation: e.state.Generation, Checkpoint: e.state.Sequence, WALHead: e.sequence, PendingObjects: pending, LiveBytes: e.state.LiveObjectBytes, DeadBytes: e.state.StoredObjectBytes - e.state.LiveObjectBytes, JobPending: e.state.CompactionJob.Key != ""}
 }

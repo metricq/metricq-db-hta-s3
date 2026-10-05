@@ -1591,9 +1591,6 @@ func (e *Engine) Reclaim(ctx context.Context) error {
 	}
 	// Journal pages finished by an earlier publication are no longer referenced.
 	cleanups := append([]string(nil), e.state.TrashCleanups...)
-	if e.state.TrashCleanup != "" {
-		cleanups = append(cleanups, e.state.TrashCleanup)
-	}
 	batch := e.state.TrashBatch
 	ref := e.state.TrashPending
 	offset := e.state.TrashOffset
@@ -1707,7 +1704,6 @@ func (e *Engine) Reclaim(ctx context.Context) error {
 	next := cloneMaintenanceManifest(e.committed)
 	next.rootDirtyKnown = true
 	next.Generation = e.state.Generation + 1
-	next.TrashCleanup = ""
 	next.TrashCleanups = remaining
 	if done > 0 {
 		pending, pendingOffset := segments[0].ref, segments[0].offset

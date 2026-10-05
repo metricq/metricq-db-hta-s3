@@ -17,7 +17,7 @@ func sampleBatch(points int) batch {
 	return b
 }
 
-func TestWALFrameRoundTripAndLegacyFrames(t *testing.T) {
+func TestWALFrameRoundTripRejectsGob(t *testing.T) {
 	for _, n := range []int{0, 1, 500} {
 		want := sampleBatch(n)
 		if n == 0 {
@@ -31,19 +31,15 @@ func TestWALFrameRoundTripAndLegacyFrames(t *testing.T) {
 		if err := decode(frame, &got); err != nil || !reflect.DeepEqual(got, want) {
 			t.Fatalf("%d points: %v\n got %+v\nwant %+v", n, err, got, want)
 		}
-		// Frames written by earlier versions stay readable.
 		legacy, err := encodeGob(want)
 		if err != nil {
 			t.Fatal(err)
 		}
 		var old batch
-		if err := decode(legacy, &old); err != nil || old.Metric != want.Metric || len(old.Points) != n {
-			t.Fatalf("legacy frame: %v %+v", err, old)
+		if err := decode(legacy, &old); err == nil {
+			t.Fatal("gob-encoded WAL frame accepted")
 		}
 	}
-	single, _ := encode(sampleBatch(1))
-	legacy, _ := encodeGob(sampleBatch(1))
-	t.Logf("one-sample frame: %d bytes, legacy %d bytes", len(single), len(legacy))
 }
 
 func TestWALFrameRejectsCorruption(t *testing.T) {
@@ -73,13 +69,6 @@ func BenchmarkWALFrameEncode(b *testing.B) {
 	b.Run("binary", func(b *testing.B) {
 		for i := 0; i < b.N; i++ {
 			if _, err := encode(single); err != nil {
-				b.Fatal(err)
-			}
-		}
-	})
-	b.Run("gob-gzip", func(b *testing.B) {
-		for i := 0; i < b.N; i++ {
-			if _, err := encodeGob(single); err != nil {
 				b.Fatal(err)
 			}
 		}

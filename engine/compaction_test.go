@@ -55,7 +55,7 @@ func fillCompaction(t *testing.T, e *Engine, n int) {
 func drain(t *testing.T, e *Engine) {
 	t.Helper()
 	for i := 0; i < 2000; i++ {
-		if e.state.TrashHead == e.state.TrashComplete && e.state.TrashCleanup == "" && len(e.state.TrashCleanups) == 0 {
+		if e.state.TrashHead == e.state.TrashComplete && len(e.state.TrashCleanups) == 0 {
 			return
 		}
 		if err := e.Reclaim(context.Background()); err != nil {

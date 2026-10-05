@@ -133,8 +133,7 @@ type manifest struct {
 	seriesPages, rootPages                  metadataDirectory
 	stagingNamespace                        string
 
-	TrashOffset  int
-	TrashCleanup string
+	TrashOffset int
 	// Held-record deltas still needed after a restart, oldest first, and the
 	// last written record time of every stream with held delta records.
 	Held           []blob
@@ -286,10 +285,15 @@ func decode(b []byte, v any) error {
 	if bytes.HasPrefix(b, []byte(blockMagic)) {
 		return decodeBinaryBlock(b, v)
 	}
+	// One format per object type: these only exist in the binary formats.
+	switch v.(type) {
+	case *batch, *[]hta.Record, *indexNode, *map[string]map[int64]blob, *heldDelta, *map[string]*hta.Series:
+		return fmt.Errorf("%T requires the binary format; Gob-encoded objects of this type are not supported", v)
+	}
 	return decodeGob(b, v)
 }
 
-// Legacy independent gzip/Gob data and index blocks remain readable.
+// decodeGob reads the metadata that keeps its gzip/Gob representation.
 func decodeGob(b []byte, v any) error {
 	z, err := gzip.NewReader(bytes.NewReader(b))
 	if err != nil {

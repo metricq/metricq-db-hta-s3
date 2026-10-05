@@ -17,10 +17,6 @@ import (
 const metadataShards = 256
 
 type metadataDirectory struct{ Pages [metadataShards]blob }
-type heldMetadata struct {
-	Deltas     []blob
-	Watermarks map[string]int64
-}
 
 func metadataShard(name string) int { return int(sha256.Sum256([]byte(name))[0]) }
 func metadataKey(key string) bool {

@@ -7,11 +7,11 @@ import (
 	"math"
 	"sort"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/metricq/metricq-db-hta-s3/hta"
 	metricq "github.com/metricq/metricq-go"
+	"google.golang.org/protobuf/proto"
 )
 
 type reader struct {
@@ -19,8 +19,11 @@ type reader struct {
 	ctx    context.Context
 	metric string
 	cache  map[blob][]hta.Record
-	bytes  int64
-	budget *atomic.Int64
+	// res holds the query's share of the shared query memory budget.
+	res *queryReservation
+	// check, if set, validates the number of records a read would return
+	// (from the index) before any block is fetched.
+	check func(records int) error
 }
 
 // Bound request fan-out, compressed ranges and decoded records independently.
@@ -33,7 +36,7 @@ func recordsCost(n int) int64 { return int64(n) * 128 }
 
 func (q *reader) records(level, begin, end int64) ([]hta.Record, error) {
 	root := q.e.state.Roots[q.metric][level]
-	var refs []blob
+	var entries []indexEntry
 	lookupBegin, lookupEnd := begin, end
 	if level > 0 {
 		if begin >= end {
@@ -43,32 +46,44 @@ func (q *reader) records(level, begin, end int64) ([]hta.Record, error) {
 		lookupBegin = begin - begin%level
 		lookupEnd = end - 1
 	} else {
-		if prior, err := q.e.indexNeighbor(q.ctx, root, begin, true); err != nil {
+		if prior, err := q.e.indexNeighborEntry(q.ctx, root, begin, true); err != nil {
 			return nil, err
-		} else if prior.Key != "" {
-			refs = append(refs, prior)
+		} else if prior.Blob.Key != "" {
+			entries = append(entries, prior)
 		}
 	}
-	if err := q.e.indexRange(q.ctx, root, lookupBegin, lookupEnd, &refs); err != nil {
+	if err := q.e.indexRangeEntries(q.ctx, root, lookupBegin, lookupEnd, &entries); err != nil {
 		return nil, err
 	}
 	if level == 0 {
-		if next, err := q.e.indexNeighbor(q.ctx, root, end, false); err != nil {
+		if next, err := q.e.indexNeighborEntry(q.ctx, root, end, false); err != nil {
 			return nil, err
-		} else if next.Key != "" {
-			refs = append(refs, next)
+		} else if next.Blob.Key != "" {
+			entries = append(entries, next)
 		}
 	}
-	dedup := refs[:0]
-	seen := make(map[blob]bool, len(refs))
-	for _, ref := range refs {
-		if !seen[ref] {
-			seen[ref] = true
-			dedup = append(dedup, ref)
+	// Size the read from the index before fetching anything: reject requests
+	// whose response would be too large and reserve memory for the decoded
+	// records, which are held twice (block cache of this query and result).
+	total := len(q.e.flushing.stream(q.metric, level)) + len(q.e.pending.stream(q.metric, level))
+	refs := make([]blob, 0, len(entries))
+	seenEntry := make(map[blob]bool, len(entries))
+	for _, entry := range entries {
+		if !seenEntry[entry.Blob] {
+			seenEntry[entry.Blob] = true
+			total += entry.Records
+			refs = append(refs, entry.Blob)
 		}
 	}
-	refs = dedup
-	var out []hta.Record
+	if q.check != nil {
+		if err := q.check(total); err != nil {
+			return nil, err
+		}
+	}
+	if err := q.res.reserve(q.ctx, 2*recordsCost(total)); err != nil {
+		return nil, err
+	}
+	out := make([]hta.Record, 0, total)
 	for start := 0; start < len(refs); start += maxQueryBlockBatch {
 		if err := q.ctx.Err(); err != nil {
 			return nil, err
@@ -116,20 +131,6 @@ func (q *reader) fetchBlocks(refs []blob) ([][]hta.Record, error) {
 			return nil, err
 		}
 		charged = append(charged, toFetch...)
-	}
-	var cost int64
-	for _, i := range charged {
-		cost += recordsCost(len(blocks[i]))
-	}
-	if cost > 0 {
-		q.bytes += cost
-		used := q.bytes
-		if q.budget != nil {
-			used = q.budget.Add(cost)
-		}
-		if used > 256<<20 {
-			return nil, fmt.Errorf("query object memory budget exceeded; narrow the time range")
-		}
 	}
 	for _, i := range toFetch {
 		ref, entries := refs[i], blocks[i]
@@ -334,14 +335,13 @@ func (q *reader) aggregate(begin, end int64) (hta.Aggregate, error) {
 	}
 	results := make([]hta.Aggregate, len(spans))
 	errs := make([]error, len(jobs))
-	var budget atomic.Int64
 	var wg sync.WaitGroup
 	for j, job := range jobs {
 		wg.Add(1)
 		go func(j int, job levelJob) {
 			defer wg.Done()
 			localEngine := &Engine{store: q.e.store, options: q.e.options, metrics: q.e.metrics, state: q.e.state, pending: q.e.pending, flushing: q.e.flushing, nodeCache: make(map[blob]indexNode), sharedNodes: q.e.sharedNodes, sharedBlocks: q.e.sharedBlocks}
-			local := reader{e: localEngine, ctx: q.ctx, metric: q.metric, cache: make(map[blob][]hta.Record), budget: &budget}
+			local := reader{e: localEngine, ctx: q.ctx, metric: q.metric, cache: make(map[blob][]hta.Record), res: q.res}
 			for _, i := range job.indices {
 				part := spans[i]
 				if part.level == 0 {
@@ -379,6 +379,29 @@ func (e *Engine) Query(ctx context.Context, name string, req *metricq.HistoryReq
 			e.metrics.QueryErrors.Inc()
 		}
 	}()
+	res := &queryReservation{budget: e.queryBudget}
+	defer res.releaseAll()
+	resp, err = e.query(ctx, name, req, res)
+	// Estimates bound the work; the encoded size is the binding limit, since
+	// the broker rejects larger messages.
+	if err == nil {
+		if size := proto.Size(resp); size > e.options.QueryMaxResponseBytes {
+			resp, err = &metricq.HistoryResponse{Metric: name}, fmt.Errorf("history response of %d bytes exceeds query_max_response_bytes (%d); request a shorter range or a larger interval", size, e.options.QueryMaxResponseBytes)
+		}
+	}
+	return resp, err
+}
+
+// responseTooLarge rejects a response of about points points of perPoint
+// encoded bytes each.
+func (e *Engine) responseTooLarge(points, perPoint int64) error {
+	if limit := int64(e.options.QueryMaxResponseBytes); points > limit/perPoint {
+		return fmt.Errorf("history response of about %d points would exceed query_max_response_bytes (%d bytes); request a shorter range or a larger interval", points, limit)
+	}
+	return nil
+}
+
+func (e *Engine) query(ctx context.Context, name string, req *metricq.HistoryRequest, res *queryReservation) (resp *metricq.HistoryResponse, err error) {
 	resp = &metricq.HistoryResponse{Metric: name}
 	if err = ctx.Err(); err != nil {
 		return resp, err
@@ -416,7 +439,7 @@ func (e *Engine) Query(ctx context.Context, name string, req *metricq.HistoryReq
 	if req.Type < metricq.HistoryRequest_AGGREGATE_TIMELINE || req.Type > metricq.HistoryRequest_FLEX_TIMELINE {
 		return resp, fmt.Errorf("unknown history request type %d", req.Type)
 	}
-	q := reader{e: e, ctx: ctx, metric: name, cache: make(map[blob][]hta.Record)}
+	q := reader{e: e, ctx: ctx, metric: name, cache: make(map[blob][]hta.Record), res: res}
 	if req.Type == metricq.HistoryRequest_AGGREGATE || req.IntervalMax < 0 {
 		if req.StartTime >= req.EndTime {
 			return resp, fmt.Errorf("aggregate requires start < end")
@@ -434,8 +457,8 @@ func (e *Engine) Query(ctx context.Context, name string, req *metricq.HistoryReq
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if len(resp.TimeDelta) >= e.options.QueryMaxRows {
-			return fmt.Errorf("query exceeds maximum rows")
+		if err := e.responseTooLarge(int64(len(resp.TimeDelta))+1, aggregatePointBytes); err != nil {
+			return err
 		}
 		resp.TimeDelta = append(resp.TimeDelta, t-previous)
 		previous = t
@@ -449,13 +472,20 @@ func (e *Engine) Query(ctx context.Context, name string, req *metricq.HistoryReq
 			level *= s.Config.IntervalFactor
 		}
 		for level >= s.Config.IntervalMin {
-			rs, err := q.records(level, req.StartTime, req.EndTime)
-			if err != nil {
-				return resp, err
-			}
 			factor := int64(1)
 			if req.Type == metricq.HistoryRequest_FLEX_TIMELINE {
 				factor = upper / level
+			}
+			// Every output point covers factor intervals of this level within
+			// the series' data; reject before reading if they cannot fit.
+			if first, last := max(req.StartTime-req.StartTime%level, s.First.Time-s.First.Time%level), min(req.EndTime, s.Last.Time+level); s.First.Time > 0 && first < last {
+				if err := e.responseTooLarge((last-first)/(level*factor)+1, aggregatePointBytes); err != nil {
+					return resp, err
+				}
+			}
+			rs, err := q.records(level, req.StartTime, req.EndTime)
+			if err != nil {
+				return resp, err
 			}
 			group := hta.Empty()
 			var count, groupTime int64
@@ -498,7 +528,21 @@ func (e *Engine) Query(ctx context.Context, name string, req *metricq.HistoryReq
 		}
 		return resp, nil
 	}
+	// Raw values: the index tells how many records the range holds. FLEX
+	// smooths ranges denser than interval_max into one aggregate per interval.
+	q.check = func(records int) error {
+		points, perPoint := int64(records), int64(rawPointBytes)
+		if req.Type == metricq.HistoryRequest_AGGREGATE_TIMELINE {
+			perPoint = aggregatePointBytes
+		} else if req.IntervalMax > 0 {
+			if buckets := (req.EndTime-req.StartTime)/req.IntervalMax + 1; points > buckets {
+				points, perPoint = buckets, aggregatePointBytes
+			}
+		}
+		return e.responseTooLarge(points, perPoint)
+	}
 	rs, err := q.records(0, req.StartTime, req.EndTime)
+	q.check = nil
 	if err != nil {
 		return resp, err
 	}
@@ -511,9 +555,6 @@ func (e *Engine) Query(ctx context.Context, name string, req *metricq.HistoryReq
 		return resp, nil
 	}
 	rs = rs[first:last]
-	if len(rs) > e.options.QueryMaxRows {
-		return resp, fmt.Errorf("query exceeds maximum rows")
-	}
 	if req.Type == metricq.HistoryRequest_FLEX_TIMELINE && req.IntervalMax > 0 && (req.EndTime-req.StartTime)/int64(len(rs)) < req.IntervalMax {
 		// This intentionally follows legacy smoothing, including the predecessor's
 		// contribution when the requested start falls between raw points.

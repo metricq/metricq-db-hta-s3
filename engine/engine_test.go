@@ -408,7 +408,7 @@ func TestLocksAndConcurrentWriter(t *testing.T) {
 func TestPrometheusAndQueryLimits(t *testing.T) {
 	r := prometheus.NewRegistry()
 	m := NewMetrics(r)
-	e, err := Open(context.Background(), newStore(), Options{WALDirectory: t.TempDir(), QueryMaxRows: 2}, testConfig, m)
+	e, err := Open(context.Background(), newStore(), Options{WALDirectory: t.TempDir(), QueryMaxResponseBytes: 30}, testConfig, m)
 	if err != nil {
 		t.Fatal(err)
 	}

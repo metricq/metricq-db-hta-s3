@@ -278,6 +278,29 @@ func (e *Engine) lastIndexEntry(ctx context.Context, ptr blob) (indexEntry, erro
 	return indexEntry{}, nil
 }
 
+// indexRangeEntries collects the leaf entries overlapping [begin, end],
+// including their record counts.
+func (e *Engine) indexRangeEntries(ctx context.Context, ptr blob, begin, end int64, out *[]indexEntry) error {
+	if ptr.Key == "" {
+		return nil
+	}
+	n, err := e.readNode(ctx, ptr)
+	if err != nil {
+		return err
+	}
+	for _, edge := range n.Entries {
+		if edge.Last < begin || edge.First > end {
+			continue
+		}
+		if n.Leaf {
+			*out = append(*out, edge)
+		} else if err := e.indexRangeEntries(ctx, edge.Blob, begin, end, out); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (e *Engine) indexRange(ctx context.Context, ptr blob, begin, end int64, out *[]blob) error {
 	if ptr.Key == "" {
 		return nil

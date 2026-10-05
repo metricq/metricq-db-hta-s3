@@ -58,7 +58,7 @@ size reflects the time since the last checkpoint and S3 outages.
 | Decoded data block cache | 128 MiB |
 | Index page cache | 8192 pages (tens of MB) |
 | Pinned index paths for checkpoints | 2¹⁹ entries (≈ 45 MB) |
-| Per query | up to 256 MiB decoded records; up to 8 history workers in parallel |
+| History queries | `query_memory_bytes` for decoded records of all running queries together (default 512 MiB); up to 8 history workers in parallel |
 | Checkpoint encoding | about the size of the checkpoint's data pack |
 | Compaction | `compaction_job_max_bytes` of input plus catalog pages (32 MiB read budget) |
 

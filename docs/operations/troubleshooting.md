@@ -85,10 +85,15 @@ the prefix, then restart.
 
 - Many GETs per query: fragmented layout; compaction and level locality fix it
   over time. Check *Fragmentation* and *Jobs*.
-- `query exceeds maximum rows`: the client asked for too many raw points; raise
-  `query_max_rows` or request an aggregate level (larger `interval_max`).
-- `query object memory budget exceeded`: a single query would decode more than
-  256 MiB; narrow the time range.
+- `history response ... would exceed query_max_response_bytes`: the response
+  would not fit into one AMQP message; request a shorter range or a larger
+  `interval_max`. Raising the limit also requires a larger `max_message_size`
+  in RabbitMQ.
+- `history query needs ... more than query_memory_bytes`: a single query would
+  decode more records than all queries together may; narrow the time range or
+  raise `query_memory_bytes` if memory allows.
+- `waiting for query memory` / `query memory budget exhausted`: concurrent
+  large queries use the budget; the request may be retried.
 
 ## Orphaned objects
 

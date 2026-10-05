@@ -22,7 +22,8 @@ so the dashboard draws them next to the measured values.
 | *Compaction job pending* stays 1, *Last successful job* grows | jobs fail repeatedly | Look at the logs (`compaction failed`) and *Object store → Errors*. |
 | *Stored bytes*: dead share high and not shrinking | reclamation too slow or disabled | Lower `compaction_reclaim_dead_fraction` (more rewriting) or raise the rate limit. |
 | Cold queries slow, many GETs per query | fragmented layout | Ensure locality is enabled; lower `compaction_locality_min_ranges`; give compaction more rate. |
-| `query_errors_total`: "exceeds maximum rows" | client requests too many raw points | Raise `query_max_rows` or ask clients for aggregate levels. |
+| `query_errors_total`: "would exceed query_max_response_bytes" | client requests too many points for one AMQP message | Ask clients for aggregate levels (larger `interval_max`); raising the limit needs a larger RabbitMQ `max_message_size`. |
+| `query_errors_total`: "query memory" | large concurrent queries | Raise `query_memory_bytes` if memory allows. |
 | Process memory high | held records, caches | Lower `hold_memory_bytes`, `ingest_memory_limit_bytes`; see [Sizing](sizing.md#memory). |
 
 ## Parameters by area

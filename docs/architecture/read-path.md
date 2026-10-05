@@ -18,8 +18,14 @@ the metric's unflushed records. The rest runs without locks.
 4. **Add unflushed records** (records being uploaded first, then pending ones)
    and build the response.
 
-Limits per request: `query_max_rows` output rows and 256 MiB of decoded
-records. A query does not hold the ingestion lock during I/O, and a running
+Limits: before reading any block, a query sizes its read from the index
+(records per block). It fails if the response would exceed
+`query_max_response_bytes` (estimated at 13 bytes per raw value and 53 per
+aggregate; the encoded response is checked exactly before it is returned),
+and it reserves memory for the decoded records (128 bytes each, held twice)
+from `query_memory_bytes`, shared by all running queries. A query that does
+not fit waits until others finish, within the request timeout; only its first
+reservation waits, so queries holding memory never wait for each other. A query does not hold the ingestion lock during I/O, and a running
 checkpoint does not block queries.
 
 ## Why layout matters

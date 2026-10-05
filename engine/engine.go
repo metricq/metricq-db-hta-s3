@@ -64,8 +64,13 @@ type Options struct {
 	// Flush and memory pressure remain immediate.
 	HoldExpiryIntervalSeconds int64 `json:"hold_expiry_interval_seconds"`
 
-	// QueryMaxRows is the largest number of rows in one history response.
-	QueryMaxRows int `json:"query_max_rows"`
+	// QueryMaxResponseBytes bounds an encoded history response. RabbitMQ
+	// rejects messages above its max_message_size (16 MiB by default since
+	// 4.0), so the default leaves headroom below it.
+	QueryMaxResponseBytes int `json:"query_max_response_bytes"`
+	// QueryMemoryBytes bounds the decoded records of all running history
+	// queries together; queries beyond it wait.
+	QueryMemoryBytes int64 `json:"query_memory_bytes"`
 
 	// MaintenanceEnabled enables the catalog, compaction and the trash journal
 	// (RunMaintenance); required for holding.
@@ -95,14 +100,21 @@ func (o Options) defaults() Options {
 	if o.IngestMemoryLimitBytes == 0 {
 		o.IngestMemoryLimitBytes = 32 << 20
 	}
-	if o.QueryMaxRows == 0 {
-		o.QueryMaxRows = 1_000_000
+	if o.QueryMaxResponseBytes == 0 {
+		o.QueryMaxResponseBytes = DefaultQueryMaxResponseBytes
+	}
+	if o.QueryMemoryBytes == 0 {
+		o.QueryMemoryBytes = 512 << 20
 	}
 	if o.HoldMemoryBytes == 0 {
 		o.HoldMemoryBytes = o.IngestMemoryLimitBytes / 2
 	}
 	return o
 }
+
+// DefaultQueryMaxResponseBytes leaves headroom below RabbitMQ's default
+// max_message_size of 16 MiB.
+const DefaultQueryMaxResponseBytes = 15 << 20
 
 type entry struct {
 	Metric string
@@ -205,6 +217,7 @@ type Engine struct {
 	tailPaths                map[string]tailPath
 	tailEntries              int
 	tails                    map[string]streamTail
+	queryBudget              *queryBudget
 	tailBlocks               int // sum of open suffix blocks over tails
 	tailsKnown               bool
 	state                    manifest
@@ -292,7 +305,7 @@ func decodeGob(b []byte, v any) error {
 // contradicts the stored configuration.
 func Open(ctx context.Context, s storage.Store, o Options, configs map[string]hta.Config, m *Metrics) (*Engine, error) {
 	o = o.defaults()
-	if o.WALDirectory == "" || o.WALTarget <= 0 || o.WALTarget >= o.WALHigh || o.WALHigh >= o.WALHard || o.CheckpointUnsavedBytes <= 0 || o.IngestMemoryLimitBytes < o.CheckpointUnsavedBytes || o.QueryMaxRows < 1 {
+	if o.WALDirectory == "" || o.WALTarget <= 0 || o.WALTarget >= o.WALHigh || o.WALHigh >= o.WALHard || o.CheckpointUnsavedBytes <= 0 || o.IngestMemoryLimitBytes < o.CheckpointUnsavedBytes || o.QueryMaxResponseBytes < 1 || o.QueryMemoryBytes < 1 {
 		return nil, fmt.Errorf("invalid engine options")
 	}
 	if o.HoldExpiryIntervalSeconds < 1 || o.HoldExpiryIntervalSeconds > 3600 {
@@ -320,7 +333,7 @@ func Open(ctx context.Context, s storage.Store, o Options, configs map[string]ht
 	if err != nil {
 		return nil, err
 	}
-	e := &Engine{store: s, wal: w, options: o, metrics: m, flushWanted: make(chan struct{}, 1), maintenanceWanted: make(chan struct{}, 1), sharedNodes: newIndexPageCache(), sharedCatalog: newCatalogPageCache(), sharedBlocks: newDataBlockCache(), state: manifest{Version: 2, Series: map[string]*hta.Series{}, Roots: map[string]map[int64]blob{}}}
+	e := &Engine{store: s, wal: w, options: o, metrics: m, queryBudget: newQueryBudget(o.QueryMemoryBytes), flushWanted: make(chan struct{}, 1), maintenanceWanted: make(chan struct{}, 1), sharedNodes: newIndexPageCache(), sharedCatalog: newCatalogPageCache(), sharedBlocks: newDataBlockCache(), state: manifest{Version: 2, Series: map[string]*hta.Series{}, Roots: map[string]map[int64]blob{}}}
 	success := false
 	defer func() {
 		if !success {
@@ -468,7 +481,7 @@ func (e *Engine) setConfigMetrics() {
 	for name, v := range map[string]float64{
 		"wal_target_bytes": float64(o.WALTarget), "wal_high_bytes": float64(o.WALHigh), "wal_hard_bytes": float64(o.WALHard),
 		"checkpoint_unsaved_bytes": float64(o.CheckpointUnsavedBytes), "ingest_memory_limit_bytes": float64(o.IngestMemoryLimitBytes),
-		"hold_max_age_seconds": float64(o.HoldMaxAgeSeconds), "hold_expiry_interval_seconds": float64(o.HoldExpiryIntervalSeconds), "hold_memory_bytes": float64(o.HoldMemoryBytes), "query_max_rows": float64(o.QueryMaxRows),
+		"hold_max_age_seconds": float64(o.HoldMaxAgeSeconds), "hold_expiry_interval_seconds": float64(o.HoldExpiryIntervalSeconds), "hold_memory_bytes": float64(o.HoldMemoryBytes), "query_max_response_bytes": float64(o.QueryMaxResponseBytes), "query_memory_bytes": float64(o.QueryMemoryBytes),
 		"compaction_cycle_interval_seconds": float64(c.CycleIntervalSeconds), "compaction_merge_cooldown_seconds": float64(c.MergeCooldownSeconds),
 		"compaction_job_timeout_seconds": float64(c.JobTimeoutSeconds), "compaction_cycle_max_seconds": float64(c.CycleMaxSeconds),
 		"compaction_job_max_bytes": float64(c.JobMaxBytes), "compaction_job_max_blocks": float64(c.JobMaxBlocks),

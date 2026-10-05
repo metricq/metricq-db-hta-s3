@@ -70,7 +70,8 @@ integers. Option names start with the area they affect: `wal_`,
     "hold_max_age_seconds": 3600,
     "hold_memory_bytes": 536870912,
     "hold_expiry_interval_seconds": 30,
-    "query_max_rows": 1000000,
+    "query_max_response_bytes": 15728640,
+    "query_memory_bytes": 536870912,
     "compaction_enabled": true,
     "compaction_continuous": false,
     "compaction_cycle_interval_seconds": 60,
@@ -112,7 +113,8 @@ integers. Option names start with the area they affect: `wal_`,
 | `hold_max_age_seconds` | 3600 (executable), 0 (library) | ≥ 0 | Hold streams in memory until a full block or this age; 0 disables holding |
 | `hold_memory_bytes` | ½ `ingest_memory_limit_bytes` | < `ingest_memory_limit_bytes` | Held records above this are written early, largest streams first |
 | `hold_expiry_interval_seconds` | 30 | | Age-triggered checkpoints are grouped on this cadence |
-| `query_max_rows` | 1 000 000 | ≥ 1 | Largest history response |
+| `query_max_response_bytes` | 15 MiB | ≥ 1 | Largest encoded history response. Keep it below RabbitMQ's `max_message_size` (16 MiB by default since RabbitMQ 4.0); larger messages are refused by the broker. About 1.2 million raw values or 300 000 aggregates fit into 15 MiB. |
+| `query_memory_bytes` | 512 MiB | ≥ 1 | Decoded records of all running history queries together. A query reserves its need, known from the index, before reading; queries that do not fit wait, a query needing more than the whole budget fails. |
 | `maintenance_enabled` | always on in the executable | | Catalog, compaction and GC |
 
 ### Compaction options

@@ -16,15 +16,29 @@ record plus completed aggregate records:
 
 ## Object storage capacity
 
-Stored blocks need about **20 bytes per record** (gob + gzip), about
-**44 bytes per sample** at 2.1 records per sample, plus a few percent for index
-pages and metadata.
+Data blocks use fixed binary fields compressed with gzip per block. Measured
+in the development stack (1000 metrics at 1 Hz with values as a random walk
+with two decimals, plus a 100 Hz metric, about 17 hours;
+`measurements/storage-per-record.md`):
 
-| Load | Samples per day | Stored per day (≈44 B/sample) | per year |
-| --- | ---: | ---: | ---: |
-| 1500 metrics × 1/s | 130 M | 5.7 GB | 2.1 TB |
-| 100 metrics × 10/s | 86 M | 3.8 GB | 1.4 TB |
-| 1500 metrics mixed (10/s … 1/day) | 167 M | 7.3 GB | 2.7 TB |
+| Records | Stored bytes per record |
+| --- | ---: |
+| raw, 1 Hz | 10.0 |
+| raw, 100 Hz | 12.8 |
+| aggregates (six fields), 40 s and 400 s levels | 27 – 30 |
+| aggregates, 0.4 s and 4 s levels of the 100 Hz metric | 17 – 24 |
+
+Real measurements compress better or worse depending on their values.
+Bytes per sample are roughly *raw bytes + (records per sample − 1) ×
+aggregate bytes*; records per sample depend on `interval_min` (see above).
+Index pages and metadata add about 1 %; `held/` deltas a few percent until
+their records are written.
+
+| Load | Samples per day | Bytes per sample | Stored per day | per year |
+| --- | ---: | ---: | ---: | ---: |
+| 1500 metrics × 1/s, `interval_min` 40 s (measured: 1.03 records per sample) | 130 M | 10.7 | 1.4 GB | 0.5 TB |
+| 1500 metrics × 1/s, `interval_min` 1 s (estimate: 2.1 records per sample) | 130 M | ≈ 40 | ≈ 5.2 GB | ≈ 1.9 TB |
+| 100 metrics × 10/s, `interval_min` 1 s (estimate: 1.11 records per sample) | 86 M | ≈ 13 | ≈ 1.1 GB | ≈ 0.4 TB |
 
 Data is kept forever; there is no retention. Temporarily, compaction needs
 extra space: rewritten blocks exist twice until the source object is fully

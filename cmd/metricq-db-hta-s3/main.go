@@ -99,6 +99,12 @@ func run() error {
 	if cfg.Prefetch > 0 {
 		db.Prefetch = cfg.Prefetch
 	}
+	// The engine rejects larger responses already; this keeps the transport
+	// from publishing anything the broker would refuse.
+	db.MaxHistoryReplyBytes = cfg.Engine.QueryMaxResponseBytes
+	if db.MaxHistoryReplyBytes == 0 {
+		db.MaxHistoryReplyBytes = engine.DefaultQueryMaxResponseBytes
+	}
 	handlers := metricq.DBHandlers{
 		Configure: func(callCtx context.Context, raw json.RawMessage) ([]metricq.DBBinding, error) {
 			var c struct {

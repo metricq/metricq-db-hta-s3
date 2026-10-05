@@ -25,7 +25,11 @@ aggregate; the encoded response is checked exactly before it is returned),
 and it reserves memory for the decoded records (128 bytes each, held twice)
 from `query_memory_bytes`, shared by all running queries. A query that does
 not fit waits until others finish, within the request timeout; only its first
-reservation waits, so queries holding memory never wait for each other. A query does not hold the ingestion lock during I/O, and a running
+reservation waits, so queries holding memory never wait for each other. The
+executable passes the same limit to `metricq-go`, which replaces any larger
+reply by an error response: RabbitMQ closes the channel on an oversized
+message, and the unacknowledged request would otherwise be redelivered and
+interrupt the whole session, including data consumption, again and again. A query does not hold the ingestion lock during I/O, and a running
 checkpoint does not block queries.
 
 ## Why layout matters

@@ -68,8 +68,16 @@ offset and length (`int64` each), and SHA-256 (32 bytes). Decoded pages are
 bounded to 32 MiB; the key dictionary avoids repeating pack names across
 metrics and levels. Legacy gzip/Gob root pages remain readable.
 
-Metadata, checkpoint state, held deltas and compaction jobs retain their
-existing gzip/Gob representation. WAL frames use their own uncompressed binary
+Held deltas and checkpoint state pages use the same envelope (kinds 4 and 5)
+with varint time deltas and counts: a held raw record stores only its time
+delta and value, aggregate records their repeat and six fields; a state page
+stores per metric its configuration, first and last sample and the open
+interval of each level. Fixed 80-byte records would have been larger than
+Gob, which omits zero fields. Both together had cost about a quarter of the
+engine CPU (see `measurements/metadata-codecs.md`). Legacy Gob deltas and
+pages remain readable. The manifest, catalog and candidate pages, object
+inventories, held inventory pages, compaction jobs and the trash journal
+retain their gzip/Gob representation; they are small or rarely written. WAL frames use their own uncompressed binary
 format (magic `MQHW`: receive time, aggregation config, metric name, points
 with varint time deltas); gob plus gzip cost about 50 µs per frame, which
 limited single-sample deliveries to a few thousand per second. Frames written

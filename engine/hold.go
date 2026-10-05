@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/metricq/metricq-db-hta-s3/hta"
@@ -134,15 +136,19 @@ func (e *Engine) planHold(deltaKey string) holdPlan {
 			}
 		}
 	}
-	sort.Slice(streams, func(i, j int) bool {
-		if streams[i].n != streams[j].n {
-			return streams[i].n > streams[j].n
-		}
-		if streams[i].metric != streams[j].metric {
-			return streams[i].metric < streams[j].metric
-		}
-		return streams[i].level < streams[j].level
-	})
+	// Only memory pressure needs an order (largest streams first); sorting
+	// thousands of streams on every checkpoint under the mutex was a hot spot.
+	if e.holding() && e.holdPressure() {
+		sort.Slice(streams, func(i, j int) bool {
+			if streams[i].n != streams[j].n {
+				return streams[i].n > streams[j].n
+			}
+			if streams[i].metric != streams[j].metric {
+				return streams[i].metric < streams[j].metric
+			}
+			return streams[i].level < streams[j].level
+		})
+	}
 	set := func(metric string, level int64, k int) {
 		if plan.write[metric] == nil {
 			plan.write[metric] = make(map[int64]int)
@@ -225,16 +231,27 @@ func (e *Engine) planHold(deltaKey string) holdPlan {
 		}
 	}
 	// Written records stay in their deltas while other streams need them, and
-	// streams without pending records may still appear in live deltas.
+	// streams without pending records may still appear in live deltas. Deltas
+	// rarely become obsolete; filter the per-stream lists only then.
+	obsolete := false
+	for _, ref := range e.state.Held {
+		if !live[ref.Key] {
+			obsolete = true
+			break
+		}
+	}
 	for key, h := range e.held {
 		deltas, ok := plan.deltas[key]
 		if !ok {
 			deltas = h.deltas
 		}
-		var kept []string
-		for _, d := range deltas {
-			if live[d] {
-				kept = append(kept, d)
+		kept := deltas
+		if obsolete {
+			kept = nil
+			for _, d := range deltas {
+				if live[d] {
+					kept = append(kept, d)
+				}
 			}
 		}
 		if len(kept) == 0 {
@@ -301,14 +318,12 @@ func (e *Engine) flushingLast(metric string, level int64) int64 {
 }
 
 func splitStreamKey(key string) (string, int64) {
-	for i := len(key) - 1; i >= 0; i-- {
-		if key[i] == 0 {
-			var level int64
-			fmt.Sscan(key[i+1:], &level)
-			return key[:i], level
-		}
+	i := strings.LastIndexByte(key, 0)
+	if i < 0 {
+		return key, 0
 	}
-	return key, 0
+	level, _ := strconv.ParseInt(key[i+1:], 10, 64)
+	return key[:i], level
 }
 
 // loadHeld restores held records from the delta objects of the manifest,

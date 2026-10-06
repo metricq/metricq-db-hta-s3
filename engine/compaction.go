@@ -291,9 +291,10 @@ func (e *Engine) reserveCompaction(ctx context.Context) (CompactionJob, error) {
 				}
 				delete(e.idleCandidates, candidate.Key)
 			}
-			// Remembered as idle only if a complete scan of an otherwise empty
-			// job finds nothing for structural reasons.
-			idle := len(inputs) == 0 && firstSeed == 0
+			// Remembered as idle only if a complete scan finds nothing for
+			// structural reasons, independent of what the job holds already.
+			idle := firstSeed == 0
+			inputsBefore := len(inputs)
 			var idleRoots []idleRoot
 			object, ok, err := snapshot.catalogGet(ctx, snapshot.state.Catalog, candidate.Target)
 			if errors.Is(err, errCatalogBudget) {
@@ -383,6 +384,10 @@ func (e *Engine) reserveCompaction(ctx context.Context) (CompactionJob, error) {
 						selectErr = err
 						return false
 					}
+					if len(entries) == requested && requested < options.JobMaxBlocks {
+						// Cut short by the blocks already selected.
+						idle = false
+					}
 					var group []BlockInfo
 					records := 0
 					bytes := int64(0)
@@ -391,6 +396,7 @@ func (e *Engine) reserveCompaction(ctx context.Context) (CompactionJob, error) {
 							break
 						}
 						if entry.Blob.Length > options.JobMaxBytes-copied-bytes {
+							idle = idle && copied == 0
 							break
 						}
 						group = append(group, BlockInfo{Metric: seed.Metric, Level: seed.Level, Entry: entry})
@@ -419,7 +425,11 @@ func (e *Engine) reserveCompaction(ctx context.Context) (CompactionJob, error) {
 							bytes = group[0].Entry.Blob.Length
 						}
 						for _, entry := range entries[1:] {
-							if entry.Records <= 0 || entry.Blob.Length > options.JobMaxBytes-copied-bytes {
+							if entry.Records <= 0 {
+								break
+							}
+							if entry.Blob.Length > options.JobMaxBytes-copied-bytes {
+								idle = idle && copied == 0
 								break
 							}
 							group = append(group, BlockInfo{Metric: seed.Metric, Level: seed.Level, Entry: entry})
@@ -547,7 +557,7 @@ func (e *Engine) reserveCompaction(ctx context.Context) (CompactionJob, error) {
 					return false
 				}
 			}
-			if idle && !dirty && len(inputs) == 0 {
+			if idle && !dirty && len(inputs) == inputsBefore {
 				if e.idleCandidates == nil {
 					e.idleCandidates = make(map[string]idleCandidate)
 				}

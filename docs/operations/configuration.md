@@ -51,6 +51,7 @@ integers. Option names start with the area they affect: `wal_`,
   "server": "amqp://admin:admin@localhost/",
   "token": "db-hta-s3",
   "metrics_listen": "127.0.0.1:9090",
+  "pprof": false,
   "ingest_prefetch": 400,
   "s3": {
     "bucket": "metricq",
@@ -96,6 +97,7 @@ integers. Option names start with the area they affect: `wal_`,
 | --- | --- | --- |
 | `server`, `token` | `--server`, `--token` | MetricQ connection |
 | `metrics_listen` | `--metrics-listen` | Prometheus endpoint address |
+| `pprof` | `--pprof` | Serve Go profiles under `/debug/pprof/` on the metrics address (default false; trusted networks only, see [monitoring](monitoring.md#profiling)) |
 | `ingest_prefetch` | `--ingest-prefetch` | AMQP data prefetch |
 | `s3.bucket`, `s3.prefix`, `s3.endpoint`, `s3.region`, `s3.path_style` | `--s3-*` | Object store location |
 

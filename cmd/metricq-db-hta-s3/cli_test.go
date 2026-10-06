@@ -26,7 +26,7 @@ func TestOptionPrecedence(t *testing.T) {
 	}
 	c := o.config
 	// defaults < config file < environment < flags
-	if c.Server != "amqp://file/" || c.Token != "db-flag" || c.Prefetch != 9 || c.S3.Bucket != "env-bucket" || c.S3.Prefix != "p" {
+	if c.Server != "amqp://file/" || c.Token != "db-flag" || c.Prefetch != 9 || c.S3.Bucket != "env-bucket" || c.S3.Prefix != "p" || c.Pprof {
 		t.Fatalf("precedence: %+v", c)
 	}
 	if c.Engine.HoldMaxAgeSeconds != 60 || c.Engine.CompactionOptions.JobMaxBlocks != 64 || !c.Engine.CompactionOptions.Enabled || !c.Engine.MaintenanceEnabled || o.verbosity != slog.LevelDebug {
@@ -38,12 +38,13 @@ func TestOptionsFromEnvironmentOnly(t *testing.T) {
 	o, err := parseOptions(nil, env(map[string]string{
 		"METRICQ_SERVER": "amqp://$USER@broker/", "METRICQ_TOKEN": "db-$USER", "METRICQ_S3_BUCKET": "b",
 		"METRICQ_S3_PATH_STYLE": "true", "METRICQ_WAL_DIR": "/data/wal", "METRICQ_VERBOSITY": "INFO", "USER": "alice",
+		"METRICQ_PPROF": "true",
 	}), io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}
 	c := o.config
-	if c.Server != "amqp://alice@broker/" || c.Token != "db-alice" || !c.S3.PathStyle || c.Engine.WALDirectory != "/data/wal" || o.verbosity != slog.LevelInfo {
+	if c.Server != "amqp://alice@broker/" || c.Token != "db-alice" || !c.S3.PathStyle || c.Engine.WALDirectory != "/data/wal" || o.verbosity != slog.LevelInfo || !c.Pprof {
 		t.Fatalf("%+v", c)
 	}
 	if c.Listen != "127.0.0.1:9090" || c.Prefetch != 400 || c.Engine.HoldMaxAgeSeconds != 3600 {
@@ -62,6 +63,7 @@ func TestOptionErrors(t *testing.T) {
 		{[]string{"--server", "amqp://x/", "--s3-bucket", "b", "-v", "loud"}, nil, "log level"},
 		{[]string{"--server", "amqp://x/", "--s3-bucket", "b", "--ingest-prefetch", "many"}, nil, "--ingest-prefetch"},
 		{[]string{"--server", "amqp://x/", "--s3-bucket", "b", "extra"}, nil, "unexpected argument"},
+		{[]string{"--server", "amqp://x/", "--s3-bucket", "b", "--pprof", "maybe"}, nil, "--pprof"},
 	} {
 		if _, err := parseOptions(tc.args, env(tc.env), io.Discard); err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("%v: got %v, want %q", tc.args, err, tc.want)

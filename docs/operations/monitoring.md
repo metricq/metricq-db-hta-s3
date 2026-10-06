@@ -18,6 +18,19 @@ Besides the `metricq_db_*` series listed below, the endpoint exports the Go
 runtime and process collectors (`go_*`, `process_*`) and
 `metricq_db_build_info{version, goversion}`.
 
+### Profiling
+
+With `pprof` (`--pprof`, `METRICQ_PPROF=true`) the same address also serves
+Go profiles under `/debug/pprof/`, and one in 100 contended mutex events is
+sampled. Profiles expose internals and cost CPU while they run, so enable it
+only where the metrics address is reachable from trusted hosts:
+
+```sh
+go tool pprof -top http://db-host:9090/debug/pprof/profile?seconds=30
+go tool pprof -top http://db-host:9090/debug/pprof/mutex
+go tool pprof -top http://db-host:9090/debug/pprof/heap
+```
+
 ## Dashboard
 
 `grafana/metricq-db-hta-s3.json` is a Grafana dashboard with a *Prometheus*

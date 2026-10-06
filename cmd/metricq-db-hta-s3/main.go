@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/http/pprof"
 	"net/url"
 	"os"
 	"os/signal"
@@ -84,6 +85,16 @@ func run() error {
 		}
 		w.WriteHeader(200)
 	})
+	if cfg.Pprof {
+		// Sample one in 100 contended mutex events: engine lock contention is
+		// a likely bottleneck, and the cost at this rate is negligible.
+		runtime.SetMutexProfileFraction(100)
+		mux.HandleFunc("/debug/pprof/", pprof.Index)
+		mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+		mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+		mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+		mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+	}
 	server := &http.Server{Addr: cfg.Listen, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 	httpErrors := make(chan error, 1)
 	go func() { httpErrors <- server.ListenAndServe() }()

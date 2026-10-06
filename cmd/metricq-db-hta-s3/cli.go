@@ -28,6 +28,7 @@ type localConfig struct {
 	Token    string           `json:"token"`
 	Listen   string           `json:"metrics_listen"`
 	Prefetch int              `json:"ingest_prefetch"`
+	Pprof    bool             `json:"pprof"`
 	S3       storage.S3Config `json:"s3"`
 	Engine   engine.Options   `json:"engine"`
 }
@@ -86,6 +87,11 @@ func parseOptions(args []string, getenv func(string) string, stderr io.Writer) (
 		return err
 	})
 	def("metrics-listen", "address of the Prometheus /metrics and /readyz endpoint (default 127.0.0.1:9090)", func(v string) error { cfg.Listen = v; return nil })
+	def("pprof", "serve Go profiles under /debug/pprof/ on the metrics address; only on trusted networks (default false)", func(v string) error {
+		b, err := strconv.ParseBool(v)
+		cfg.Pprof = b
+		return err
+	})
 	def("ingest-prefetch", "AMQP data prefetch; deliveries of one batch share a WAL fsync (default 400, as metricq-go and the file database)", func(v string) error { return setInt(&cfg.Prefetch, v) })
 	def("wal-dir", "local WAL directory on durable storage (default /var/lib/metricq-db-hta-s3/wal)", func(v string) error { cfg.Engine.WALDirectory = v; return nil })
 	def("s3-bucket", "S3 bucket", func(v string) error { cfg.S3.Bucket = v; return nil })

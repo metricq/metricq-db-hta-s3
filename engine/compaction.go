@@ -53,6 +53,33 @@ type CompactionJob struct {
 // deferredSeedRecheck bounds how long a deferred merge seed is skipped.
 const deferredSeedRecheck = 10 * time.Minute
 
+// idleCandidate remembers a candidate whose scan found no work: it holds only
+// small blocks that cannot merge, typically open stream tails. A scan finds
+// the same until the object (whose change rewrites the candidate entry with a
+// new Modified time) or one of those streams' roots changes, so until then the
+// catalog read is skipped. Time-dependent outcomes (cooldown, deferred merges)
+// are never remembered.
+type idleCandidate struct {
+	modified int64
+	roots    []idleRoot
+	pass     uint64
+}
+
+type idleRoot struct {
+	metric string
+	level  int64
+	root   blob
+}
+
+func (c idleCandidate) unchanged(roots map[string]map[int64]blob) bool {
+	for _, r := range c.roots {
+		if roots[r.metric][r.level] != r.root {
+			return false
+		}
+	}
+	return true
+}
+
 type replacement struct {
 	Entry indexEntry
 	Drop  bool
@@ -254,6 +281,20 @@ func (e *Engine) reserveCompaction(ctx context.Context) (CompactionJob, error) {
 			if len(inputs) > 0 && len(objects) >= objectLimit {
 				return stopAt(candidate.Key, firstSeed)
 			}
+			if c, ok := e.idleCandidates[candidate.Key]; ok {
+				if c.modified == candidate.Modified && c.unchanged(snapshot.state.Roots) {
+					c.pass = e.idlePass
+					e.idleCandidates[candidate.Key] = c
+					e.metrics.CompactionIdleSkips.Inc()
+					previousCandidate = candidate.Key
+					return true
+				}
+				delete(e.idleCandidates, candidate.Key)
+			}
+			// Remembered as idle only if a complete scan of an otherwise empty
+			// job finds nothing for structural reasons.
+			idle := len(inputs) == 0 && firstSeed == 0
+			var idleRoots []idleRoot
 			object, ok, err := snapshot.catalogGet(ctx, snapshot.state.Catalog, candidate.Target)
 			if errors.Is(err, errCatalogBudget) {
 				return stopAt(candidate.Key, firstSeed)
@@ -300,17 +341,20 @@ func (e *Engine) reserveCompaction(ctx context.Context) (CompactionJob, error) {
 					stream := fmt.Sprintf("%s/%020d", seed.Metric, seed.Level)
 					seedKey := fmt.Sprintf("%s/%020d", stream, seed.Entry.First)
 					if selectedStreams[stream] || tried[seedKey] {
+						idle = false
 						continue
 					}
 					// Deferred tail merges are rechecked later instead of consuming
 					// the search budget on every pass.
 					if retry, ok := e.deferredSeeds[seedKey]; ok {
 						if time.Now().UnixNano() < retry {
+							idle = false
 							continue
 						}
 						delete(e.deferredSeeds, seedKey)
 					}
 					root := snapshot.state.Roots[seed.Metric][seed.Level]
+					idleRoots = append(idleRoots, idleRoot{seed.Metric, seed.Level, root})
 					// An immutable single-block root cannot supply a merge partner.
 					// Known singleton tails must not consume the bounded stream-search
 					// budget on every pass. A flush changes the root/hash, so this
@@ -400,6 +444,10 @@ func (e *Engine) reserveCompaction(ctx context.Context) (CompactionJob, error) {
 					// only needs checking from the end: usually one inventory read.
 					budgetHit := false
 					newestModified := int64(0)
+					if len(group) > 1 {
+						// Whatever remains is either selected or cut by the cooldown.
+						idle = false
+					}
 					for len(group) > 1 {
 						last := group[len(group)-1].Entry.Blob.Key
 						o, ok, err := snapshot.catalogGet(ctx, snapshot.state.Catalog, last)
@@ -499,9 +547,25 @@ func (e *Engine) reserveCompaction(ctx context.Context) (CompactionJob, error) {
 					return false
 				}
 			}
+			if idle && !dirty && len(inputs) == 0 {
+				if e.idleCandidates == nil {
+					e.idleCandidates = make(map[string]idleCandidate)
+				}
+				e.idleCandidates[candidate.Key] = idleCandidate{modified: candidate.Modified, roots: idleRoots, pass: e.idlePass}
+			}
 			previousCandidate = candidate.Key
 			return len(inputs) < options.JobMaxBlocks && copied < options.JobMaxBytes
 		})
+		if err == nil && cursor == "" && resumeObject == "" {
+			// A pass completed: forget candidates not seen in the last two.
+			e.idlePass++
+			for key, c := range e.idleCandidates {
+				if c.pass+1 < e.idlePass {
+					delete(e.idleCandidates, key)
+				}
+			}
+		}
+		e.metrics.CompactionIdleCandidates.Set(float64(len(e.idleCandidates)))
 	}
 	fragmentMore := false
 	if len(inputs) == 0 && options.MergeEnabled {

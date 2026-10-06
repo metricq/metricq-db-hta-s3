@@ -150,6 +150,8 @@ This table is generated from `engine/metrics.go` by
 | `metricq_db_compaction_candidate_objects` | gauge |  | Tracked candidate objects, including cooldown and single tails. |
 | `metricq_db_compaction_conflicts_total` | counter |  | Metadata proposals rebuilt after concurrent publication. |
 | `metricq_db_compaction_deferred_merges_total` | counter |  | Large tail merge candidates deferred until sufficient growth or age. |
+| `metricq_db_compaction_idle_candidate_skips_total` | counter |  | Candidate visits skipped without a catalog read: the candidate and its streams are unchanged since a scan found no work. |
+| `metricq_db_compaction_idle_candidates` | gauge |  | Candidates remembered as having no work, mostly objects holding only open stream tails. |
 | `metricq_db_compaction_input_blocks_total` | counter |  | Source blocks in successfully published jobs. |
 | `metricq_db_compaction_io_read_bytes_total` | counter |  | Compressed data/index bytes read by compaction. |
 | `metricq_db_compaction_io_write_bytes_total` | counter |  | Data/index pack bytes uploaded by compaction. |

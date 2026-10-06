@@ -61,6 +61,8 @@ type Metrics struct {
 	CompactionLastSuccess                       prometheus.Gauge
 	CompactionBudgetExceeded                    prometheus.Counter
 	LocalityJobs                                prometheus.Counter
+	CompactionIdleSkips                         prometheus.Counter
+	CompactionIdleCandidates                    prometheus.Gauge
 	LocalityPendingStreams                      prometheus.Gauge
 }
 
@@ -127,6 +129,8 @@ func NewMetrics(r prometheus.Registerer) *Metrics {
 		LocalityJobs:              counter("compaction_locality_jobs_total", "Published jobs packing consecutive blocks of a metric level."),
 		LocalityPendingStreams:    gauge("compaction_locality_pending_streams", "Changed stream roots awaiting layout inspection; not necessarily actionable fragmentation."),
 		CompactionBudgetExceeded:  counter("compaction_job_budget_exceeded_total", "Compaction jobs aborted because publication exceeded the catalog budget."),
+		CompactionIdleSkips:       counter("compaction_idle_candidate_skips_total", "Candidate visits skipped without a catalog read: the candidate and its streams are unchanged since a scan found no work."),
+		CompactionIdleCandidates:  gauge("compaction_idle_candidates", "Candidates remembered as having no work, mostly objects holding only open stream tails."),
 		CandidateObjects:          gauge("compaction_candidate_objects", "Tracked candidate objects, including cooldown and single tails."),
 		SmallBlocks:               gauge("storage_small_blocks", "Live data blocks below 1024 records, including single stream tails."),
 		SmallBlockBytes:           gauge("storage_small_block_bytes", "Compressed bytes in live data blocks below 1024 records."),

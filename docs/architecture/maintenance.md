@@ -47,6 +47,14 @@ In order of preference:
 - **Deferred merges.** A large tail and a small new block are merged only after
   25 % growth or an hour; such seeds are skipped for up to 10 minutes instead of
   being re-examined on every pass.
+- **Idle candidates.** Most candidate objects hold only open stream tails,
+  which nothing can merge until their stream grows. A candidate whose scan
+  found no work for structural reasons is remembered in memory together with
+  the index roots of its small blocks' streams; later passes skip it without
+  reading its catalog entry until the candidate entry (rewritten whenever the
+  object changes) or one of those roots changes. Outcomes that depend on time
+  (cooldown, deferred merges) or on the job being assembled are not
+  remembered. `compaction_idle_candidate_skips_total` counts the skips.
 - **Level locality.** A stream (metric level) consists of *sections*: runs of
   consecutive blocks stored contiguously in one object, each read with one
   range request. Locality lets sections grow in tiers, like a size-tiered LSM

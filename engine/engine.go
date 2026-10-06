@@ -197,7 +197,9 @@ type Engine struct {
 	compactionCompletions    uint64
 	compactionScanMore       bool
 	localityScans            map[string]localityScan
-	deferredSeeds            map[string]int64 // merge seeds deferred until this time (unix ns)
+	deferredSeeds            map[string]int64         // merge seeds deferred until this time (unix ns)
+	idleCandidates           map[string]idleCandidate // candidates whose last scan found no work
+	idlePass                 uint64                   // completed candidate scan passes
 	fragmentScans            map[string]fragmentScan
 	fragmentCursor           string
 	localityCursor           string

@@ -22,6 +22,7 @@ import (
 	metricq "github.com/metricq/metricq-go"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	dto "github.com/prometheus/client_model/go"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -76,6 +77,14 @@ func TestReviewMetadataHourlyWorkload(t *testing.T) {
 		}
 		hours = n
 	}
+	metrics := 1500
+	if v := os.Getenv("METRICQ_METADATA_METRICS"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 {
+			t.Fatal("invalid metrics")
+		}
+		metrics = n
+	}
 	cases := []string{"dense", "mixed"}
 	if v := os.Getenv("METRICQ_METADATA_CASE"); v != "" {
 		cases = []string{v}
@@ -94,9 +103,15 @@ func TestReviewMetadataHourlyWorkload(t *testing.T) {
 			opts.WALHard = 512 << 20
 			opts.CompactionOptions.MergeCooldownSeconds = 0
 			opts.CompactionOptions.IOBytesPerSecond = 1 << 40
+			if os.Getenv("METRICQ_METADATA_PRODUCTION_SIZES") == "1" {
+				// Object and job sizes of the executable's defaults.
+				opts.CompactionOptions.OutputObjectBytes = 4 << 20
+				opts.CompactionOptions.JobMaxBytes = 32 << 20
+				opts.CompactionOptions.JobMaxBlocks = 512
+			}
 			cfg := map[string]hta.Config{}
-			periods := make([]int64, 1500)
-			next := make([]int64, 1500)
+			periods := make([]int64, metrics)
+			next := make([]int64, metrics)
 			const base = int64(1700000000) * int64(time.Second)
 			for i := range periods {
 				period := int64(time.Second)
@@ -199,8 +214,19 @@ func TestReviewMetadataHourlyWorkload(t *testing.T) {
 				}
 				flushTimes = append(flushTimes, time.Since(start))
 				if os.Getenv("METRICQ_METADATA_MAINTENANCE") == "1" && seconds%600 == 0 {
-					if err = e.CompactOnce(ctx); err != nil {
-						t.Fatal(err)
+					// Like a maintenance cycle: drain the work found, bounded.
+					jobs := 1
+					if os.Getenv("METRICQ_METADATA_COMPACT_DRAIN") == "1" {
+						jobs = 1000
+					}
+					for job := 0; job < jobs; job++ {
+						before := reviewCounter(t, e.metrics.Compactions)
+						if err = e.CompactOnce(ctx); err != nil {
+							t.Fatal(err)
+						}
+						if reviewCounter(t, e.metrics.Compactions) == before && !e.compactionScanMore {
+							break
+						}
 					}
 					if err = e.Reclaim(ctx); err != nil {
 						t.Fatal(err)
@@ -251,7 +277,12 @@ func TestReviewMetadataHourlyWorkload(t *testing.T) {
 			for _, interval := range []int64{0, 10, 3600} {
 				requests = append(requests, &metricq.HistoryRequest{Type: metricq.HistoryRequest_FLEX_TIMELINE, StartTime: base, EndTime: base + int64(hours*3600)*int64(time.Second), IntervalMax: interval * int64(time.Second)})
 			}
-			names := []string{"canonical.metric.0000", "canonical.metric.0999", "canonical.metric.1299", "canonical.metric.1499"}
+			var names []string
+			for _, i := range []int{0, 999, 1299, 1499} {
+				if i < metrics {
+					names = append(names, fmt.Sprintf("canonical.metric.%04d", i))
+				}
+			}
 			responses := []*metricq.HistoryResponse{}
 			for _, name := range names {
 				for _, req := range requests {
@@ -262,6 +293,48 @@ func TestReviewMetadataHourlyWorkload(t *testing.T) {
 					responses = append(responses, r)
 				}
 			}
+			// Physical layout: contiguous ranges a query needs per stream.
+			type layoutLevel struct {
+				streams, ranges, maxRanges, blocks int
+				bytes                              int64
+			}
+			layout := map[int64]*layoutLevel{}
+			for _, levels := range e.state.Roots {
+				for level, root := range levels {
+					entries, err := e.indexEntriesAfter(ctx, root, math.MinInt64, math.MaxInt32)
+					if err != nil {
+						t.Fatal(err)
+					}
+					ranges := 0
+					for i, en := range entries {
+						if i == 0 || en.Blob.Key != entries[i-1].Blob.Key || en.Blob.Offset < entries[i-1].Blob.Offset || en.Blob.Offset-entries[i-1].Blob.Offset-entries[i-1].Blob.Length > maxCoalescedGap {
+							ranges++
+						}
+					}
+					l := layout[level]
+					if l == nil {
+						l = &layoutLevel{}
+						layout[level] = l
+					}
+					l.streams++
+					l.ranges += ranges
+					l.maxRanges = max(l.maxRanges, ranges)
+					l.blocks += len(entries)
+					for _, en := range entries {
+						l.bytes += en.Blob.Length
+					}
+				}
+			}
+			var layoutLevels []int64
+			for level := range layout {
+				layoutLevels = append(layoutLevels, level)
+			}
+			sort.Slice(layoutLevels, func(i, j int) bool { return layoutLevels[i] < layoutLevels[j] })
+			for _, level := range layoutLevels {
+				l := layout[level]
+				t.Logf("layout level=%gs streams=%d blocks/stream=%.1f bytes/stream=%.0f ranges/stream=%.2f max=%d", float64(level)/1e9, l.streams, float64(l.blocks)/float64(l.streams), float64(l.bytes)/float64(l.streams), float64(l.ranges)/float64(l.streams), l.maxRanges)
+			}
+			t.Logf("compaction jobs=%.0f read_bytes=%.0f write_bytes=%.0f objects=%d", reviewCounter(t, e.metrics.Compactions), reviewCounter(t, e.metrics.CompactionReadBytes), reviewCounter(t, e.metrics.CompactionWriteBytes), e.state.LiveObjects)
 			if err = e.Close(); err != nil {
 				t.Fatal(err)
 			}
@@ -299,4 +372,13 @@ func TestReviewMetadataHourlyWorkload(t *testing.T) {
 			}
 		})
 	}
+}
+
+func reviewCounter(t *testing.T, c prometheus.Metric) float64 {
+	t.Helper()
+	var m dto.Metric
+	if err := c.Write(&m); err != nil {
+		t.Fatal(err)
+	}
+	return m.GetCounter().GetValue()
 }

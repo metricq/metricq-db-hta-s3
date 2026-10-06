@@ -47,11 +47,20 @@ In order of preference:
 - **Deferred merges.** A large tail and a small new block are merged only after
   25 % growth or an hour; such seeds are skipped for up to 10 minutes instead of
   being re-examined on every pass.
-- **Level locality.** Consecutive blocks of one metric level, including full
-  blocks, spread over at least `compaction_locality_min_ranges` physical ranges,
-  are rewritten into one contiguous section. Sealed sections are not rewritten
-  again. Every fourth job gives locality a turn; otherwise it runs when there is
-  nothing to merge. `compaction_locality_disabled` turns it off.
+- **Level locality.** A stream (metric level) consists of *sections*: runs of
+  consecutive blocks stored contiguously in one object, each read with one
+  range request. Locality lets sections grow in tiers, like a size-tiered LSM
+  tree: `compaction_locality_fan_in` (default 4) consecutive sections of one
+  size tier (powers of the fan-in below `compaction_output_object_bytes`) are
+  rewritten into one section of the next tier; in the top tier (at least a
+  quarter of the target) sections merge while they fit into the target.
+  Sections of at least half the target are settled and not rewritten again.
+  A stream thus has its settled sections plus at most fan-in − 1 sections per
+  smaller tier, and every byte is rewritten about log_fanIn(target / first
+  section) times (about 3 times from 40 KiB to 4 MiB). The open suffix
+  (partial tail blocks) is left to merging. Every fourth job gives locality a
+  turn; otherwise it runs when there is nothing to merge.
+  `compaction_locality_disabled` turns it off.
 - **Reclamation.** Objects whose dead fraction exceeds `compaction_reclaim_dead_fraction`
   are evacuated (live blocks copied) so the whole object can be deleted.
 

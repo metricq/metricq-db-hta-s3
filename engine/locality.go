@@ -3,10 +3,8 @@ package engine
 import (
 	"context"
 	"errors"
-	"fmt"
 	"math"
 	"sort"
-	"strings"
 	"time"
 )
 
@@ -17,22 +15,106 @@ type localityScan struct {
 	ObjectLimit int
 }
 
-func afterLocalityEntry(entry indexEntry) int64 {
-	if entry.Last == math.MaxInt64 {
-		return entry.Last
-	}
-	return entry.Last + 1
-}
-
 type localityStream struct {
 	Metric string
 	Level  int64
 	Key    string
 }
 
-// Select consecutive index entries of one canonical metric/level. Bounds are
-// physical bytes/blocks, never time windows. Sealed locality packs are excluded
-// from future jobs; appending data cannot rewrite their historical prefix.
+// localitySection is a run of consecutive index entries of one stream stored
+// contiguously in one object: a query reads it with one range request.
+type localitySection struct {
+	begin, end int // entries[begin:end]
+	bytes      int64
+}
+
+// localitySections splits consecutive entries into physically contiguous runs.
+func localitySections(entries []indexEntry) []localitySection {
+	var sections []localitySection
+	for i, entry := range entries {
+		if i > 0 {
+			prev := entries[i-1].Blob
+			if entry.Blob.Key == prev.Key && entry.Blob.Offset >= prev.Offset && entry.Blob.Offset-prev.Offset-prev.Length <= maxCoalescedGap {
+				last := &sections[len(sections)-1]
+				last.end = i + 1
+				last.bytes += entry.Blob.Length
+				continue
+			}
+		}
+		sections = append(sections, localitySection{begin: i, end: i + 1, bytes: entry.Blob.Length})
+	}
+	return sections
+}
+
+// sectionTier groups section sizes by powers of fanIn below target: tier 1
+// holds sections of at least target/fanIn, tier 2 at least target/fanIn², and
+// so on. Full sections (at least target) are tier 0 and never rewritten.
+func sectionTier(bytes, target int64, fanIn int) int {
+	tier := 0
+	for limit := target; bytes < limit && limit > 0; limit /= int64(fanIn) {
+		tier++
+	}
+	return tier
+}
+
+// localityMerge picks the oldest run of fanIn consecutive non-full sections
+// of one size tier, extended by further sections of that tier while the
+// result stays within target. Sections thus grow geometrically (fanIn small
+// sections become one of the next tier): a stream keeps its settled sections
+// plus at most fanIn-1 per smaller tier, and every byte is rewritten about
+// log_fanIn(target/section) times. In the top tier (at least target/fanIn)
+// fanIn sections never fit into target, so two suffice there. Without such a
+// run, the oldest fanIn sections fitting into target merge, so mixed sizes
+// left by bounded jobs cannot accumulate.
+func localityMerge(sections []localitySection, target int64, fanIn int) (int, int) {
+	tiers := make([]int, len(sections))
+	for i, s := range sections {
+		tiers[i] = sectionTier(s.bytes, target, fanIn)
+	}
+	for i := 0; i < len(sections); i++ {
+		if tiers[i] == 0 {
+			continue
+		}
+		j, total := i, int64(0)
+		for j < len(sections) && tiers[j] == tiers[i] && total+sections[j].bytes <= target {
+			total += sections[j].bytes
+			j++
+		}
+		need := fanIn
+		if tiers[i] == 1 {
+			need = 2
+		}
+		if j-i >= need {
+			return i, j
+		}
+	}
+	// Fallback for mixed sizes: only unsettled sections (below half the
+	// target) count, so long histories of settled sections never trigger it.
+	unsettled := 0
+	for _, sec := range sections {
+		if sec.bytes < target/2 {
+			unsettled++
+		}
+	}
+	if unsettled > 4*fanIn {
+		for i := 0; i+fanIn <= len(sections); i++ {
+			j, total := i, int64(0)
+			for j < len(sections) && sections[j].bytes < target/2 && total+sections[j].bytes <= target {
+				total += sections[j].bytes
+				j++
+			}
+			if j-i >= fanIn {
+				return i, j
+			}
+		}
+	}
+	return 0, 0
+}
+
+// selectLocality packs consecutive blocks of a metric level into contiguous
+// sections that grow up to compaction_output_object_bytes, so a timeline query
+// needs few range requests. Bounds are physical bytes/blocks, never time
+// windows; the open suffix (partial tail blocks) is left to merging.
 func (e *Engine) selectLocality(ctx context.Context, snapshot *Engine, options CompactionOptions, objectLimit int) ([]BlockInfo, bool, error) {
 	var streams []localityStream
 	for name, levels := range snapshot.state.Roots {
@@ -60,21 +142,16 @@ func (e *Engine) selectLocality(ctx context.Context, snapshot *Engine, options C
 		start = 0
 		e.localityCursor = ""
 	}
+	target := options.OutputObjectBytes
+	fanIn := options.LocalityFanIn
 	cutoff := time.Now().Add(-time.Duration(options.MergeCooldownSeconds) * time.Second).UnixNano()
+	// Unfinished sections of a stream span at most fanIn-1 sections per tier;
+	// reading this many entries beyond the full prefix covers them.
+	limit := max(options.JobMaxBlocks*4, 1024)
 	checked := 0
 	var selected []BlockInfo
 	var selectedBytes int64
 	selectedObjects := map[string]bool{}
-	accept := func(stream localityStream, work []BlockInfo) {
-		selected = append(selected, work...)
-		for _, b := range work {
-			selectedBytes += b.Entry.Blob.Length
-			selectedObjects[b.Entry.Blob.Key] = true
-		}
-		// Until publication this is the retry point, not the end of the section.
-		e.localityScans[stream.Key] = localityScan{After: work[0].Entry.First}
-	}
-scanStreams:
 	for i := start; i < len(streams); i++ {
 		if len(selected) >= options.JobMaxBlocks-1 || selectedBytes >= options.JobMaxBytes {
 			return selected, true, nil
@@ -87,119 +164,85 @@ scanStreams:
 			continue
 		}
 		if checked >= 64 || snapshot.nodeReads >= 2048 {
-			e.localityCursor = streams[max(start, i-1)].Key
+			e.localityCursor = previousStream(streams, max(start, i))
 			return selected, true, nil
 		}
 		checked++
-		cooldown := false
-		entries, err := snapshot.indexEntriesAfter(ctx, root, state.After, options.JobMaxBlocks-len(selected))
+		after := state.After
+		if after == 0 {
+			after = math.MinInt64
+		}
+		entries, err := snapshot.indexEntriesAfter(ctx, root, after, limit)
 		if err != nil {
 			return nil, false, err
 		}
-		var group []BlockInfo
-		var bytes int64
-		spans := 0
-		objects := make(map[string]bool)
-		flush := func() ([]BlockInfo, bool) {
-			// An isolated full block offers no range reduction. Four physical ranges
-			// amortize publication/rewrite cost, without waiting for a temporal boundary.
-			if len(group) > 0 && spans >= options.LocalityMinRanges {
-				return group, true
-			}
-			return nil, false
+		if len(entries) < limit {
+			// The open suffix still grows; merging completes it.
+			blocks, _ := openSuffix(entries)
+			entries = entries[:len(entries)-blocks]
 		}
-		advance := state.After
-		for _, entry := range entries {
-			if strings.Contains(entry.Blob.Key, "/locality/") {
-				if work, ok := flush(); ok {
-					accept(s, work)
-					continue scanStreams
-				}
-				group = nil
-				bytes = 0
-				spans = 0
-				objects = make(map[string]bool)
-				advance = afterLocalityEntry(entry)
-				continue
+		sections := localitySections(entries)
+		// Sections of at least half the target can no longer pair up within
+		// it: a settled prefix is skipped from now on, so scans stay short.
+		next := after
+		for _, sec := range sections {
+			if sec.bytes < target/2 || entries[sec.end-1].Last == math.MaxInt64 {
+				break
 			}
-			if len(group) == 0 && !selectedObjects[entry.Blob.Key] && len(selectedObjects) >= objectLimit {
+			next = entries[sec.end-1].Last + 1
+		}
+		first, end := localityMerge(sections, target, fanIn)
+		if first == end {
+			e.localityScans[s.Key] = localityScan{Root: root, After: next, ObjectLimit: objectLimit}
+			continue
+		}
+		group := entries[sections[first].begin:sections[end-1].end]
+		var groupBytes int64
+		objects := map[string]bool{}
+		for _, entry := range group {
+			groupBytes += entry.Blob.Length
+			objects[entry.Blob.Key] = true
+		}
+		if len(selected)+len(group) > options.JobMaxBlocks || selectedBytes+groupBytes > options.JobMaxBytes || len(selectedObjects)+countNewObjects(objects, selectedObjects) > objectLimit {
+			if len(selected) > 0 {
+				// The next job takes this stream first.
+				e.localityCursor = previousStream(streams, i)
 				return selected, true, nil
 			}
-			newObject := !objects[entry.Blob.Key]
-			if len(group) > 0 && (bytes+entry.Blob.Length > options.OutputObjectBytes || bytes+entry.Blob.Length > options.JobMaxBytes-selectedBytes || (newObject && !selectedObjects[entry.Blob.Key] && len(selectedObjects)+countNewObjects(objects, selectedObjects) >= objectLimit)) {
-				if work, ok := flush(); ok {
-					accept(s, work)
-					continue scanStreams
-				}
-				// The preceding extent already has good physical locality or cannot
-				// improve within this job's object target. Continue with the next extent.
-				advance = entry.First
-				group = nil
-				bytes = 0
-				spans = 0
-				objects = make(map[string]bool)
-			}
-			if entry.Blob.Length > options.OutputObjectBytes || entry.Blob.Length > options.JobMaxBytes-selectedBytes {
-				advance = afterLocalityEntry(entry)
-				continue
-			}
-			if newObject {
-				o, ok, err := snapshot.catalogGet(ctx, snapshot.state.Catalog, entry.Blob.Key)
-				if errors.Is(err, errCatalogBudget) {
-					return selected, true, nil
-				}
-				if err != nil {
-					return nil, false, err
-				}
-				if !ok {
-					return nil, false, fmt.Errorf("locality source absent from catalog")
-				}
-				if o.Modified > cutoff {
-					// Recheck this root after cooldown, including its small unfinished suffix.
-					after := entry.First
-					if len(group) > 0 {
-						after = group[0].Entry.First
-					}
-					e.localityScans[s.Key] = localityScan{Root: root, After: after, RetryAt: o.Modified + int64(time.Duration(options.MergeCooldownSeconds)*time.Second), ObjectLimit: objectLimit}
-					cooldown = true
-					group = nil
-					spans = 0
-					break
-				}
-			}
-			if len(group) == 0 {
-				spans++
-			} else {
-				prev := group[len(group)-1].Entry.Blob
-				if prev.Key != entry.Blob.Key || entry.Blob.Offset < prev.Offset || entry.Blob.Offset-prev.Offset-prev.Length > maxCoalescedGap {
-					spans++
-				}
-			}
-			objects[entry.Blob.Key] = true
-			group = append(group, BlockInfo{Metric: s.Metric, Level: s.Level, Entry: entry})
-			bytes += entry.Blob.Length
+			// Too large even alone (small limits): retry when limits change.
+			e.localityScans[s.Key] = localityScan{Root: root, After: next, ObjectLimit: objectLimit}
+			continue
 		}
-		if work, ok := flush(); ok {
-			accept(s, work)
-			continue scanStreams
-		}
-		if len(group) > 0 {
-			advance = group[0].Entry.First
-		}
-		// A complete scan can sleep until this stream root changes. If the batch
-		// was full, resume beyond it instead, retaining only its unfinished suffix.
-		if len(entries) < options.JobMaxBlocks-len(selected) {
-			if !cooldown {
-				e.localityScans[s.Key] = localityScan{Root: root, After: advance, ObjectLimit: objectLimit}
+		cooling := int64(0)
+		for key := range objects {
+			o, ok, err := snapshot.catalogGet(ctx, snapshot.state.Catalog, key)
+			if errors.Is(err, errCatalogBudget) {
+				e.localityCursor = previousStream(streams, i)
+				return selected, true, nil
 			}
-		} else {
-			if len(group) > 0 && len(group) == len(entries) {
-				advance = afterLocalityEntry(entries[len(entries)-1])
+			if err != nil {
+				return nil, false, err
 			}
-			e.localityScans[s.Key] = localityScan{After: advance}
-			e.localityCursor = "" // revisit this stream on a later bounded selection
-			return selected, true, nil
+			if !ok {
+				return nil, false, errors.New("locality source absent from catalog")
+			}
+			if o.Modified > cutoff {
+				cooling = max(cooling, o.Modified)
+			}
 		}
+		if cooling != 0 {
+			e.localityScans[s.Key] = localityScan{Root: root, After: next, RetryAt: cooling + int64(time.Duration(options.MergeCooldownSeconds)*time.Second), ObjectLimit: objectLimit}
+			continue
+		}
+		for _, entry := range group {
+			selected = append(selected, BlockInfo{Metric: s.Metric, Level: s.Level, Entry: entry})
+		}
+		selectedBytes += groupBytes
+		for key := range objects {
+			selectedObjects[key] = true
+		}
+		// Until publication changes the root this is the retry point.
+		e.localityScans[s.Key] = localityScan{After: next}
 	}
 	e.localityCursor = ""
 	return selected, len(selected) > 0, nil

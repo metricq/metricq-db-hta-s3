@@ -21,7 +21,7 @@ so the dashboard draws them next to the measured values.
 | *Jobs*: `catalog budget` events | inventories of mixed objects are large | Usually self-adjusting (*source-object limit* drops). Persistent: holding reduces mixed objects. |
 | *Compaction job pending* stays 1, *Last successful job* grows | jobs fail repeatedly | Look at the logs (`compaction failed`) and *Object store → Errors*. |
 | *Stored bytes*: dead share high and not shrinking | reclamation too slow or disabled | Lower `compaction_reclaim_dead_fraction` (more rewriting) or raise the rate limit. |
-| Cold queries slow, many GETs per query | fragmented layout | Ensure locality is enabled; lower `compaction_locality_min_ranges`; give compaction more rate. |
+| Cold queries slow, many GETs per query | fragmented layout | Ensure locality is enabled; raise `compaction_output_object_bytes` for larger settled sections; give compaction more rate. |
 | `query_errors_total`: "would exceed query_max_response_bytes" | client requests too many points for one AMQP message | Ask clients for aggregate levels (larger `interval_max`); raising the limit needs a larger RabbitMQ `max_message_size`. |
 | `query_errors_total`: "query memory" | large concurrent queries | Raise `query_memory_bytes` if memory allows. |
 | Process memory high | held records, caches | Lower `hold_memory_bytes`, `ingest_memory_limit_bytes`; see [Sizing](sizing.md#memory). |
@@ -76,9 +76,11 @@ so the dashboard draws them next to the measured values.
   is deleted only when all its blocks are dead.
 - **`compaction_reclaim_dead_fraction`** — rewrite objects with at least this share of dead bytes.
   Lower reclaims space sooner at the price of more copying.
-- **`compaction_locality_min_ranges`**, **`compaction_locality_disabled`** — lay out consecutive blocks
-  of a metric level contiguously so a `FLEX_TIMELINE` query needs one or two
-  GETs.
+- **`compaction_locality_fan_in`**, **`compaction_locality_disabled`** — let the
+  contiguous sections of a metric level grow in tiers up to
+  `compaction_output_object_bytes`, so a `FLEX_TIMELINE` query needs few GETs.
+  A larger fan-in rewrites data less often but leaves more sections per stream;
+  a larger `compaction_output_object_bytes` gives larger settled sections.
 
 ## Reading the fragmentation panels
 

@@ -917,9 +917,28 @@ func (e *Engine) copyJob(ctx context.Context, job CompactionJob) (map[blob]repla
 	}
 	close(work)
 	wg.Wait()
-	for _, g := range groups {
+	// A locality section of one stream must not straddle two objects: start
+	// a new object when the next stream's blocks would not fit the current one.
+	sectionBytes := make(map[int]int64)
+	if job.Locality {
+		for i, g := range groups {
+			stream := i
+			for stream > 0 && groups[stream-1].info.Metric == g.info.Metric && groups[stream-1].info.Level == g.info.Level && !groups[stream-1].info.Index {
+				stream--
+			}
+			for j := g.start; j < g.end; j++ {
+				sectionBytes[stream] += int64(len(encodedInputs[j]))
+			}
+		}
+	}
+	for gi, g := range groups {
 		if g.err != nil {
 			return nil, nil, g.err
+		}
+		if n, ok := sectionBytes[gi]; ok && current != nil && int64(current.buf.Len())+n > options.OutputObjectBytes {
+			if err := upload(); err != nil {
+				return nil, nil, err
+			}
 		}
 		if g.rechunk {
 			// At most as many full blocks as sources: outputs replace the leading

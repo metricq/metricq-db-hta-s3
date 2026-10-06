@@ -34,7 +34,7 @@
     "compaction_merge_enabled": true,
     "compaction_merge_cooldown_seconds": 60,
     "compaction_reclaim_dead_fraction": 0.4,
-    "compaction_locality_min_ranges": 4,
+    "compaction_locality_fan_in": 4,
     "compaction_locality_disabled": false
   }
 }

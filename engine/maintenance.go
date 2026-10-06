@@ -41,16 +41,18 @@ type CompactionOptions struct {
 	MergeCooldownSeconds int64 `json:"compaction_merge_cooldown_seconds"`
 	// ReclaimDeadFraction is the dead-byte share at which objects are evacuated.
 	ReclaimDeadFraction float64 `json:"compaction_reclaim_dead_fraction"`
-	// LocalityMinRanges is the number of physical ranges a metric level must
-	// span before it is laid out contiguously; no temporal grouping.
-	LocalityMinRanges int `json:"compaction_locality_min_ranges"`
+	// LocalityFanIn is the number of contiguous sections of one size tier
+	// that locality merges into one of the next tier, up to
+	// OutputObjectBytes; larger values rewrite data less often but leave more
+	// sections per stream.
+	LocalityFanIn int `json:"compaction_locality_fan_in"`
 	// LocalityDisabled turns level locality off.
 	LocalityDisabled bool `json:"compaction_locality_disabled"`
 }
 
 func (o CompactionOptions) defaults() CompactionOptions {
-	if o.LocalityMinRanges == 0 {
-		o.LocalityMinRanges = 4
+	if o.LocalityFanIn == 0 {
+		o.LocalityFanIn = 4
 	}
 	if o.CycleMaxSeconds == 0 {
 		o.CycleMaxSeconds = 10

@@ -178,6 +178,9 @@ func (q *reader) fetchRanges(refs []blob, misses []int, blocks [][]hta.Record) e
 		}
 		spans = append(spans, span{key: r.Key, begin: r.Offset, end: r.Offset + r.Length, indices: []int{i}})
 	}
+	if q.res != nil {
+		q.res.requests.Add(int64(len(spans)))
+	}
 	// A coalesced range saves requests, but its blocks still verify and decode
 	// in parallel; serial decoding made multi-block raw windows slower.
 	blockErrs := make([]error, len(refs))
@@ -382,6 +385,7 @@ func (e *Engine) Query(ctx context.Context, name string, req *metricq.HistoryReq
 	res := &queryReservation{budget: e.queryBudget}
 	defer res.releaseAll()
 	resp, err = e.query(ctx, name, req, res)
+	e.metrics.QueryDataRequests.Observe(float64(res.requests.Load()))
 	// Estimates bound the work; the encoded size is the binding limit, since
 	// the broker rejects larger messages.
 	if err == nil {

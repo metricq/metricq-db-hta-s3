@@ -76,6 +76,8 @@ func (b *queryBudget) release(n int64) {
 type queryReservation struct {
 	budget *queryBudget
 	held   atomic.Int64
+	// requests counts the query's data range requests (levels read concurrently).
+	requests atomic.Int64
 }
 
 func (r *queryReservation) reserve(ctx context.Context, n int64) error {

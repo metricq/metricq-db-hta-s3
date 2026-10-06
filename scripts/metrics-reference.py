@@ -16,6 +16,8 @@ for kind, name, help_text, labels in re.findall(r'(gaugeVec|counterVec|gauge|cou
     rows.append((name, kinds[kind], label_list, help_text))
 if "ingest_batch_deliveries" in text:
     rows.append(("ingest_batch_deliveries", "histogram", "", "AMQP deliveries made durable by one WAL fsync."))
+if "query_data_requests" in text:
+    rows.append(("query_data_requests", "histogram", "", "Object store range requests for data blocks per history request; cached blocks need none."))
 groups = [
     ("Ingest", ("ingest_",)),
     ("WAL", ("wal_",)),

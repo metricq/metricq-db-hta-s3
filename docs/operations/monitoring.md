@@ -172,6 +172,7 @@ This table is generated from `engine/metrics.go` by
 | `metricq_db_maintenance_delete_pending_objects` | gauge |  | Fully retired objects awaiting deletion, including reader-pinned objects. |
 | `metricq_db_maintenance_deleted_objects_total` | counter |  | Successfully deleted retired objects. |
 | **Queries** | | | |
+| `metricq_db_query_data_requests` | histogram |  | Object store range requests for data blocks per history request; cached blocks need none. |
 | `metricq_db_query_errors_total` | counter |  | Failed history requests. |
 | `metricq_db_query_requests_total` | counter |  | History requests. |
 | `metricq_db_query_seconds` | histogram |  | History request latency. |

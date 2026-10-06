@@ -38,6 +38,7 @@ type Metrics struct {
 	MetadataPages      *prometheus.CounterVec // kind; encoded pages, including failed attempts
 	IngestBatches      prometheus.Counter
 	IngestBatchSize    prometheus.Histogram
+	QueryDataRequests  prometheus.Histogram
 	BackpressureEvents prometheus.Counter
 
 	PendingRecords, UnsavedBytes                               prometheus.Gauge
@@ -95,6 +96,8 @@ func NewMetrics(r prometheus.Registerer) *Metrics {
 	}
 	batchSize := prometheus.NewHistogram(prometheus.HistogramOpts{Namespace: "metricq_db", Name: "ingest_batch_deliveries", Help: "AMQP deliveries made durable by one WAL fsync.", Buckets: prometheus.ExponentialBuckets(1, 2, 13)})
 	r.MustRegister(batchSize)
+	queryRequests := prometheus.NewHistogram(prometheus.HistogramOpts{Namespace: "metricq_db", Name: "query_data_requests", Help: "Object store range requests for data blocks per history request; cached blocks need none.", Buckets: prometheus.ExponentialBuckets(1, 2, 13)})
+	r.MustRegister(queryRequests)
 	phases := prometheus.NewHistogramVec(prometheus.HistogramOpts{Namespace: "metricq_db", Name: "compaction_phase_seconds", Help: "Compaction phase durations; nested phases overlap. Selection includes no-op attempts.", Buckets: prometheus.ExponentialBuckets(.0001, 4, 11)}, []string{"phase"})
 	r.MustRegister(phases)
 	return &Metrics{
@@ -104,6 +107,7 @@ func NewMetrics(r prometheus.Registerer) *Metrics {
 		Config:                    gaugeVec("config", "Configured engine option values; the parameter label names the option.", "parameter"),
 		IngestBatches:             counter("ingest_batches_total", "Group-committed delivery batches (one WAL fsync each)."),
 		IngestBatchSize:           batchSize,
+		QueryDataRequests:         queryRequests,
 		BackpressureEvents:        counter("ingest_backpressure_events_total", "Ingest attempts refused because the WAL high watermark or ingest memory limit was reached."),
 		PendingRecords:            gauge("ingest_pending_records", "Aggregated records not yet in data blocks, including held and uploading records."),
 		UnsavedBytes:              gauge("checkpoint_unsaved_bytes", "Estimated bytes of records only in the WAL (neither in blocks nor in held deltas)."),

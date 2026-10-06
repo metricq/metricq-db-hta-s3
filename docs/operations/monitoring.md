@@ -122,12 +122,15 @@ This table is generated from `engine/metrics.go` by
 | **Metadata cache** | | | |
 | `metricq_db_metadata_cache_requests_total` | counter | kind, result | Decoded metadata cache lookups. |
 | **Storage state** | | | |
+| `metricq_db_storage_data_sections` | gauge |  | Contiguous runs of consecutive blocks of one stream within one object; range requests to read every stream in full. |
 | `metricq_db_storage_dead_bytes` | gauge |  | Unreferenced bytes inside partially live data/index objects. |
 | `metricq_db_storage_fragment_blocks` | gauge |  | Small data blocks followed by a newer block of their stream; compaction work. |
+| `metricq_db_storage_fragmentation_ratio` | gauge |  | Data sections relative to one per stream plus one per compaction_output_object_bytes of data; about 1 is ideal, open tails add up to one per stream. |
 | `metricq_db_storage_live_bytes` | gauge |  | Referenced compressed data/index bytes in the maintenance catalog. |
 | `metricq_db_storage_objects` | gauge |  | Data and index objects tracked by the maintenance catalog. |
 | `metricq_db_storage_small_block_bytes` | gauge |  | Compressed bytes in live data blocks below 1024 records. |
 | `metricq_db_storage_small_blocks` | gauge |  | Live data blocks below 1024 records, including single stream tails. |
+| `metricq_db_storage_streams` | gauge |  | Streams (metric and HTA level) with published data. |
 | `metricq_db_storage_tail_blocks` | gauge |  | Partial blocks at the end of streams that together fit into one block: open tails, filled by later records or a deferred merge, not compaction work. |
 | **Compaction** | | | |
 | `metricq_db_compaction_active` | gauge |  | One while a background compaction job runs. |

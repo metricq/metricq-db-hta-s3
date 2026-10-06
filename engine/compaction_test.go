@@ -88,8 +88,11 @@ func checkCatalog(t *testing.T, e *Engine) {
 			walk(metric, level, root)
 		}
 	}
-	var live, stored int64
+	var live, stored, sections, dataBytes int64
 	err := e.catalogWalk(ctx, e.state.Catalog, 10000, func(o ObjectInfo) bool {
+		s, b := objectSections(o.Blocks)
+		sections += s
+		dataBytes += b
 		var bytes int64
 		for _, b := range o.Blocks {
 			expected, ok := refs[b.Entry.Blob]
@@ -114,6 +117,9 @@ func checkCatalog(t *testing.T, e *Engine) {
 	}
 	if len(refs) != 0 || live != e.state.LiveObjectBytes || stored != e.state.StoredObjectBytes {
 		t.Fatalf("catalog accounting differs: missing=%d live=%d/%d stored=%d/%d", len(refs), live, e.state.LiveObjectBytes, stored, e.state.StoredObjectBytes)
+	}
+	if e.state.SectionStatsReady && (sections != e.state.DataSections || dataBytes != e.state.DataBytes) {
+		t.Fatalf("section accounting differs: sections=%d/%d bytes=%d/%d", sections, e.state.DataSections, dataBytes, e.state.DataBytes)
 	}
 }
 func TestCompactionKeepsLiveWALAndQueryResults(t *testing.T) {

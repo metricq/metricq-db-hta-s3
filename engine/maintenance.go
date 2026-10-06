@@ -332,6 +332,7 @@ func (e *Engine) bootstrapCatalog(ctx context.Context) error {
 	if e.version == "" {
 		e.state.CatalogReady = true
 		e.state.MaintenanceStatsReady = true
+		e.state.SectionStatsReady = true
 		return nil
 	}
 	next := cloneMaintenanceManifest(e.committed)
@@ -349,11 +350,48 @@ func (e *Engine) bootstrapCatalog(ctx context.Context) error {
 	return e.publishMaintenance(ctx, next)
 }
 
+// countDataSections establishes the section statistic of a database created
+// before it existed: one pass over the catalog while publication is paused,
+// so no catalog change can slip between the count and its publication.
+func (e *Engine) countDataSections(ctx context.Context) error {
+	e.publishMu.Lock()
+	defer e.publishMu.Unlock()
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.state.SectionStatsReady || !e.state.CatalogReady || e.version == "" {
+		return nil
+	}
+	root := e.state.Catalog
+	reader := &Engine{store: e.store, metrics: e.metrics, options: e.options, sharedCatalog: e.sharedCatalog}
+	var sections, bytes int64
+	e.mu.Unlock()
+	err := reader.catalogWalk(ctx, root, math.MaxInt, func(o ObjectInfo) bool {
+		s, b := objectSections(o.Blocks)
+		sections += s
+		bytes += b
+		return true
+	})
+	e.mu.Lock()
+	if err != nil {
+		return err
+	}
+	next := cloneMaintenanceManifest(e.committed)
+	next.rootDirtyKnown = true
+	next.Generation = e.state.Generation + 1
+	next.SectionStatsReady = true
+	next.DataSections = sections
+	next.DataBytes = bytes
+	return e.publishMaintenanceLocked(ctx, next, e.preparationStore())
+}
+
 // RunMaintenance owns compaction and physical deletion. Neither operation is
 // invoked by ingest/history handlers or the ordinary flush loop in this mode.
 func (e *Engine) RunMaintenance(ctx context.Context) {
 	if err := e.bootstrapTails(ctx); err != nil && ctx.Err() == nil {
 		slog.Warn("stream tail classification failed; fragment metrics unavailable", "error", err)
+	}
+	if err := e.countDataSections(ctx); err != nil && ctx.Err() == nil {
+		slog.Warn("data section count failed; fragmentation metrics unavailable", "error", err)
 	}
 	gcTicker := time.NewTicker(time.Second)
 	defer gcTicker.Stop()
@@ -445,6 +483,7 @@ func (e *Engine) updateMaintenanceMetrics(m manifest) {
 	e.metrics.SmallBlocks.Set(float64(m.SmallBlocks))
 	e.metrics.SmallBlockBytes.Set(float64(m.SmallBlockBytes))
 	e.updateTailMetrics(m)
+	e.updateSectionMetrics(m)
 	if !m.MaintenanceStatsReady {
 		e.metrics.CandidateObjects.Set(math.NaN())
 		e.metrics.SmallBlocks.Set(math.NaN())
@@ -475,6 +514,39 @@ type MaintenanceStatus struct {
 }
 
 // MaintenanceStatus returns the current checkpoint and maintenance state.
+// updateSectionMetrics reports how scattered streams are. The reference is
+// one section per stream plus one per output object of data: what a stream
+// needs at most when packed perfectly, so about 1 is ideal (slightly below
+// when sections are exactly full) and open tails add up to one per stream.
+func (e *Engine) updateSectionMetrics(m manifest) {
+	if !m.SectionStatsReady {
+		e.metrics.DataSections.Set(math.NaN())
+		e.metrics.FragmentationRatio.Set(math.NaN())
+		return
+	}
+	// Ingestion updates metrics per batch; roots change only on publication.
+	if key := [2]uint64{m.Generation, m.Sequence}; key != e.streamCountOf {
+		e.streamCount = 0
+		for _, levels := range m.Roots {
+			for _, root := range levels {
+				if root.Key != "" {
+					e.streamCount++
+				}
+			}
+		}
+		e.streamCountOf = key
+	}
+	streams := e.streamCount
+	e.metrics.Streams.Set(float64(streams))
+	e.metrics.DataSections.Set(float64(m.DataSections))
+	ideal := float64(streams) + float64(m.DataBytes)/float64(e.options.CompactionOptions.defaults().OutputObjectBytes)
+	ratio := math.NaN()
+	if ideal > 0 {
+		ratio = float64(m.DataSections) / ideal
+	}
+	e.metrics.FragmentationRatio.Set(ratio)
+}
+
 func (e *Engine) MaintenanceStatus() MaintenanceStatus {
 	e.mu.Lock()
 	defer e.mu.Unlock()

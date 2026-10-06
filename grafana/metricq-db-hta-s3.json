@@ -1899,6 +1899,65 @@
       }
     },
     {
+      "type": "timeseries",
+      "title": "Stream locality",
+      "description": "Contiguous sections are runs of one metric level in one object, each read with one range request. The ratio relates them to one per stream plus one per compaction_output_object_bytes of data: about 1 is ideal, open tails add up to one per stream. Sections per stream grow with history, the ratio should not.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 82
+      },
+      "targets": [
+        {
+          "expr": "max(metricq_db_storage_fragmentation_ratio{token=\"$token\"})",
+          "legendFormat": "fragmentation ratio",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
+        },
+        {
+          "expr": "max(metricq_db_storage_data_sections{token=\"$token\"}) / max(metricq_db_storage_streams{token=\"$token\"})",
+          "legendFormat": "sections per stream",
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "none"
+            }
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
       "type": "row",
       "title": "Compaction",
       "collapsed": false,

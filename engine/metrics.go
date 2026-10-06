@@ -15,6 +15,7 @@ type Metrics struct {
 	MetadataCache                                                                           *prometheus.CounterVec
 	CandidateObjects, SmallBlocks, SmallBlockBytes                                          prometheus.Gauge
 	TailBlocks, FragmentBlocks                                                              prometheus.Gauge
+	Streams, DataSections, FragmentationRatio                                               prometheus.Gauge
 	CompactionRechunkedBlocks                                                               prometheus.Counter
 	CompactionInputBlocks, CompactionOutputBlocks, CompactionNoop                           prometheus.Counter
 	CompactionActive                                                                        prometheus.Gauge
@@ -130,6 +131,9 @@ func NewMetrics(r prometheus.Registerer) *Metrics {
 		SmallBlocks:               gauge("storage_small_blocks", "Live data blocks below 1024 records, including single stream tails."),
 		SmallBlockBytes:           gauge("storage_small_block_bytes", "Compressed bytes in live data blocks below 1024 records."),
 		TailBlocks:                gauge("storage_tail_blocks", "Partial blocks at the end of streams that together fit into one block: open tails, filled by later records or a deferred merge, not compaction work."),
+		Streams:                   gauge("storage_streams", "Streams (metric and HTA level) with published data."),
+		DataSections:              gauge("storage_data_sections", "Contiguous runs of consecutive blocks of one stream within one object; range requests to read every stream in full."),
+		FragmentationRatio:        gauge("storage_fragmentation_ratio", "Data sections relative to one per stream plus one per compaction_output_object_bytes of data; about 1 is ideal, open tails add up to one per stream."),
 		FragmentBlocks:            gauge("storage_fragment_blocks", "Small data blocks followed by a newer block of their stream; compaction work."),
 		CompactionRechunkedBlocks: counter("compaction_rechunked_blocks_total", "Source blocks rewritten to move a fragment towards the end of its stream."),
 		CompactionInputBlocks:     counter("compaction_input_blocks_total", "Source blocks in successfully published jobs."),

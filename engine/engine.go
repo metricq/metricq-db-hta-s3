@@ -151,6 +151,11 @@ type manifest struct {
 	LiveObjectBytes, StoredObjectBytes                 int64
 	LiveObjects                                        int64
 
+	// Contiguous data sections (consecutive blocks of one stream adjacent in
+	// one object) and data block bytes, summed over the catalog.
+	SectionStatsReady       bool
+	DataSections, DataBytes int64
+
 	Version    int
 	Generation uint64
 	Sequence   uint64
@@ -219,6 +224,8 @@ type Engine struct {
 	queryBudget              *queryBudget
 	tailBlocks               int // sum of open suffix blocks over tails
 	tailsKnown               bool
+	streamCount              int       // streams with data in the manifest of streamCountOf
+	streamCountOf            [2]uint64 // generation and sequence
 	state                    manifest
 	committed                manifest
 	pins                     map[uint64]int

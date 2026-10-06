@@ -171,6 +171,11 @@ panel("Fragmentation", [(f"max(metricq_db_storage_fragment_blocks{T})", "fragmen
                   "Open tails are the newest partial block of each stream and only fill with new records.")
 panel("Small block share", [(f"max(metricq_db_storage_small_block_bytes{T}) / max(metricq_db_storage_live_bytes{T})", "small / live")],
       "percentunit")
+panel("Stream locality", [(f"max(metricq_db_storage_fragmentation_ratio{T})", "fragmentation ratio"),
+                          (f"max(metricq_db_storage_data_sections{T}) / max(metricq_db_storage_streams{T})", "sections per stream")], "short",
+      description="Contiguous sections are runs of one metric level in one object, each read with one range request. "
+                  "The ratio relates them to one per stream plus one per compaction_output_object_bytes of data: about 1 is ideal, "
+                  "open tails add up to one per stream. Sections per stream grow with history, the ratio should not.")
 
 newrow("Compaction")
 panel("Jobs", [(f"sum(rate(metricq_db_compaction_jobs_total{T}[$__rate_interval]))", "published"),

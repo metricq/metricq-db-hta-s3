@@ -95,6 +95,19 @@ near zero; a steady rise means compaction falls behind. `checkpoint_blocks_total
 inflow of new partial blocks; `compaction_input_blocks_total −
 compaction_output_blocks_total` is the outflow.
 
+`storage_data_sections` counts contiguous sections: runs of consecutive blocks
+of one metric level stored back to back in one object. A query reads each
+section with one range request, so the count is the number of requests needed
+to read every stream in full. `storage_fragmentation_ratio` relates it to one
+section per stream (`storage_streams`) plus one per
+`compaction_output_object_bytes` of data. About 1 is ideal; the open tail of
+each stream adds up to one more section per stream, and the unsettled tiers of
+locality compaction add a few more, so values up to about 2–3 are healthy for
+many small streams. Sections per stream grow with history, the ratio should
+not: a steady rise means locality compaction falls behind. A database created
+before this statistic counts it once at startup, pausing publication for one
+catalog pass.
+
 ### Compaction throughput and metadata
 
 `compaction_continuous=true` wakes the background worker after a successful

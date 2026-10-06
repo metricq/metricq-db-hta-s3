@@ -383,6 +383,32 @@ func candidateKey(o ObjectInfo) string {
 	rank := 999 - int(999*(o.Size-o.LiveBytes)/o.Size)
 	return fmt.Sprintf("%03d/%s", rank, o.Key)
 }
+
+// objectSections counts the contiguous data sections of one object: runs of
+// blocks of one stream, adjacent in the object (gaps up to maxCoalescedGap)
+// and ascending in time. A query reads each with one range request, so the
+// sum over all objects is the request count of reading every stream in full.
+func objectSections(blocks []BlockInfo) (sections, bytes int64) {
+	data := make([]BlockInfo, 0, len(blocks))
+	for _, b := range blocks {
+		if !b.Index {
+			data = append(data, b)
+		}
+	}
+	sort.Slice(data, func(i, j int) bool { return data[i].Entry.Blob.Offset < data[j].Entry.Blob.Offset })
+	for i, b := range data {
+		bytes += b.Entry.Blob.Length
+		if i > 0 {
+			prev := data[i-1]
+			if b.Metric == prev.Metric && b.Level == prev.Level && b.Entry.First > prev.Entry.Last && b.Entry.Blob.Offset-prev.Entry.Blob.Offset-prev.Entry.Blob.Length <= maxCoalescedGap {
+				continue
+			}
+		}
+		sections++
+	}
+	return sections, bytes
+}
+
 func (e *Engine) catalogChanges(ctx context.Context, next *manifest, changes map[string]*ObjectInfo) ([]string, error) {
 	uploads := newInventoryUploads(ctx, func(ctx context.Context, p *pack) error {
 		absent := ""
@@ -406,6 +432,11 @@ func (e *Engine) catalogChanges(ctx context.Context, next *manifest, changes map
 					next.SmallBlocks--
 					next.SmallBlockBytes -= b.Entry.Blob.Length
 				}
+			}
+			if next.SectionStatsReady {
+				sections, bytes := objectSections(old.Blocks)
+				next.DataSections -= sections
+				next.DataBytes -= bytes
 			}
 			next.LiveObjectBytes -= old.LiveBytes
 			next.StoredObjectBytes -= old.Size
@@ -434,6 +465,11 @@ func (e *Engine) catalogChanges(ctx context.Context, next *manifest, changes map
 					next.SmallBlocks++
 					next.SmallBlockBytes += b.Entry.Blob.Length
 				}
+			}
+			if next.SectionStatsReady {
+				sections, bytes := objectSections(value.Blocks)
+				next.DataSections += sections
+				next.DataBytes += bytes
 			}
 			next.LiveObjectBytes += value.LiveBytes
 			next.StoredObjectBytes += value.Size

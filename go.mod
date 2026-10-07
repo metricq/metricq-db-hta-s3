@@ -8,6 +8,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/credentials v1.20.6
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.113.4
 	github.com/aws/smithy-go v1.28.1
+	github.com/klauspost/compress v1.19.1
 	github.com/metricq/metricq-go v0.0.0-20261007103904-6642e6368347
 	github.com/prometheus/client_golang v1.24.1
 	github.com/prometheus/client_model v0.6.2

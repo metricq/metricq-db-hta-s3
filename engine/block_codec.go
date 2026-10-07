@@ -2,9 +2,9 @@ package engine
 
 import (
 	"bytes"
-	"compress/gzip"
 	"encoding/binary"
 	"fmt"
+	"github.com/klauspost/compress/gzip"
 	"io"
 	"math"
 	"sort"

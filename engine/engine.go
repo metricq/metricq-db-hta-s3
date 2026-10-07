@@ -2,11 +2,11 @@ package engine
 
 import (
 	"bytes"
-	"compress/gzip"
 	"context"
 	"encoding/gob"
 	"errors"
 	"fmt"
+	"github.com/klauspost/compress/gzip"
 	"io"
 	"log/slog"
 	"math"

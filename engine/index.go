@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"github.com/metricq/metricq-db-hta-s3/hta"
 	"io"
 	"time"
 
@@ -29,6 +30,47 @@ type indexEntry struct {
 	First, Last int64
 	Blob        blob
 	Records     int // Physical records in a data block; zero for internal edges.
+	// agg aggregates the entry's records, or all records below an internal
+	// edge. Raw values count from the previous value of their stream, so a
+	// raw entry's ActiveTime is Last minus that previous time and adjacent
+	// entries add up. Only index pages store it; catalog and job descriptors
+	// (gob) leave it out.
+	agg hta.Aggregate
+}
+
+// blockAggregate aggregates the records of one block. prev is the time of
+// the stream's value before the first record (its own time for the first
+// value of a series); aggregate levels need none.
+func blockAggregate(records []hta.Record, prev int64) hta.Aggregate {
+	a := hta.Empty()
+	for _, r := range records {
+		if r.Level == 0 {
+			a.Add(hta.Value(r.Value, r.Time-prev, 1))
+			prev = r.Time
+		} else {
+			a.Add(r.Aggregate.Times((r.LastTime() + r.Level - r.Time) / r.Level))
+		}
+	}
+	return a
+}
+
+// edgeTo is the parent entry of a page: its time range and the sum of its
+// entries' aggregates.
+func edgeTo(n indexNode, ref blob) indexEntry {
+	edge := indexEntry{First: n.Entries[0].First, Last: n.Entries[len(n.Entries)-1].Last, Blob: ref, agg: hta.Empty()}
+	for _, entry := range n.Entries {
+		edge.agg.Add(entry.agg)
+	}
+	return edge
+}
+
+// rawPrevious is the time of the value before a raw entry's first record.
+func (entry indexEntry) rawPrevious() int64 { return entry.Last - entry.agg.ActiveTime }
+
+// withoutAggregate compares descriptors from the catalog, which has none.
+func (entry indexEntry) withoutAggregate() indexEntry {
+	entry.agg = hta.Aggregate{}
+	return entry
 }
 
 type indexNode struct {
@@ -162,7 +204,7 @@ func writeNode(p *pack, n indexNode) (indexEntry, error) {
 	if err != nil {
 		return indexEntry{}, err
 	}
-	edge := indexEntry{First: n.Entries[0].First, Last: n.Entries[len(n.Entries)-1].Last, Blob: p.add(b)}
+	edge := edgeTo(n, p.add(b))
 	if p.nodes != nil {
 		p.nodes[edge.Blob] = indexNode{Leaf: n.Leaf, Entries: append([]indexEntry(nil), n.Entries...)}
 	}
@@ -242,7 +284,7 @@ func (e *Engine) appendNode(ctx context.Context, ptr blob, items []indexEntry, p
 		}
 		if len(n.Entries) == indexFanout {
 			edges, err := writeNodes(p, true, items)
-			return append([]indexEntry{{First: n.Entries[0].First, Last: n.Entries[len(n.Entries)-1].Last, Blob: ptr}}, edges...), err
+			return append([]indexEntry{edgeTo(n, ptr)}, edges...), err
 		}
 		combined := append(append([]indexEntry(nil), n.Entries...), items...)
 		p.retired = append(p.retired, ptr)
@@ -256,7 +298,7 @@ func (e *Engine) appendNode(ctx context.Context, ptr blob, items []indexEntry, p
 	if len(n.Entries) == indexFanout && children[0] == n.Entries[last] {
 		// The old full page is unchanged; only its new siblings need writing.
 		edges, err := writeNodes(p, false, children[1:])
-		return append([]indexEntry{{First: n.Entries[0].First, Last: n.Entries[last].Last, Blob: ptr}}, edges...), err
+		return append([]indexEntry{edgeTo(n, ptr)}, edges...), err
 	}
 	combined := append(append([]indexEntry(nil), n.Entries[:last]...), children...)
 	p.retired = append(p.retired, ptr)

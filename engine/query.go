@@ -34,24 +34,9 @@ const maxCoalescedGap = 64 << 10
 
 func recordsCost(n int) int64 { return int64(n) * 128 }
 
+// records reads the records of a level in [begin, end]; raw reads include the
+// blocks around the window for boundary semantics.
 func (q *reader) records(level, begin, end int64) ([]hta.Record, error) {
-	return q.recordsWithNeighbors(level, begin, end, true)
-}
-
-// recordsWithNeighbors reads the records of a level in [begin, end]. Raw
-// reads for timelines include the blocks around the window (neighbors);
-// without, only the block holding the first value at or after end is added,
-// and only if the window's blocks end before it: all a single aggregate needs.
-func (q *reader) recordsWithNeighbors(level, begin, end int64, neighbors bool) ([]hta.Record, error) {
-	entries, err := q.blockEntries(level, begin, end, neighbors)
-	if err != nil {
-		return nil, err
-	}
-	return q.recordsOf(level, entries)
-}
-
-// blockEntries selects the index entries recordsWithNeighbors reads.
-func (q *reader) blockEntries(level, begin, end int64, neighbors bool) ([]indexEntry, error) {
 	root := q.e.state.Roots[q.metric][level]
 	var entries []indexEntry
 	lookupBegin, lookupEnd := begin, end
@@ -62,7 +47,7 @@ func (q *reader) blockEntries(level, begin, end int64, neighbors bool) ([]indexE
 		// FLEX includes the bucket containing begin, including empty runs.
 		lookupBegin = begin - begin%level
 		lookupEnd = end - 1
-	} else if neighbors {
+	} else {
 		if prior, err := q.e.indexNeighborEntry(q.ctx, root, begin, true); err != nil {
 			return nil, err
 		} else if prior.Blob.Key != "" {
@@ -72,17 +57,13 @@ func (q *reader) blockEntries(level, begin, end int64, neighbors bool) ([]indexE
 	if err := q.e.indexRangeEntries(q.ctx, root, lookupBegin, lookupEnd, &entries); err != nil {
 		return nil, err
 	}
-	if level == 0 && (neighbors || len(entries) == 0 || entries[len(entries)-1].Last < end) {
+	if level == 0 {
 		if next, err := q.e.indexNeighborEntry(q.ctx, root, end, false); err != nil {
 			return nil, err
 		} else if next.Blob.Key != "" {
 			entries = append(entries, next)
 		}
 	}
-	return entries, nil
-}
-
-func (q *reader) recordsOf(level int64, entries []indexEntry) ([]hta.Record, error) {
 	// Size the read from the index before fetching anything: reject requests
 	// whose response would be too large and reserve memory for the decoded
 	// records, which are held twice (block cache of this query and result).
@@ -254,44 +235,13 @@ func (q *reader) fetchRanges(refs []blob, misses []int, blocks [][]hta.Record) e
 func wire(a hta.Aggregate) *metricq.HistoryResponse_Aggregate {
 	return &metricq.HistoryResponse_Aggregate{Minimum: a.Minimum, Maximum: a.Maximum, Sum: a.Sum, Count: a.Count, Integral: a.Integral, ActiveTime: a.ActiveTime}
 }
-func (q *reader) rawAggregate(begin, end int64) (hta.Aggregate, error) {
-	a := hta.Empty()
-	rs, err := q.recordsWithNeighbors(0, begin, end, false)
-	if err != nil {
-		return a, err
-	}
-	previous := begin
-	for _, r := range rs {
-		if r.Time < begin {
-			continue
-		}
-		if r.Time >= end {
-			a.Add(hta.Value(r.Value, end-previous, 0))
-			break
-		}
-		a.Add(hta.Value(r.Value, r.Time-previous, 1))
-		previous = r.Time
-	}
-	return a, nil
-}
-func (q *reader) levelAggregate(begin, end, level int64) (hta.Aggregate, error) {
-	a := hta.Empty()
-	if begin >= end {
-		return a, nil
-	}
-	rs, err := q.records(level, begin, end)
-	if err != nil {
-		return a, err
-	}
-	for _, r := range rs {
-		lo := max(r.Time, begin)
-		hi := min(r.LastTime()+level, end)
-		if lo < hi {
-			a.Add(r.Aggregate.Times((hi - lo) / level))
-		}
-	}
-	return a, nil
-}
+
+// aggregate computes a single aggregate from the raw index. Each entry
+// stores the aggregate of its subtree, counting its first value from the
+// stream's previous one, so an entry whose values and their preceding
+// durations lie inside the window contributes its stored aggregate. Only the
+// blocks at the two window borders are read, in one round trip, independent
+// of the window length. Values not yet in the index come last.
 func (q *reader) aggregate(begin, end int64) (hta.Aggregate, error) {
 	a := hta.Empty()
 	s := q.e.state.Series[q.metric]
@@ -300,122 +250,84 @@ func (q *reader) aggregate(begin, end int64) (hta.Aggregate, error) {
 	}
 	begin = max(begin, s.First.Time)
 	end = min(end, s.Last.Time)
-	level := s.Config.IntervalMin
-	ceil := func(t, l int64) int64 {
-		if t%l == 0 {
-			return t
-		}
-		if t > math.MaxInt64-(l-t%l) {
-			return math.MaxInt64
-		}
-		return t + l - t%l
+	// The plan lists, in time order, stored aggregates and border blocks.
+	type step struct {
+		entry indexEntry
+		read  bool
 	}
-	nb, ne := ceil(begin, level), end-end%level
-	if nb >= ne {
-		return q.rawAggregate(begin, end)
-	}
-	type span struct{ begin, end, level int64 }
-	var spans []span
-	for _, part := range [][2]int64{{begin, nb}, {ne, end}} {
-		if part[0] < part[1] {
-			spans = append(spans, span{begin: part[0], end: part[1]})
+	var plan []step
+	var walk func(ref blob) error
+	walk = func(ref blob) error {
+		if ref.Key == "" {
+			return nil
 		}
-	}
-	begin, end = nb, ne
-	for {
-		if level > s.Config.IntervalMax/s.Config.IntervalFactor {
-			spans = append(spans, span{begin: begin, end: end, level: level})
-			break
-		}
-		next := level * s.Config.IntervalFactor
-		nb, ne = ceil(begin, next), end-end%next
-		if nb >= ne {
-			spans = append(spans, span{begin: begin, end: end, level: level})
-			break
-		}
-		for _, part := range [][2]int64{{begin, nb}, {ne, end}} {
-			if part[0] < part[1] {
-				spans = append(spans, span{begin: part[0], end: part[1], level: level})
-			}
-		}
-		begin, end, level = nb, ne, next
-	}
-	// Levels are independent: read them in parallel. Within a level, the
-	// blocks of both borders (often the same block) are fetched together
-	// first, so the query needs one store round trip and reads no block
-	// twice. Results combine in the original order for stable floating sums.
-	type levelJob struct {
-		level   int64
-		indices []int
-	}
-	var jobs []levelJob
-	byLevel := map[int64]int{}
-	for i, part := range spans {
-		j, ok := byLevel[part.level]
-		if !ok {
-			j = len(jobs)
-			byLevel[part.level] = j
-			jobs = append(jobs, levelJob{level: part.level})
-		}
-		jobs[j].indices = append(jobs[j].indices, i)
-	}
-	results := make([]hta.Aggregate, len(spans))
-	errs := make([]error, len(jobs))
-	var wg sync.WaitGroup
-	for j, job := range jobs {
-		wg.Add(1)
-		go func(j int, job levelJob) {
-			defer wg.Done()
-			localEngine := &Engine{store: q.e.store, options: q.e.options, metrics: q.e.metrics, state: q.e.state, pending: q.e.pending, flushing: q.e.flushing, nodeCache: make(map[blob]indexNode), sharedNodes: q.e.sharedNodes, sharedBlocks: q.e.sharedBlocks}
-			local := reader{e: localEngine, ctx: q.ctx, metric: q.metric, cache: make(map[blob][]hta.Record), res: q.res}
-			var refs []blob
-			seen := map[blob]bool{}
-			records := 0
-			for _, i := range job.indices {
-				part := spans[i]
-				entries, err := local.blockEntries(part.level, part.begin, part.end, false)
-				if err != nil {
-					errs[j] = err
-					return
-				}
-				for _, entry := range entries {
-					if !seen[entry.Blob] {
-						seen[entry.Blob] = true
-						refs = append(refs, entry.Blob)
-						records += entry.Records
-					}
-				}
-			}
-			if len(refs) > 0 {
-				if errs[j] = local.res.reserve(q.ctx, recordsCost(records)); errs[j] != nil {
-					return
-				}
-				if _, errs[j] = local.fetchBlocks(refs); errs[j] != nil {
-					return
-				}
-			}
-			for _, i := range job.indices {
-				part := spans[i]
-				if part.level == 0 {
-					results[i], errs[j] = local.rawAggregate(part.begin, part.end)
-				} else {
-					results[i], errs[j] = local.levelAggregate(part.begin, part.end, part.level)
-				}
-				if errs[j] != nil {
-					return
-				}
-			}
-		}(j, job)
-	}
-	wg.Wait()
-	for _, err := range errs {
+		n, err := q.e.readNode(q.ctx, ref)
 		if err != nil {
-			return a, err
+			return err
+		}
+		for _, entry := range n.Entries {
+			switch {
+			case entry.Last < begin:
+			case entry.rawPrevious() >= end:
+				return nil
+			case entry.rawPrevious() >= begin && entry.Last < end:
+				plan = append(plan, step{entry: entry})
+			case n.Leaf:
+				plan = append(plan, step{entry: entry, read: true})
+			default:
+				if err := walk(entry.Blob); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}
+	if err := walk(q.e.state.Roots[q.metric][0]); err != nil {
+		return a, err
+	}
+	var refs []blob
+	records := 0
+	for _, st := range plan {
+		if st.read {
+			refs = append(refs, st.entry.Blob)
+			records += st.entry.Records
 		}
 	}
-	for _, result := range results {
-		a.Add(result)
+	if err := q.res.reserve(q.ctx, recordsCost(records)); err != nil {
+		return a, err
 	}
+	blocks, err := q.fetchBlocks(refs)
+	if err != nil {
+		return a, err
+	}
+	// Raw values hold from the previous value (or the window start) to their
+	// time; the first value at or after end holds up to end.
+	previous, done := begin, false
+	add := func(rs []hta.Record) {
+		for _, r := range rs {
+			if done || r.Time < begin {
+				continue
+			}
+			if r.Time >= end {
+				a.Add(hta.Value(r.Value, end-previous, 0))
+				done = true
+				return
+			}
+			a.Add(hta.Value(r.Value, r.Time-previous, 1))
+			previous = r.Time
+		}
+	}
+	for _, st := range plan {
+		if !st.read {
+			a.Add(st.entry.agg)
+			previous = st.entry.Last
+			continue
+		}
+		add(blocks[0])
+		blocks = blocks[1:]
+	}
+	add(q.e.flushing.stream(q.metric, 0))
+	add(q.e.pending.stream(q.metric, 0))
 	return a, nil
 }
 

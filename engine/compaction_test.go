@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"testing"
@@ -120,6 +121,55 @@ func checkCatalog(t *testing.T, e *Engine) {
 	}
 	if e.state.SectionStatsReady && (sections != e.state.DataSections || dataBytes != e.state.DataBytes) {
 		t.Fatalf("section accounting differs: sections=%d/%d bytes=%d/%d", sections, e.state.DataSections, dataBytes, e.state.DataBytes)
+	}
+	checkIndexAggregates(t, e)
+}
+
+// checkIndexAggregates recomputes every index entry's aggregate: leaves from
+// their block (raw values counted from the preceding entry's last value),
+// internal edges as the sum of their page.
+func checkIndexAggregates(t *testing.T, e *Engine) {
+	t.Helper()
+	ctx := context.Background()
+	for metric, levels := range e.state.Roots {
+		for level, root := range levels {
+			if root.Key == "" {
+				continue
+			}
+			prev := int64(math.MinInt64)
+			var walk func(ref blob) indexEntry
+			walk = func(ref blob) indexEntry {
+				n, err := e.readNode(ctx, ref)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, entry := range n.Entries {
+					if !n.Leaf {
+						if got := walk(entry.Blob); got != entry {
+							t.Fatalf("%s level %d: edge %+v differs from its page %+v", metric, level, entry, got)
+						}
+						continue
+					}
+					b, err := e.readBlob(ctx, entry.Blob)
+					if err != nil {
+						t.Fatal(err)
+					}
+					var records []hta.Record
+					if err := decode(b, &records); err != nil {
+						t.Fatal(err)
+					}
+					if prev == math.MinInt64 {
+						prev = records[0].Time
+					}
+					if want := blockAggregate(records, prev); entry.agg != want {
+						t.Fatalf("%s level %d block %s@%d: aggregate %+v, want %+v", metric, level, entry.Blob.Key, entry.Blob.Offset, entry.agg, want)
+					}
+					prev = entry.Last
+				}
+				return edgeTo(n, ref)
+			}
+			walk(root)
+		}
 	}
 }
 func TestCompactionKeepsLiveWALAndQueryResults(t *testing.T) {

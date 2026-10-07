@@ -41,13 +41,16 @@ func closeTo(a, b float64) bool {
 	return a == b || math.Abs(a-b) <= 1e-9*max(math.Abs(a), math.Abs(b))
 }
 
-// Hierarchical single aggregates (borders from finer levels, the middle from
-// the coarsest fitting level) equal the aggregate of the raw values for
-// windows from one unit to most of the history.
-func TestAggregateMatchesRawAcrossLevels(t *testing.T) {
+// Single aggregates from the index (stored aggregates inside the window,
+// border blocks read) equal the aggregate of the raw values for windows from
+// one unit to the whole history, after compaction rewrote blocks and with
+// values still in memory.
+func TestAggregateMatchesRaw(t *testing.T) {
 	ctx := context.Background()
 	config := map[string]hta.Config{"x": {IntervalMin: 100, IntervalMax: 10_000_000, IntervalFactor: 10}}
-	e, err := Open(ctx, newStore(), Options{WALDirectory: t.TempDir(), IngestMemoryLimitBytes: 64 << 20}, config, NewMetrics(prometheus.NewRegistry()))
+	options := maintenanceOptions(t.TempDir(), true)
+	options.IngestMemoryLimitBytes = 64 << 20
+	e, err := Open(ctx, newStore(), options, config, NewMetrics(prometheus.NewRegistry()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,7 +69,8 @@ func TestAggregateMatchesRawAcrossLevels(t *testing.T) {
 		if err := e.Ingest(ctx, "x", chunk(points[start:min(start+1000, len(points))]...)); err != nil {
 			t.Fatal(err)
 		}
-		if start%50_000 == 0 {
+		// Irregular checkpoints leave partial blocks for compaction.
+		if r.IntN(20) == 0 {
 			if err := e.Flush(ctx); err != nil {
 				t.Fatal(err)
 			}
@@ -75,6 +79,30 @@ func TestAggregateMatchesRawAcrossLevels(t *testing.T) {
 	if err := e.Flush(ctx); err != nil {
 		t.Fatal(err)
 	}
+	// Merges, rechunks and locality rewrite blocks and carry or recompute
+	// their aggregates; the last values stay unflushed in memory.
+	for i := 0; i < 200; i++ {
+		before := metricValue(t, e.metrics.Compactions)
+		if err := e.CompactOnce(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if metricValue(t, e.metrics.Compactions) == before && !e.compactionScanMore {
+			break
+		}
+	}
+	if metricValue(t, e.metrics.Compactions) == 0 {
+		t.Fatal("fixture: no compaction")
+	}
+	checkIndexAggregates(t, e)
+	tail := make([]hta.Point, 500)
+	for i := range tail {
+		now += 1 + r.Int64N(30)
+		tail[i] = hta.Point{Time: now, Value: float64(i % 17)}
+	}
+	if err := e.Ingest(ctx, "x", chunk(tail...)); err != nil {
+		t.Fatal(err)
+	}
+	points = append(points, tail...)
 	span := points[len(points)-1].Time - points[0].Time
 	requests := func() float64 { sum, _ := histogramSum(t, e.metrics.QueryDataRequests); return sum }
 	var cold float64

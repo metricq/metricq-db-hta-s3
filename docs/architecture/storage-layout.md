@@ -29,15 +29,22 @@ concatenated into one object ("pack") so a checkpoint needs few PUTs.
 ## Index
 
 Each stream has a copy-on-write B-tree with fan-out 64. Leaf entries describe
-blocks (`first` and `last` time, record count, block address); inner entries
-describe child pages. Index pages are themselves blocks in `index/` objects.
+blocks (`first` and `last` time, record count, block address and the
+aggregate of the block's records); inner entries describe child pages with
+the sum of their entries' aggregates. A raw value counts from the stream's
+previous value, so a raw entry's active time is its `last` time minus that
+previous time, and the aggregates of adjacent entries add up exactly to the
+aggregate of their combined values. Checkpoints compute them from the
+records they write; compaction keeps them for copied blocks and recomputes
+them for merged and rechunked ones. Index pages are themselves blocks in `index/` objects.
 Appending to a stream rewrites only its rightmost path; old roots stay valid,
 so concurrent readers keep a consistent view.
 
 ## Data/index block codec
 
 New data, index and root metadata pages begin with a six-byte envelope: ASCII
-`MQHB`, version byte `1`, and kind byte (`1` data, `2` index, `3` root page).
+`MQHB`, version byte `1`, and kind byte (`1` data, `6` index, `3` root page;
+kind `2` were index pages without aggregates, no longer read).
 An independent gzip BestSpeed
 stream follows. The range SHA-256 covers the envelope and compressed stream.
 Unknown versions/kinds, wrong destination types, truncation, invalid counts,
@@ -59,8 +66,10 @@ into records and validates the complete gzip stream before returning them.
 Index payloads contain a one-byte leaf flag, `uint16` entry count and `uint16`
 key count, each bounded by fan-out 64. Each dictionary key has a `uint16` byte
 length followed by its original bytes. Keys are shared within a page. Each
-70-byte entry contains First and Last (`int64`), key ID (`uint16`), Offset and
-Length (`int64`), SHA-256 (32 bytes), and Records (`uint32`). Keys are bounded to
+118-byte entry contains First and Last (`int64`), key ID (`uint16`), Offset and
+Length (`int64`), SHA-256 (32 bytes), Records (`uint32`), and the aggregate:
+Minimum, Maximum, Sum (IEEE-754 bits), Count (`uint64`), Integral (IEEE-754
+bits) and ActiveTime (`int64`). Keys are bounded to
 65535 bytes, and total decompressed size is bounded before allocation grows.
 Existing index ordering/reference validation remains in its callers.
 

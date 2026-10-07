@@ -17,7 +17,8 @@ import (
 const blockMagic = "MQHB"
 const blockVersion byte = 1
 const recordKind byte = 1
-const indexKind byte = 2
+
+const indexKind byte = 6 // kind 2 were index pages without entry aggregates
 const rootKind byte = 3
 const heldKind byte = 4
 const stateKind byte = 5
@@ -26,6 +27,10 @@ const stateKind byte = 5
 const maxHeldPayloadBytes = 512 << 20
 const recordWireBytes = 80
 const maxIndexKeyBytes = 65535
+
+// Index entry fields: times, key id, offset, length, hash, records and the
+// six aggregate fields.
+const indexEntryBytes = 118
 
 func encodeBinaryBlock(v any) ([]byte, bool, error) {
 	var payload []byte
@@ -57,7 +62,7 @@ func encodeBinaryBlock(v any) ([]byte, bool, error) {
 				keys = append(keys, entry.Blob.Key)
 			}
 		}
-		size := 5 + len(value.Entries)*70
+		size := 5 + len(value.Entries)*indexEntryBytes
 		for _, key := range keys {
 			size += 2 + len(key)
 		}
@@ -81,6 +86,10 @@ func encodeBinaryBlock(v any) ([]byte, bool, error) {
 			payload = binary.LittleEndian.AppendUint64(payload, uint64(entry.Blob.Length))
 			payload = append(payload, entry.Blob.Hash[:]...)
 			payload = binary.LittleEndian.AppendUint32(payload, uint32(entry.Records))
+			a := entry.agg
+			for _, f := range [...]uint64{math.Float64bits(a.Minimum), math.Float64bits(a.Maximum), math.Float64bits(a.Sum), a.Count, math.Float64bits(a.Integral), uint64(a.ActiveTime)} {
+				payload = binary.LittleEndian.AppendUint64(payload, f)
+			}
 		}
 	case heldDelta:
 		kind = heldKind
@@ -138,7 +147,7 @@ func decodeBinaryBlock(b []byte, v any) error {
 		if kind != indexKind {
 			return fmt.Errorf("block payload type mismatch")
 		}
-		limit = 5 + indexFanout*(maxIndexKeyBytes+2+70)
+		limit = 5 + indexFanout*(maxIndexKeyBytes+2+indexEntryBytes)
 	case *map[string]map[int64]blob:
 		if kind != rootKind {
 			return fmt.Errorf("block payload type mismatch")
@@ -211,47 +220,7 @@ func decodeBinaryPayload(b []byte, v any) error {
 		}
 		*value = records
 	case *indexNode:
-		if len(b) < 5 {
-			return io.ErrUnexpectedEOF
-		}
-		count := int(binary.LittleEndian.Uint16(b[1:]))
-		keyCount := int(binary.LittleEndian.Uint16(b[3:]))
-		if b[0] > 1 || count > indexFanout || keyCount > count {
-			return fmt.Errorf("invalid index header")
-		}
-		n := indexNode{Leaf: b[0] == 1}
-		keys := make([]string, keyCount)
-		pos := 5
-		for i := range keys {
-			if len(b)-pos < 2 {
-				return io.ErrUnexpectedEOF
-			}
-			size := int(binary.LittleEndian.Uint16(b[pos:]))
-			pos += 2
-			if size > len(b)-pos {
-				return io.ErrUnexpectedEOF
-			}
-			keys[i] = string(b[pos : pos+size])
-			pos += size
-		}
-		if len(b)-pos != count*70 {
-			return fmt.Errorf("invalid index block size")
-		}
-		if count > 0 {
-			n.Entries = make([]indexEntry, count)
-		}
-		for i := range n.Entries {
-			p := b[pos+i*70:]
-			id := int(binary.LittleEndian.Uint16(p[16:]))
-			if id >= len(keys) {
-				return fmt.Errorf("invalid index key reference")
-			}
-			entry := indexEntry{First: int64(binary.LittleEndian.Uint64(p)), Last: int64(binary.LittleEndian.Uint64(p[8:])), Records: int(binary.LittleEndian.Uint32(p[66:]))}
-			entry.Blob = blob{Key: keys[id], Offset: int64(binary.LittleEndian.Uint64(p[18:])), Length: int64(binary.LittleEndian.Uint64(p[26:]))}
-			copy(entry.Blob.Hash[:], p[34:66])
-			n.Entries[i] = entry
-		}
-		*value = n
+		return decodeIndexPayload(b, value)
 	case *map[string]map[int64]blob:
 		return decodeRootPayload(b, value)
 	case *heldDelta:
@@ -261,6 +230,53 @@ func decodeBinaryPayload(b []byte, v any) error {
 	default:
 		return fmt.Errorf("unsupported binary block destination")
 	}
+	return nil
+}
+
+func decodeIndexPayload(b []byte, value *indexNode) error {
+	if len(b) < 5 {
+		return io.ErrUnexpectedEOF
+	}
+	count := int(binary.LittleEndian.Uint16(b[1:]))
+	keyCount := int(binary.LittleEndian.Uint16(b[3:]))
+	if b[0] > 1 || count > indexFanout || keyCount > count {
+		return fmt.Errorf("invalid index header")
+	}
+	n := indexNode{Leaf: b[0] == 1}
+	keys := make([]string, keyCount)
+	pos := 5
+	for i := range keys {
+		if len(b)-pos < 2 {
+			return io.ErrUnexpectedEOF
+		}
+		size := int(binary.LittleEndian.Uint16(b[pos:]))
+		pos += 2
+		if size > len(b)-pos {
+			return io.ErrUnexpectedEOF
+		}
+		keys[i] = string(b[pos : pos+size])
+		pos += size
+	}
+	if len(b)-pos != count*indexEntryBytes {
+		return fmt.Errorf("invalid index block size")
+	}
+	if count > 0 {
+		n.Entries = make([]indexEntry, count)
+	}
+	for i := range n.Entries {
+		p := b[pos+i*indexEntryBytes:]
+		id := int(binary.LittleEndian.Uint16(p[16:]))
+		if id >= len(keys) {
+			return fmt.Errorf("invalid index key reference")
+		}
+		entry := indexEntry{First: int64(binary.LittleEndian.Uint64(p)), Last: int64(binary.LittleEndian.Uint64(p[8:])), Records: int(binary.LittleEndian.Uint32(p[66:]))}
+		entry.Blob = blob{Key: keys[id], Offset: int64(binary.LittleEndian.Uint64(p[18:])), Length: int64(binary.LittleEndian.Uint64(p[26:]))}
+		copy(entry.Blob.Hash[:], p[34:66])
+		f := func(k int) uint64 { return binary.LittleEndian.Uint64(p[70+8*k:]) }
+		entry.agg = hta.Aggregate{Minimum: math.Float64frombits(f(0)), Maximum: math.Float64frombits(f(1)), Sum: math.Float64frombits(f(2)), Count: f(3), Integral: math.Float64frombits(f(4)), ActiveTime: int64(f(5))}
+		n.Entries[i] = entry
+	}
+	*value = n
 	return nil
 }
 

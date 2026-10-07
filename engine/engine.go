@@ -927,17 +927,32 @@ func (e *Engine) Flush(ctx context.Context) (err error) {
 			}
 			close(work)
 			encoders.Wait()
+			// Raw entries count their first value from the stream's previous
+			// value: the last indexed one, then the preceding new block.
+			previous := make(map[int]int64)
 			for k, b := range blocks {
 				if encodeErrs[k] != nil {
 					return encodeErrs[k]
 				}
+				stream := streams[b.stream]
+				prev, ok := previous[b.stream]
+				if !ok && stream.level == 0 {
+					last, lastErr := e.lastIndexEntry(ctx, next.Roots[stream.metric][0])
+					if lastErr != nil {
+						return lastErr
+					}
+					prev = b.records[0].Time
+					if last.Blob.Key != "" {
+						prev = last.Last
+					}
+				}
+				previous[b.stream] = b.records[len(b.records)-1].LastTime()
 				if len(b.records) == maxDataBlockRecords {
 					e.metrics.FlushBlocks.WithLabelValues("full").Inc()
 				} else {
 					e.metrics.FlushBlocks.WithLabelValues("partial").Inc()
 				}
-				stream := streams[b.stream]
-				item := indexEntry{First: b.records[0].Time, Last: b.records[len(b.records)-1].LastTime(), Blob: dataPack.add(b.encoded), Records: len(b.records)}
+				item := indexEntry{First: b.records[0].Time, Last: b.records[len(b.records)-1].LastTime(), Blob: dataPack.add(b.encoded), Records: len(b.records), agg: blockAggregate(b.records, prev)}
 				updates[b.stream].items = append(updates[b.stream].items, item)
 				dataPack.descriptors = append(dataPack.descriptors, BlockInfo{Metric: stream.metric, Level: stream.level, Entry: item})
 			}

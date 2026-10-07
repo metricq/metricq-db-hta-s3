@@ -94,6 +94,8 @@ type replacement struct {
 	// pack together with its ancestors, which must change anyway: a copied
 	// page whose children move is obsolete as soon as it is written.
 	Rewrite bool
+	// Carry takes the aggregate of the replaced index entry (copied blocks).
+	Carry bool
 }
 
 // overlaps reports whether an index edge covering first..last may contain the
@@ -912,6 +914,8 @@ func (e *Engine) copyJob(ctx context.Context, job CompactionJob) (map[blob]repla
 		rechunk bool
 		parts   []BlockInfo
 		encodes [][]byte
+		// prev is the time of the raw value before the group (see blockAggregate).
+		prev int64
 	}
 	rechunkStart := make(map[blob]bool, len(job.Rechunk))
 	for _, ref := range job.Rechunk {
@@ -968,6 +972,24 @@ func (e *Engine) copyJob(ctx context.Context, job CompactionJob) (map[blob]repla
 		groups = append(groups, mergeGroup{info: b, start: i, end: end, encoded: encoded})
 		i = end
 	}
+	// Rewritten raw groups count their first value from the preceding block.
+	for i := range groups {
+		g := &groups[i]
+		if g.info.Index || g.info.Level != 0 || (g.end == g.start+1 && !g.rechunk) {
+			continue
+		}
+		e.mu.Lock()
+		root := e.state.Roots[g.info.Metric][0]
+		e.mu.Unlock()
+		before, err := indexReader.indexNeighborEntry(ctx, root, inputs[g.start].Entry.First, true)
+		if err != nil {
+			return nil, nil, err
+		}
+		g.prev = inputs[g.start].Entry.First
+		if before.Blob.Key != "" {
+			g.prev = before.Last
+		}
+	}
 	// Independent stream groups decode/encode concurrently; ordered pack
 	// assembly below preserves contiguous metric/level sections and checksums.
 	work := make(chan int)
@@ -1013,15 +1035,18 @@ func (e *Engine) copyJob(ctx context.Context, job CompactionJob) (map[blob]repla
 					continue
 				}
 				if !g.rechunk {
+					g.info.Entry.agg = blockAggregate(records, g.prev)
 					g.encoded, g.err = encode(records)
 					continue
 				}
+				prev := g.prev
 				for k := 0; k < len(records) && g.err == nil; k += maxDataBlockRecords {
 					part := records[k:min(k+maxDataBlockRecords, len(records))]
 					var b []byte
 					b, g.err = encode(part)
 					g.encodes = append(g.encodes, b)
-					g.parts = append(g.parts, BlockInfo{Metric: g.info.Metric, Level: g.info.Level, Entry: indexEntry{First: part[0].Time, Last: part[len(part)-1].LastTime(), Records: len(part)}})
+					g.parts = append(g.parts, BlockInfo{Metric: g.info.Metric, Level: g.info.Level, Entry: indexEntry{First: part[0].Time, Last: part[len(part)-1].LastTime(), Records: len(part), agg: blockAggregate(part, prev)}})
+					prev = part[len(part)-1].LastTime()
 				}
 			}
 		}()
@@ -1074,7 +1099,8 @@ func (e *Engine) copyJob(ctx context.Context, job CompactionJob) (map[blob]repla
 		if err != nil {
 			return nil, nil, err
 		}
-		replacements[inputs[g.start].Entry.Blob] = replacement{Entry: target, Index: g.info.Index, Old: inputs[g.start].Entry}
+		// A copied block keeps the aggregate of its index entry.
+		replacements[inputs[g.start].Entry.Blob] = replacement{Entry: target, Index: g.info.Index, Old: inputs[g.start].Entry, Carry: g.end == g.start+1}
 		for j := g.start + 1; j < g.end; j++ {
 			replacements[inputs[j].Entry.Blob] = replacement{Drop: true, Entry: inputs[j].Entry, Old: inputs[j].Entry}
 		}
@@ -1129,7 +1155,11 @@ func (e *Engine) replaceHistorical(ctx context.Context, root blob, replacements 
 					p.replaced[edge.Blob] = true
 				}
 				if !r.Drop {
-					entries = append(entries, r.Entry)
+					entry := r.Entry
+					if r.Carry {
+						entry.agg = edge.agg
+					}
+					entries = append(entries, entry)
 					used[r.Entry.Blob] = true
 				}
 			} else {
@@ -1213,9 +1243,9 @@ func (e *Engine) replaceHistorical(ctx context.Context, root blob, replacements 
 		}
 		p.retired = append(p.retired, root)
 		used[r.Entry.Blob] = true
-		return []indexEntry{{First: n.Entries[0].First, Last: n.Entries[len(n.Entries)-1].Last, Blob: r.Entry.Blob}}, nil
+		return []indexEntry{edgeTo(n, r.Entry.Blob)}, nil
 	}
-	return []indexEntry{{First: n.Entries[0].First, Last: n.Entries[len(n.Entries)-1].Last, Blob: root}}, nil
+	return []indexEntry{edgeTo(n, root)}, nil
 }
 
 func (e *Engine) prepareCompaction(ctx context.Context, job CompactionJob, replacements map[blob]replacement, packs []*pack, discarded []string) (manifest, error) {
@@ -1248,7 +1278,7 @@ func (e *Engine) prepareCompaction(ctx context.Context, job CompactionJob, repla
 		}
 		sourceModified = max(sourceModified, object.Modified)
 		for _, b := range object.Blocks {
-			if input, ok := want[b.Entry.Blob]; ok && input == b {
+			if input, ok := want[b.Entry.Blob]; ok && input.withoutAggregate() == b.withoutAggregate() {
 				delete(want, b.Entry.Blob)
 			}
 		}

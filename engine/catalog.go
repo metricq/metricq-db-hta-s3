@@ -26,6 +26,12 @@ type BlockInfo struct {
 	Index  bool
 }
 
+// withoutAggregate compares with catalog descriptors, which carry none.
+func (b BlockInfo) withoutAggregate() BlockInfo {
+	b.Entry = b.Entry.withoutAggregate()
+	return b
+}
+
 // ObjectInfo is the catalog entry of one object: its live blocks and sizes.
 type ObjectInfo struct {
 	Inventory         []objectInventoryPage

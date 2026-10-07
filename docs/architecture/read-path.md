@@ -6,17 +6,24 @@ the metric's unflushed records. The rest runs without locks.
 
 1. **Choose the level.** `LAST_VALUE` returns the in-memory last sample.
    `FLEX_TIMELINE` chooses the raw level or the largest aggregate level
-   within `interval_max`; `AGGREGATE` decomposes the interval over several
-   levels.
+   within `interval_max`; `AGGREGATE` uses the raw level's index (below).
 2. **Walk the index** of that stream to the blocks overlapping the requested
    window. Index pages are cached (8192 pages, shared). Raw queries also fetch
-   the neighbouring blocks for boundary values; aggregate queries do not.
+   the neighbouring blocks for boundary values.
 3. **Fetch blocks.** Blocks already decoded are served from a shared 128 MiB
    cache keyed by content hash. Missing blocks in the same object are coalesced
    into one range GET (gaps up to 64 KiB, up to 8 MiB per request, 8 requests in
    parallel); each block is verified by its SHA-256 and decoded in parallel.
 4. **Add unflushed records** (records being uploaded first, then pending ones)
    and build the response.
+
+A single `AGGREGATE` takes the stored aggregates of index entries whose
+values, and the durations preceding them, lie inside the window: whole
+subtrees for the middle of the window. It descends only along the two window
+borders and reads the border blocks, in one round trip, so its cost does not
+grow with the window length. This plays the role of the HTA decomposition
+over levels (Ilsche 2020, Figure 4.5), whose border reads would cost one block
+per level and border here.
 
 Limits: before reading any block, a query sizes its read from the index
 (records per block). It fails if the response would exceed

@@ -99,7 +99,7 @@ func (f *holdFixture) check(label string) {
 				f.t.Fatal(err)
 			}
 			got, err := f.e.Query(f.ctx, name, req)
-			if err != nil || !proto.Equal(want, got) {
+			if err != nil || !sameHistory(want, got) {
 				f.t.Fatalf("%s: %s %v differs: %v (%v)", label, name, req.Type, err, len(got.GetTimeDelta()))
 			}
 		}
@@ -324,4 +324,15 @@ func TestHoldDoesNotBlockCompaction(t *testing.T) {
 	f.check("after compaction")
 	f.restart()
 	f.check("restart after compaction")
+}
+
+// sameHistory compares responses; single aggregates may differ in the last
+// bits of sums, which add stored block aggregates in another grouping when
+// two databases cut their blocks differently.
+func sameHistory(want, got *metricq.HistoryResponse) bool {
+	a, b := want.GetAggregate(), got.GetAggregate()
+	if len(a) != 1 || len(b) != 1 || len(want.GetTimeDelta()) != 1 || len(got.GetTimeDelta()) != 1 {
+		return proto.Equal(want, got)
+	}
+	return want.GetTimeDelta()[0] == got.GetTimeDelta()[0] && a[0].Count == b[0].Count && a[0].Minimum == b[0].Minimum && a[0].Maximum == b[0].Maximum && a[0].ActiveTime == b[0].ActiveTime && closeTo(a[0].Sum, b[0].Sum) && closeTo(a[0].Integral, b[0].Integral)
 }

@@ -9,7 +9,7 @@ g = collections.defaultdict(list)
 for r in csv.DictReader(open("query-matrix-1ksa.csv")):
     g[(r["type"], int(r["metrics"]), float(r["span_s"]))].append(r)
 before = collections.defaultdict(dict)
-for r in csv.DictReader(open("query-matrix-1ksa-ae0054b.csv")):
+for r in csv.DictReader(open("query-matrix-1ksa-f33c232.csv")):
     before[(r["type"], int(r["metrics"]))].setdefault(float(r["span_s"]), []).append(r)
 before = {k: v for k, v in before.items()}
 flex = collections.defaultdict(list)
@@ -26,7 +26,7 @@ for ax, (typ, n) in zip(axes.flat, [("timeline", 1), ("timeline", 6), ("aggregat
     ci = [1.96 * st.stdev(float(r["latency_ms"]) for r in g[k]) / math.sqrt(len(g[k])) for k in keys]
     ax.errorbar(xs, means, yerr=ci, marker="o", ms=3, color="C1", capsize=2, label="metricq-db-hta-s3: end-to-end (AGGREGATE_TIMELINE, AGGREGATE)")
     old = before[(typ, n)]
-    ax.plot(sorted(old), [st.mean(float(r["latency_ms"]) for r in old[k]) for k in sorted(old)], color="gray", ls=":", label="end-to-end before raw timeline optimizations (ae0054b)")
+    ax.plot(sorted(old), [st.mean(float(r["latency_ms"]) for r in old[k]) for k in sorted(old)], color="gray", ls=":", label="end-to-end before zstd data blocks (f33c232)")
     ax.plot(xs, [st.mean(float(r["db_max_ms"]) for r in g[k]) for k in keys], color="C1", ls="--", label="metricq-db-hta-s3: database (max)")
     if typ == "timeline":
         fk = sorted(k for k in flex if k[0] == n)

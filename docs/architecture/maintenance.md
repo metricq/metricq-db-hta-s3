@@ -53,10 +53,14 @@ In order of preference:
   small objects would grow with the number of jobs. Objects below
   `compaction_output_object_bytes`/8 (at most 512 KiB) are candidates even
   when fully live; every fourth job slot, and whenever nothing else is due,
-  packs eight of them, or four that fill an eighth of the output, into one
-  data and one index pack. Fewer would not reduce the object count, since
-  each job writes packs of its own. `compaction_consolidation_jobs_total`
-  counts the jobs.
+  packs eight of them, four that fill an eighth of the output, or any group
+  containing a dirty one into one data and one index pack. Fewer clean ones
+  would not reduce the object count, since each job writes packs of its own.
+  Small objects are never evacuated one by one: evacuating a small index pack
+  rewrites its pages' ancestors, which often leaves the next small pack dirty,
+  and on the development database this chained into hundreds of one-page jobs
+  per minute. Locality outputs take part only when dirty; locality grows them
+  in tiers itself. `compaction_consolidation_jobs_total` counts the jobs.
 - **Index page relocation.** Index pages are never copied: a relocated page
   is rewritten into the job's index pack together with its ancestors, whose
   child pointers change anyway. A copied inner page whose children move

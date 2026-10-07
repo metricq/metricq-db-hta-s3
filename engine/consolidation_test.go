@@ -13,7 +13,7 @@ import (
 // consolidation limit.
 func (f *holdFixture) smallObjects() (n int) {
 	f.t.Helper()
-	limit := min(int64(smallObjectBytes), f.e.options.CompactionOptions.defaults().OutputObjectBytes/8)
+	limit := f.e.options.CompactionOptions.defaults().consolidationLimit()
 	if err := f.e.catalogWalk(f.ctx, f.e.state.Catalog, math.MaxInt, func(o ObjectInfo) bool {
 		if o.Size < limit {
 			n++

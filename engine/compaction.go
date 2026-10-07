@@ -266,7 +266,7 @@ func (e *Engine) reserveCompaction(ctx context.Context) (CompactionJob, error) {
 		if err != nil && !errors.Is(err, errCatalogBudget) {
 			return CompactionJob{}, err
 		}
-		if ok && o.Modified <= cutoff && float64(o.Size-o.LiveBytes)/float64(o.Size) >= options.ReclaimDeadFraction {
+		if ok && o.Modified <= cutoff && o.Size >= options.consolidationLimit() && float64(o.Size-o.LiveBytes)/float64(o.Size) >= options.ReclaimDeadFraction {
 			for _, b := range o.Blocks {
 				if !add(b) {
 					break
@@ -330,7 +330,10 @@ func (e *Engine) reserveCompaction(ctx context.Context) (CompactionJob, error) {
 				previousCandidate = candidate.Key
 				return true
 			}
-			dirty := float64(object.Size-object.LiveBytes)/float64(object.Size) >= options.ReclaimDeadFraction
+			// Small objects are consolidated in groups instead: evacuating one
+			// small index pack rewrites the ancestors of its pages, which often
+			// leaves the next small pack dirty, one job per pack.
+			dirty := object.Size >= options.consolidationLimit() && float64(object.Size-object.LiveBytes)/float64(object.Size) >= options.ReclaimDeadFraction
 
 			if options.MergeEnabled {
 				// Candidate inventories identify a bounded set of stream roots.
@@ -1486,6 +1489,28 @@ func (e *Engine) applyCompaction(ctx context.Context, job CompactionJob, replace
 			}
 			e.metrics.CompactionRechunkedBlocks.Add(float64(rechunked))
 			e.metrics.CompactionOutputBlocks.Add(float64(outputBlocks))
+			if slog.Default().Enabled(ctx, slog.LevelDebug) {
+				kind := "evacuation"
+				switch {
+				case job.Locality:
+					kind = "locality"
+				case job.Consolidation:
+					kind = "consolidation"
+				case len(job.Rechunk) > 0:
+					kind = "rechunk"
+				case len(job.Consecutive) > 0:
+					kind = "merge"
+				}
+				pages := 0
+				sources := map[string]bool{}
+				for _, b := range job.Inputs {
+					sources[b.Entry.Blob.Key] = true
+					if b.Index {
+						pages++
+					}
+				}
+				slog.Debug("compaction job published", "kind", kind, "inputs", len(job.Inputs), "index_pages", pages, "source_objects", len(sources), "output_blocks", outputBlocks, "rechunked", rechunked)
+			}
 		}
 		return err
 	}

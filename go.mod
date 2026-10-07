@@ -9,7 +9,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.113.4
 	github.com/aws/smithy-go v1.28.1
 	github.com/klauspost/compress v1.19.1
-	github.com/metricq/metricq-go v0.0.0-20261007201439-a60dd688b93b
+	github.com/metricq/metricq-go v0.0.0-20261007205730-e9190956d046
 	github.com/prometheus/client_golang v1.24.1
 	github.com/prometheus/client_model v0.6.2
 	github.com/rabbitmq/amqp091-go v1.13.0

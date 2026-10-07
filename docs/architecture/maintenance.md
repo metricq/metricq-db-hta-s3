@@ -59,8 +59,9 @@ In order of preference:
   Small objects are never evacuated one by one: evacuating a small index pack
   rewrites its pages' ancestors, which often leaves the next small pack dirty,
   and on the development database this chained into hundreds of one-page jobs
-  per minute. Locality outputs take part only when dirty; locality grows them
-  in tiers itself. `compaction_consolidation_jobs_total` counts the jobs.
+  per minute. Locality outputs, which locality grows in tiers itself, and
+  objects holding a quarter of a job's blocks (index packs of hundreds of
+  small pages, which packing cannot grow much) take part only when dirty. `compaction_consolidation_jobs_total` counts the jobs.
 - **Index page relocation.** Index pages are never copied: a relocated page
   is rewritten into the job's index pack together with its ancestors, whose
   child pointers change anyway. A copied inner page whose children move

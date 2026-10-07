@@ -31,3 +31,4 @@ output paths point into this directory.
 | [compaction-throughput.md](compaction-throughput.md) | Shared metadata caches, paged inventories and measured compaction throughput |
 | [inventory-upload-pipeline.md](inventory-upload-pipeline.md) | Bounded parallel inventory PUTs, publication barrier and fresh S3 comparison |
 | [binary-block-codec.md](binary-block-codec.md) | Versioned binary data/index codecs, CPU/allocation benchmarks and S3 compaction comparison |
+| [perf-2026-10-07.md](perf-2026-10-07.md) | Catch-up and chunked ingest rates; dissertation query matrix on the converged development database |

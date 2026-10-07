@@ -200,14 +200,15 @@ func run() error {
 			}
 			return nil
 		},
-		History: func(callCtx context.Context, name string, req *metricq.HistoryRequest) (*metricq.HistoryResponse, error) {
+		// Encoded directly: large timelines need no message per point.
+		HistoryEncoded: func(callCtx context.Context, name string, req *metricq.HistoryRequest) ([]byte, error) {
 			mu.RLock()
 			e := dbEngine
 			mu.RUnlock()
 			if e == nil {
 				return nil, fmt.Errorf("database not ready")
 			}
-			return e.Query(callCtx, name, req)
+			return e.QueryEncoded(callCtx, name, req)
 		},
 	}
 	dbErrors := make(chan error, 1)

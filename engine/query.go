@@ -11,7 +11,6 @@ import (
 
 	"github.com/metricq/metricq-db-hta-s3/hta"
 	metricq "github.com/metricq/metricq-go"
-	"google.golang.org/protobuf/proto"
 )
 
 type reader struct {
@@ -232,9 +231,6 @@ func (q *reader) fetchRanges(refs []blob, misses []int, blocks [][]hta.Record) e
 	}
 	return nil
 }
-func wire(a hta.Aggregate) *metricq.HistoryResponse_Aggregate {
-	return &metricq.HistoryResponse_Aggregate{Minimum: a.Minimum, Maximum: a.Maximum, Sum: a.Sum, Count: a.Count, Integral: a.Integral, ActiveTime: a.ActiveTime}
-}
 
 // aggregate computes a single aggregate from the raw index. Each entry
 // stores the aggregate of its subtree, counting its first value from the
@@ -334,7 +330,22 @@ func (q *reader) aggregate(begin, end int64) (hta.Aggregate, error) {
 // Query answers a MetricQ history request for the canonical metric name from
 // a snapshot: stored blocks of the chosen HTA level plus records not yet
 // written. It does not block ingestion or checkpoints.
-func (e *Engine) Query(ctx context.Context, name string, req *metricq.HistoryRequest) (resp *metricq.HistoryResponse, err error) {
+func (e *Engine) Query(ctx context.Context, name string, req *metricq.HistoryRequest) (*metricq.HistoryResponse, error) {
+	out, err := e.queryResult(ctx, name, req, func(*historyResult) {})
+	return out.response(), err
+}
+
+// QueryEncoded answers like Query with the response already marshaled,
+// without a protobuf message per point.
+func (e *Engine) QueryEncoded(ctx context.Context, name string, req *metricq.HistoryRequest) ([]byte, error) {
+	var b []byte
+	_, err := e.queryResult(ctx, name, req, func(out *historyResult) { b = out.encode() })
+	return b, err
+}
+
+// queryResult runs a query, checks the encoded size and calls finish, all
+// within the observed query time.
+func (e *Engine) queryResult(ctx context.Context, name string, req *metricq.HistoryRequest, finish func(*historyResult)) (out *historyResult, err error) {
 	start := time.Now()
 	e.metrics.Queries.Inc()
 	defer func() {
@@ -345,16 +356,19 @@ func (e *Engine) Query(ctx context.Context, name string, req *metricq.HistoryReq
 	}()
 	res := &queryReservation{budget: e.queryBudget}
 	defer res.releaseAll()
-	resp, err = e.query(ctx, name, req, res)
+	out, err = e.query(ctx, name, req, res)
 	e.metrics.QueryDataRequests.Observe(float64(res.requests.Load()))
 	// Estimates bound the work; the encoded size is the binding limit, since
 	// the broker rejects larger messages.
 	if err == nil {
-		if size := proto.Size(resp); size > e.options.QueryMaxResponseBytes {
-			resp, err = &metricq.HistoryResponse{Metric: name}, fmt.Errorf("history response of %d bytes exceeds query_max_response_bytes (%d); request a shorter range or a larger interval", size, e.options.QueryMaxResponseBytes)
+		if size := out.size(); size > e.options.QueryMaxResponseBytes {
+			out, err = &historyResult{metric: name}, fmt.Errorf("history response of %d bytes exceeds query_max_response_bytes (%d); request a shorter range or a larger interval", size, e.options.QueryMaxResponseBytes)
 		}
 	}
-	return resp, err
+	if err == nil {
+		finish(out)
+	}
+	return out, err
 }
 
 // responseTooLarge rejects a response of about points points of perPoint
@@ -366,14 +380,14 @@ func (e *Engine) responseTooLarge(points, perPoint int64) error {
 	return nil
 }
 
-func (e *Engine) query(ctx context.Context, name string, req *metricq.HistoryRequest, res *queryReservation) (resp *metricq.HistoryResponse, err error) {
-	resp = &metricq.HistoryResponse{Metric: name}
+func (e *Engine) query(ctx context.Context, name string, req *metricq.HistoryRequest, res *queryReservation) (out *historyResult, err error) {
+	out = &historyResult{metric: name}
 	if err = ctx.Err(); err != nil {
-		return resp, err
+		return out, err
 	}
 	snapshot, snapshotErr := e.readSnapshot(name)
 	if snapshotErr != nil {
-		return resp, snapshotErr
+		return out, snapshotErr
 	}
 	owner := e
 	generation := snapshot.state.Generation
@@ -389,45 +403,45 @@ func (e *Engine) query(ctx context.Context, name string, req *metricq.HistoryReq
 	e = snapshot
 	s := e.state.Series[name]
 	if req == nil {
-		return resp, fmt.Errorf("nil history request")
+		return out, fmt.Errorf("nil history request")
 	}
 	if req.Type == metricq.HistoryRequest_LAST_VALUE {
 		if s.Last.Time > 0 {
-			resp.TimeDelta = []int64{s.Last.Time}
-			resp.Value = []float64{s.Last.Value}
+			out.timeDelta = []int64{s.Last.Time}
+			out.values = []float64{s.Last.Value}
 		}
-		return resp, nil
+		return out, nil
 	}
 	if req.StartTime < 0 || req.EndTime < req.StartTime {
-		return resp, fmt.Errorf("invalid time range")
+		return out, fmt.Errorf("invalid time range")
 	}
 	if req.Type < metricq.HistoryRequest_AGGREGATE_TIMELINE || req.Type > metricq.HistoryRequest_FLEX_TIMELINE {
-		return resp, fmt.Errorf("unknown history request type %d", req.Type)
+		return out, fmt.Errorf("unknown history request type %d", req.Type)
 	}
 	q := reader{e: e, ctx: ctx, metric: name, cache: make(map[blob][]hta.Record), res: res}
 	if req.Type == metricq.HistoryRequest_AGGREGATE || req.IntervalMax < 0 {
 		if req.StartTime >= req.EndTime {
-			return resp, fmt.Errorf("aggregate requires start < end")
+			return out, fmt.Errorf("aggregate requires start < end")
 		}
 		a, err := q.aggregate(req.StartTime, req.EndTime)
 		if err != nil {
-			return resp, err
+			return out, err
 		}
-		resp.TimeDelta = []int64{req.StartTime}
-		resp.Aggregate = []*metricq.HistoryResponse_Aggregate{wire(a)}
-		return resp, nil
+		out.timeDelta = []int64{req.StartTime}
+		out.aggs = []hta.Aggregate{a}
+		return out, nil
 	}
 	var previous int64
 	add := func(t int64, a hta.Aggregate) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if err := e.responseTooLarge(int64(len(resp.TimeDelta))+1, aggregatePointBytes); err != nil {
+		if err := e.responseTooLarge(int64(len(out.timeDelta))+1, aggregatePointBytes); err != nil {
 			return err
 		}
-		resp.TimeDelta = append(resp.TimeDelta, t-previous)
+		out.timeDelta = append(out.timeDelta, t-previous)
 		previous = t
-		resp.Aggregate = append(resp.Aggregate, wire(a))
+		out.aggs = append(out.aggs, a)
 		return nil
 	}
 	if req.IntervalMax >= s.Config.IntervalMin {
@@ -445,12 +459,12 @@ func (e *Engine) query(ctx context.Context, name string, req *metricq.HistoryReq
 			// the series' data; reject before reading if they cannot fit.
 			if first, last := max(req.StartTime-req.StartTime%level, s.First.Time-s.First.Time%level), min(req.EndTime, s.Last.Time+level); s.First.Time > 0 && first < last {
 				if err := e.responseTooLarge((last-first)/(level*factor)+1, aggregatePointBytes); err != nil {
-					return resp, err
+					return out, err
 				}
 			}
 			rs, err := q.records(level, req.StartTime, req.EndTime)
 			if err != nil {
-				return resp, err
+				return out, err
 			}
 			group := hta.Empty()
 			var count, groupTime int64
@@ -474,7 +488,7 @@ func (e *Engine) query(ctx context.Context, name string, req *metricq.HistoryReq
 					n -= take
 					if count == factor {
 						if err = add(groupTime, group); err != nil {
-							return resp, err
+							return out, err
 						}
 						group = hta.Empty()
 						count = 0
@@ -483,15 +497,15 @@ func (e *Engine) query(ctx context.Context, name string, req *metricq.HistoryReq
 			}
 			if count > 0 {
 				if err = add(groupTime, group); err != nil {
-					return resp, err
+					return out, err
 				}
 			}
-			if len(resp.TimeDelta) > 0 {
-				return resp, nil
+			if len(out.timeDelta) > 0 {
+				return out, nil
 			}
 			level /= s.Config.IntervalFactor
 		}
-		return resp, nil
+		return out, nil
 	}
 	// Raw values: the index tells how many records the range holds. FLEX
 	// smooths ranges denser than interval_max into one aggregate per interval.
@@ -509,7 +523,7 @@ func (e *Engine) query(ctx context.Context, name string, req *metricq.HistoryReq
 	rs, err := q.records(0, req.StartTime, req.EndTime)
 	q.check = nil
 	if err != nil {
-		return resp, err
+		return out, err
 	}
 	first := sort.Search(len(rs), func(i int) bool { return rs[i].Time > req.StartTime })
 	if first > 0 {
@@ -517,7 +531,7 @@ func (e *Engine) query(ctx context.Context, name string, req *metricq.HistoryReq
 	}
 	last := sort.Search(len(rs), func(i int) bool { return rs[i].Time >= req.EndTime })
 	if first >= last {
-		return resp, nil
+		return out, nil
 	}
 	rs = rs[first:last]
 	if req.Type == metricq.HistoryRequest_FLEX_TIMELINE && req.IntervalMax > 0 && (req.EndTime-req.StartTime)/int64(len(rs)) < req.IntervalMax {
@@ -530,7 +544,7 @@ func (e *Engine) query(ctx context.Context, name string, req *metricq.HistoryReq
 			i++
 		}
 		if i == len(rs) {
-			return resp, nil
+			return out, nil
 		}
 		for begin := req.StartTime; begin < req.EndTime; {
 			end := req.EndTime
@@ -548,29 +562,29 @@ func (e *Engine) query(ctx context.Context, name string, req *metricq.HistoryReq
 				prev = end
 			}
 			if err = add(begin, a); err != nil {
-				return resp, err
+				return out, err
 			}
 			if i == len(rs) {
 				break
 			}
 			begin = end
 		}
-		return resp, nil
+		return out, nil
 	}
 	prev := rs[0].Time
 	for _, r := range rs {
 		if req.Type == metricq.HistoryRequest_AGGREGATE_TIMELINE {
 			if err = add(r.Time, hta.Value(r.Value, r.Time-prev, 1)); err != nil {
-				return resp, err
+				return out, err
 			}
 			prev = r.Time
 		} else {
-			resp.TimeDelta = append(resp.TimeDelta, r.Time-previous)
+			out.timeDelta = append(out.timeDelta, r.Time-previous)
 			previous = r.Time
-			resp.Value = append(resp.Value, r.Value)
+			out.values = append(out.values, r.Value)
 		}
 	}
-	return resp, nil
+	return out, nil
 }
 
 // A query pins immutable object references and copies only its metric's hot tail.

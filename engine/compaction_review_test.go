@@ -75,7 +75,7 @@ func reviewSynthetic(t *testing.T, n int) (*Engine, []indexEntry) {
 	var items []indexEntry
 	for i := 0; i < n; i++ {
 		stamp := int64(i+1) * 100
-		b, err := encode([]hta.Record{{Time: stamp, Value: float64(i)}})
+		b, err := encode([]hta.Record{{Time: stamp, Repeat: 1, Value: float64(i)}})
 		if err != nil {
 			t.Fatal(err)
 		}

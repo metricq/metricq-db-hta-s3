@@ -43,9 +43,9 @@ so concurrent readers keep a consistent view.
 ## Data/index block codec
 
 New data, index and root metadata pages begin with a six-byte envelope: ASCII
-`MQHB`, version byte `1`, and kind byte (`1` data, `6` index, `3` root page;
-kind `2` were index pages without aggregates, no longer read).
-An independent gzip BestSpeed
+`MQHB`, version byte `1`, and kind byte (`7` data, `6` index, `3` root page;
+kinds `1` and `2` were data blocks of fixed 80-byte records and index pages
+without aggregates, no longer read). An independent gzip BestSpeed
 stream follows. The range SHA-256 covers the envelope and compressed stream.
 Unknown versions/kinds, wrong destination types, truncation, invalid counts,
 invalid key IDs, gzip CRC errors and trailing payload bytes fail decoding.
@@ -56,12 +56,18 @@ here; Gob-encoded objects of these types fail decoding. A database written by
 a version before these formats cannot be opened; start it with an empty
 prefix and WAL.
 
-All fixed fields use little-endian order. Data payloads start with a `uint32`
-record count, bounded to 1024. Each 80-byte record contains, in order: Time,
-Level, Repeat, Value, Minimum, Maximum, Sum, Count, Integral, ActiveTime. Integer
-fields retain their full 64-bit representation; floating fields retain IEEE-754
-bits exactly, including signed zero. The decoder reads bounded chunks directly
-into records and validates the complete gzip stream before returning them.
+All fixed fields use little-endian order. Data payloads start with a uvarint
+record count, bounded to 1024, and the varint level shared by all records of
+the block (one stream). Each record starts with its time as a varint delta
+from the previous record (the first from zero). A raw record adds its value
+(8 bytes); it always has repeat 1 and no aggregate. An aggregate record adds
+uvarint Repeat, Minimum, Maximum and Sum (8 bytes each), uvarint Count,
+Integral (8 bytes) and varint ActiveTime; its value is always zero. The
+encoder rejects records outside this shape instead of dropping fields. A raw
+value thus takes 9-18 bytes before compression instead of 80 for all ten
+fields: compressed raw blocks are about 40 % smaller and decode about 2.5
+times faster. Integers retain their full 64-bit range; floating fields retain
+IEEE-754 bits exactly, including signed zero.
 
 Index payloads contain a one-byte leaf flag, `uint16` entry count and `uint16`
 key count, each bounded by fan-out 64. Each dictionary key has a `uint16` byte

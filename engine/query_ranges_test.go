@@ -81,7 +81,7 @@ func TestCoalescedRangesPreserveOrderBoundariesAndChecksums(t *testing.T) {
 			}
 			var refs []blob
 			for i := 0; i < 2; i++ {
-				b, err := encode([]hta.Record{{Time: int64(i + 1), Value: float64(i + 1)}})
+				b, err := encode([]hta.Record{{Time: int64(i + 1), Repeat: 1, Value: float64(i + 1)}})
 				if err != nil {
 					t.Fatal(err)
 				}

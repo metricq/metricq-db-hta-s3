@@ -8,6 +8,7 @@ import (
 	"io"
 	"math"
 	"sort"
+	"sync"
 
 	"github.com/metricq/metricq-db-hta-s3/hta"
 )
@@ -16,7 +17,7 @@ import (
 // Each range still has its own gzip stream and SHA-256 in the owning index.
 const blockMagic = "MQHB"
 const blockVersion byte = 1
-const recordKind byte = 1
+const recordKind byte = 7 // kind 1 were data blocks of fixed 80-byte records
 
 const indexKind byte = 6 // kind 2 were index pages without entry aggregates
 const rootKind byte = 3
@@ -25,7 +26,10 @@ const stateKind byte = 5
 
 // maxHeldPayloadBytes bounds a decoded held delta, as the Gob decoder did.
 const maxHeldPayloadBytes = 512 << 20
-const recordWireBytes = 80
+
+// maxRecordWireBytes bounds one encoded record: three varints of at most
+// ten bytes and five fixed 64-bit fields.
+const maxRecordWireBytes = 70
 const maxIndexKeyBytes = 65535
 
 // Index entry fields: times, key id, offset, length, hash, records and the
@@ -41,10 +45,9 @@ func encodeBinaryBlock(v any) ([]byte, bool, error) {
 		if len(value) > maxDataBlockRecords {
 			return nil, true, fmt.Errorf("too many data records")
 		}
-		payload = make([]byte, 0, 4+len(value)*recordWireBytes)
-		payload = binary.LittleEndian.AppendUint32(payload, uint32(len(value)))
-		for _, r := range value {
-			payload = appendRecordWire(payload, r)
+		var err error
+		if payload, err = appendRecordsPayload(make([]byte, 0, 16+len(value)*16), value); err != nil {
+			return nil, true, err
 		}
 	case indexNode:
 		kind = indexKind
@@ -131,6 +134,9 @@ func encodeBinaryBlock(v any) ([]byte, bool, error) {
 	return out.Bytes(), true, nil
 }
 
+var gzipReaders sync.Pool
+var payloadBuffers = sync.Pool{New: func() any { return bytes.NewBuffer(make([]byte, 0, 32<<10)) }}
+
 func decodeBinaryBlock(b []byte, v any) error {
 	if len(b) < 6 || b[4] != blockVersion {
 		return fmt.Errorf("unknown or truncated block version")
@@ -142,7 +148,7 @@ func decodeBinaryBlock(b []byte, v any) error {
 		if kind != recordKind {
 			return fmt.Errorf("block payload type mismatch")
 		}
-		limit = 4 + maxDataBlockRecords*recordWireBytes
+		limit = 20 + maxDataBlockRecords*maxRecordWireBytes
 	case *indexNode:
 		if kind != indexKind {
 			return fmt.Errorf("block payload type mismatch")
@@ -167,56 +173,43 @@ func decodeBinaryBlock(b []byte, v any) error {
 		return fmt.Errorf("block payload type mismatch")
 	}
 	compressed := bytes.NewReader(b[6:])
-	z, err := gzip.NewReader(compressed)
+	z, _ := gzipReaders.Get().(*gzip.Reader)
+	var err error
+	if z == nil {
+		z, err = gzip.NewReader(compressed)
+	} else {
+		err = z.Reset(compressed)
+	}
 	if err != nil {
 		return err
 	}
-	defer z.Close()
+	defer gzipReaders.Put(z)
 	z.Multistream(false)
-	if dst, ok := v.(*[]hta.Record); ok {
-		var records []hta.Record
-		if err := decodeRecordStream(z, &records); err != nil {
-			return err
-		}
-		if compressed.Len() != 0 {
-			return fmt.Errorf("trailing compressed block bytes")
-		}
-		*dst = records
-		return nil
+	// Data blocks copy every field out of the payload, so its buffer is reused.
+	buf := &bytes.Buffer{}
+	if _, ok := v.(*[]hta.Record); ok {
+		buf = payloadBuffers.Get().(*bytes.Buffer)
+		buf.Reset()
+		defer payloadBuffers.Put(buf)
 	}
-	payload, err := io.ReadAll(io.LimitReader(z, limit+1))
-	if err != nil {
+	if _, err = buf.ReadFrom(io.LimitReader(z, limit+1)); err != nil {
 		return err
 	}
-	if int64(len(payload)) > limit {
+	if int64(buf.Len()) > limit {
 		return fmt.Errorf("block payload exceeds size limit")
 	}
 	if compressed.Len() != 0 {
 		return fmt.Errorf("trailing compressed block bytes")
 	}
-	return decodeBinaryPayload(payload, v)
+	return decodeBinaryPayload(buf.Bytes(), v)
 }
 
 func decodeBinaryPayload(b []byte, v any) error {
 	switch value := v.(type) {
 	case *[]hta.Record:
-		if len(b) < 4 {
-			return io.ErrUnexpectedEOF
-		}
-		count64 := binary.LittleEndian.Uint32(b)
-		if count64 > maxDataBlockRecords {
-			return fmt.Errorf("too many data records")
-		}
-		count := int(count64)
-		if len(b) != 4+count*recordWireBytes {
-			return fmt.Errorf("invalid data block size")
-		}
-		var records []hta.Record
-		if count > 0 {
-			records = make([]hta.Record, count)
-		}
-		for i := range records {
-			records[i] = recordFromWire(b[4+i*recordWireBytes:])
+		records, err := decodeRecordsPayload(b)
+		if err != nil {
+			return err
 		}
 		*value = records
 	case *indexNode:
@@ -280,58 +273,134 @@ func decodeIndexPayload(b []byte, value *indexNode) error {
 	return nil
 }
 
-// appendRecordWire appends the fixed little-endian fields of one record.
-func appendRecordWire(payload []byte, r hta.Record) []byte {
-	fields := [...]uint64{uint64(r.Time), uint64(r.Level), uint64(r.Repeat), math.Float64bits(r.Value), math.Float64bits(r.Aggregate.Minimum), math.Float64bits(r.Aggregate.Maximum), math.Float64bits(r.Aggregate.Sum), r.Aggregate.Count, math.Float64bits(r.Aggregate.Integral), uint64(r.Aggregate.ActiveTime)}
-	for _, f := range fields {
-		payload = binary.LittleEndian.AppendUint64(payload, f)
+// Data payload: uvarint record count and varint level, shared by all
+// records of a block (one stream). Each record starts with its time as a
+// varint delta from the previous record (the first from zero). A raw record
+// (level 0) adds its value; it always has repeat 1 and no aggregate. An
+// aggregate record (value 0) adds uvarint repeat, minimum, maximum and sum,
+// uvarint count, integral and varint active time. Floats are IEEE-754 bits,
+// little-endian. A raw value thus needs 9-18 bytes instead of 80.
+func appendRecordsPayload(b []byte, records []hta.Record) ([]byte, error) {
+	if len(records) > maxDataBlockRecords {
+		return nil, fmt.Errorf("too many data records")
 	}
-	return payload
+	level := int64(0)
+	if len(records) > 0 {
+		level = records[0].Level
+	}
+	b = binary.AppendUvarint(b, uint64(len(records)))
+	b = binary.AppendVarint(b, level)
+	var previous int64
+	for _, r := range records {
+		if r.Level != level {
+			return nil, fmt.Errorf("data block mixes levels %d and %d", level, r.Level)
+		}
+		b = binary.AppendVarint(b, r.Time-previous)
+		previous = r.Time
+		if level == 0 {
+			if r.Repeat != 1 || r.Aggregate != (hta.Aggregate{}) {
+				return nil, fmt.Errorf("raw record at %d carries repeat or aggregate", r.Time)
+			}
+			b = binary.LittleEndian.AppendUint64(b, math.Float64bits(r.Value))
+			continue
+		}
+		if math.Float64bits(r.Value) != 0 {
+			return nil, fmt.Errorf("aggregate record at %d carries a value", r.Time)
+		}
+		a := r.Aggregate
+		b = binary.AppendUvarint(b, uint64(r.Repeat))
+		for _, f := range [...]float64{a.Minimum, a.Maximum, a.Sum} {
+			b = binary.LittleEndian.AppendUint64(b, math.Float64bits(f))
+		}
+		b = binary.AppendUvarint(b, a.Count)
+		b = binary.LittleEndian.AppendUint64(b, math.Float64bits(a.Integral))
+		b = binary.AppendVarint(b, a.ActiveTime)
+	}
+	return b, nil
 }
 
-func recordFromWire(p []byte) hta.Record {
-	var f [10]uint64
-	for j := range f {
-		f[j] = binary.LittleEndian.Uint64(p[j*8:])
+func decodeRecordsPayload(b []byte) ([]hta.Record, error) {
+	uvarint := func() (uint64, error) {
+		v, n := binary.Uvarint(b)
+		if n <= 0 {
+			return 0, io.ErrUnexpectedEOF
+		}
+		b = b[n:]
+		return v, nil
 	}
-	return hta.Record{Time: int64(f[0]), Level: int64(f[1]), Repeat: int64(f[2]), Value: math.Float64frombits(f[3]), Aggregate: hta.Aggregate{Minimum: math.Float64frombits(f[4]), Maximum: math.Float64frombits(f[5]), Sum: math.Float64frombits(f[6]), Count: f[7], Integral: math.Float64frombits(f[8]), ActiveTime: int64(f[9])}}
-}
-
-// Decode bounded chunks directly into records, avoiding a second full-block
-// payload allocation. Assign the destination only after gzip's trailer/CRC and
-// the exact payload length have been checked.
-func decodeRecordStream(z io.Reader, dst *[]hta.Record) error {
-	var header [4]byte
-	if _, err := io.ReadFull(z, header[:]); err != nil {
-		return err
+	varint := func() (int64, error) {
+		v, n := binary.Varint(b)
+		if n <= 0 {
+			return 0, io.ErrUnexpectedEOF
+		}
+		b = b[n:]
+		return v, nil
 	}
-	count := binary.LittleEndian.Uint32(header[:])
+	fixed := func() (uint64, error) {
+		if len(b) < 8 {
+			return 0, io.ErrUnexpectedEOF
+		}
+		v := binary.LittleEndian.Uint64(b)
+		b = b[8:]
+		return v, nil
+	}
+	count, err := uvarint()
+	if err != nil {
+		return nil, err
+	}
 	if count > maxDataBlockRecords {
-		return fmt.Errorf("too many data records")
+		return nil, fmt.Errorf("too many data records")
+	}
+	level, err := varint()
+	if err != nil {
+		return nil, err
 	}
 	var records []hta.Record
 	if count > 0 {
-		records = make([]hta.Record, int(count))
+		records = make([]hta.Record, count)
 	}
-	var buf [16 * recordWireBytes]byte
-	for start := 0; start < len(records); start += 16 {
-		n := min(16, len(records)-start)
-		if _, err := io.ReadFull(z, buf[:n*recordWireBytes]); err != nil {
-			return err
-		}
-		for i := 0; i < n; i++ {
-			records[start+i] = recordFromWire(buf[i*recordWireBytes:])
-		}
-	}
-	var extra [1]byte
-	if _, err := io.ReadFull(z, extra[:]); err != io.EOF {
+	var previous int64
+	for i := range records {
+		delta, err := varint()
 		if err != nil {
-			return err
+			return nil, err
 		}
-		return fmt.Errorf("trailing data block payload")
+		previous += delta
+		r := &records[i]
+		r.Time, r.Level, r.Repeat = previous, level, 1
+		if level == 0 {
+			v, err := fixed()
+			if err != nil {
+				return nil, err
+			}
+			r.Value = math.Float64frombits(v)
+			continue
+		}
+		var f [6]uint64
+		repeat, err := uvarint()
+		for k := 0; k < 3 && err == nil; k++ {
+			f[k], err = fixed()
+		}
+		if err == nil {
+			f[3], err = uvarint()
+		}
+		if err == nil {
+			f[4], err = fixed()
+		}
+		var active int64
+		if err == nil {
+			active, err = varint()
+		}
+		if err != nil {
+			return nil, err
+		}
+		r.Repeat = int64(repeat)
+		r.Aggregate = hta.Aggregate{Minimum: math.Float64frombits(f[0]), Maximum: math.Float64frombits(f[1]), Sum: math.Float64frombits(f[2]), Count: f[3], Integral: math.Float64frombits(f[4]), ActiveTime: active}
 	}
-	*dst = records
-	return nil
+	if len(b) != 0 {
+		return nil, fmt.Errorf("trailing data block bytes")
+	}
+	return records, nil
 }
 
 // Held records persisted between checkpoints, per stream: name, level and

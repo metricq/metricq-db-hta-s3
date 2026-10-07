@@ -43,12 +43,14 @@ func dataRequests() float64 {
 }
 
 func main() {
-	dataset := flag.String("dataset", "load", "load (1000 metrics at 1 Sa/s) or dummy (dummy.source.hta-s3 at 100 Sa/s)")
+	dataset := flag.String("dataset", "load", "load (1000 metrics at 1 Sa/s), dummy (dummy.source.hta-s3 at 100 Sa/s) or diss (six metrics at 1 kSa/s)")
+	endFlag := flag.String("end", "", "latest window end (RFC 3339; default now minus 5 minutes)")
 	minSpan := flag.Float64("min-span", 1, "smallest span in seconds")
 	maxSpan := flag.Float64("max-span", 3e5, "largest span in seconds")
 	history := flag.Duration("history", 100*time.Hour, "windows end at most this long ago")
 	reps := flag.Int("reps", 20, "random windows per configuration")
 	perDecade := flag.Int("per-decade", 4, "spans per decade")
+	types := flag.String("types", "timeline,aggregate", "query types")
 	flag.Parse()
 	agent, _ := metricq.NewAgent("latency-probe-matrix", "amqp://admin:admin@localhost")
 	ctx := context.Background()
@@ -66,6 +68,9 @@ func main() {
 		if *dataset == "dummy" {
 			return "dummy.source.hta-s3"
 		}
+		if *dataset == "diss" {
+			return fmt.Sprintf("diss.hta-s3.c%d", r.IntN(6))
+		}
 		return fmt.Sprintf("load.hta-s3.m%04d", r.IntN(1000))
 	}
 	targets := []int{1, 6}
@@ -79,10 +84,15 @@ func main() {
 		}
 	}
 	now := time.Now().Add(-5 * time.Minute)
+	if *endFlag != "" {
+		if now, err = time.Parse(time.RFC3339, *endFlag); err != nil {
+			panic(err)
+		}
+	}
 	if os.Getenv("NO_HEADER") == "" {
 		fmt.Println("dataset,type,metrics,span_s,rep,latency_ms,db_max_ms,data_requests,points")
 	}
-	for _, typ := range []string{"timeline", "aggregate"} {
+	for _, typ := range strings.Split(*types, ",") {
 		for _, n := range targets {
 			for _, span := range spans {
 				d := time.Duration(span * float64(time.Second))
@@ -111,6 +121,8 @@ func main() {
 							var err error
 							if typ == "timeline" {
 								resp, dur, err = h.Request(qctx, name, start, end, d/1000, metricq.HistoryRequest_AGGREGATE_TIMELINE)
+							} else if typ == "flex" {
+								resp, dur, err = h.Request(qctx, name, start, end, d/1000, metricq.HistoryRequest_FLEX_TIMELINE)
 							} else {
 								resp, dur, err = h.Request(qctx, name, start, end, 0, metricq.HistoryRequest_AGGREGATE)
 							}

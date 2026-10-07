@@ -12,6 +12,9 @@ before = collections.defaultdict(dict)
 for r in csv.DictReader(open("query-matrix-1ksa-ae0054b.csv")):
     before[(r["type"], int(r["metrics"]))].setdefault(float(r["span_s"]), []).append(r)
 before = {k: v for k, v in before.items()}
+flex = collections.defaultdict(list)
+for r in csv.DictReader(open("query-matrix-1ksa-flex.csv")):
+    flex[(int(r["metrics"]), float(r["span_s"]))].append(r)
 ilsche = collections.defaultdict(list)
 for r in csv.DictReader(open("ilsche-2020-fig-4.9.csv")):
     ilsche[(r["type"], int(r["metrics"]), r["series"])].append(r)
@@ -21,10 +24,13 @@ for ax, (typ, n) in zip(axes.flat, [("timeline", 1), ("timeline", 6), ("aggregat
     xs = [k[2] for k in keys]
     means = [st.mean(float(r["latency_ms"]) for r in g[k]) for k in keys]
     ci = [1.96 * st.stdev(float(r["latency_ms"]) for r in g[k]) / math.sqrt(len(g[k])) for k in keys]
-    ax.errorbar(xs, means, yerr=ci, marker="o", ms=3, color="C1", capsize=2, label="metricq-db-hta-s3: end-to-end")
+    ax.errorbar(xs, means, yerr=ci, marker="o", ms=3, color="C1", capsize=2, label="metricq-db-hta-s3: end-to-end (AGGREGATE_TIMELINE, AGGREGATE)")
     old = before[(typ, n)]
     ax.plot(sorted(old), [st.mean(float(r["latency_ms"]) for r in old[k]) for k in sorted(old)], color="gray", ls=":", label="end-to-end before raw timeline optimizations (ae0054b)")
     ax.plot(xs, [st.mean(float(r["db_max_ms"]) for r in g[k]) for k in keys], color="C1", ls="--", label="metricq-db-hta-s3: database (max)")
+    if typ == "timeline":
+        fk = sorted(k for k in flex if k[0] == n)
+        ax.plot([k[1] for k in fk], [st.mean(float(r["latency_ms"]) for r in flex[k]) for k in fk], color="C2", marker=".", label="metricq-db-hta-s3: FLEX_TIMELINE end-to-end")
     ref = ilsche[(typ, n, "end_to_end")]
     rx = [float(r["span_s"]) for r in ref]
     ax.plot(rx, [float(r["mean_ms"]) for r in ref], color="red", lw=1, label="Ilsche 2020 Fig. 4.9: end-to-end")

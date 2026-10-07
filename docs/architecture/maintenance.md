@@ -48,15 +48,20 @@ In order of preference:
   25 % growth or an hour; such seeds are skipped for up to 10 minutes instead of
   being re-examined on every pass.
 - **Small object consolidation.** Merge outputs hold a few blocks of
-  different streams, and evacuating an object copies its live blocks into
-  another small one, so the number of small objects would grow with the
-  number of jobs. Data objects below `compaction_output_object_bytes`/8 (at
-  most 512 KiB) are candidates even when fully live; every fourth job slot,
-  and whenever nothing else is due, packs at least two of them (once eight are
-  found or they fill an eighth of the output) into one output object. Index
-  packs are left out: relocating index pages forces their parents to be
-  rewritten into yet another small pack. `compaction_consolidation_jobs_total`
+  different streams, every job writes a small index pack, and evacuating an
+  object copies its live blocks into another small one, so the number of
+  small objects would grow with the number of jobs. Objects below
+  `compaction_output_object_bytes`/8 (at most 512 KiB) are candidates even
+  when fully live; every fourth job slot, and whenever nothing else is due,
+  packs eight of them, or four that fill an eighth of the output, into one
+  data and one index pack. Fewer would not reduce the object count, since
+  each job writes packs of its own. `compaction_consolidation_jobs_total`
   counts the jobs.
+- **Index page relocation.** Index pages are never copied: a relocated page
+  is rewritten into the job's index pack together with its ancestors, whose
+  child pointers change anyway. A copied inner page whose children move
+  would be obsolete as soon as it is written. Publication fails unless every
+  relocated page was rewritten.
 - **Idle candidates.** Most candidate objects hold only open stream tails,
   which nothing can merge until their stream grows. A candidate whose scan
   found no work for structural reasons is remembered in memory together with

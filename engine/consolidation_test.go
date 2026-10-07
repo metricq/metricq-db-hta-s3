@@ -2,16 +2,20 @@ package engine
 
 import (
 	"math"
+	"path"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
 
-// smallObjects counts live data objects below the consolidation limit.
+// smallObjects counts live data objects and index packs below the
+// consolidation limit.
 func (f *holdFixture) smallObjects() (n int) {
 	f.t.Helper()
 	limit := min(int64(smallObjectBytes), f.e.options.CompactionOptions.defaults().OutputObjectBytes/8)
 	if err := f.e.catalogWalk(f.ctx, f.e.state.Catalog, math.MaxInt, func(o ObjectInfo) bool {
-		if o.Size < limit && len(o.Blocks) > 0 && !o.Blocks[0].Index {
+		if o.Size < limit {
 			n++
 		}
 		return true
@@ -41,6 +45,18 @@ func TestConsolidationPacksSmallObjects(t *testing.T) {
 		t.Fatalf("small objects %d -> %d, consolidation jobs %v", before, after, metricValue(t, f.e.metrics.ConsolidationJobs))
 	}
 	t.Logf("small objects %d -> %d", before, after)
+	// Index pages are rewritten with their ancestors, never copied into a
+	// numbered pack of copyJob.
+	if err := f.e.catalogWalk(f.ctx, f.e.state.Catalog, math.MaxInt, func(o ObjectInfo) bool {
+		if strings.HasPrefix(o.Key, "index/compact-") {
+			if _, err := strconv.Atoi(path.Base(o.Key)); err == nil {
+				t.Errorf("copied index pack %s", o.Key)
+			}
+		}
+		return true
+	}); err != nil {
+		t.Fatal(err)
+	}
 	f.checkOrdered("consolidated")
 	f.check("consolidated")
 	checkCatalog(t, f.e)

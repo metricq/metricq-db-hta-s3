@@ -90,6 +90,10 @@ type replacement struct {
 	// different time range than their source.
 	Old       indexEntry
 	Rechunked bool
+	// Rewrite relocates an index page by writing it anew into the job's index
+	// pack together with its ancestors, which must change anyway: a copied
+	// page whose children move is obsolete as soon as it is written.
+	Rewrite bool
 }
 
 // overlaps reports whether an index edge covering first..last may contain the
@@ -822,7 +826,14 @@ func (e *Engine) copyJob(ctx context.Context, job CompactionJob) (map[blob]repla
 		proven[edge] = true
 	}
 	replacements := make(map[blob]replacement)
-	inputs := append([]BlockInfo(nil), job.Inputs...)
+	var inputs []BlockInfo
+	for _, b := range job.Inputs {
+		if b.Index {
+			replacements[b.Entry.Blob] = replacement{Entry: b.Entry, Index: true, Rewrite: true}
+		} else {
+			inputs = append(inputs, b)
+		}
+	}
 	sort.Slice(inputs, func(i, j int) bool {
 		a, b := inputs[i], inputs[j]
 		if a.Index != b.Index {
@@ -1081,7 +1092,10 @@ func (e *Engine) replaceHistorical(ctx context.Context, root blob, replacements 
 	if err != nil {
 		return nil, err
 	}
-	changed := false
+	changed := replacements[root].Rewrite
+	if changed && p.replaced != nil {
+		p.replaced[root] = true
+	}
 	var entries []indexEntry
 	if !n.Leaf {
 		var children []blob
@@ -1304,8 +1318,9 @@ func (e *Engine) prepareCompaction(ctx context.Context, job CompactionJob, repla
 	}
 	// Every source data block must have been found in its stream's index;
 	// otherwise the old block would stay referenced after its retirement.
+	// Likewise every relocated index page must have been rewritten.
 	for _, input := range job.Inputs {
-		if !input.Index && !p.replaced[input.Entry.Blob] {
+		if !p.replaced[input.Entry.Blob] {
 			return manifest{}, fmt.Errorf("compaction source %s not found in index of %s level %d", input.Entry.Blob.Key, input.Metric, input.Level)
 		}
 	}

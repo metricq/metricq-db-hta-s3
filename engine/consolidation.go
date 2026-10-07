@@ -12,13 +12,13 @@ type candidateSize struct {
 	pass           uint64
 }
 
-// selectConsolidation packs small data objects together. Merge outputs are
-// small, and evacuating one object only shrinks it further, so without
-// packing their number grows with the number of jobs. Objects below compaction_output_object_bytes/8 (at most
+// selectConsolidation packs small objects together. Merge outputs and the
+// index packs of jobs are small, and evacuating one object only shrinks it
+// further, so without packing their number grows with the number of jobs.
+// Index pages are rewritten with their ancestors into the job's index pack. Objects below compaction_output_object_bytes/8 (at most
 // smallObjectBytes) are collected, oldest candidates first, until their live
-// bytes fill one output object; a job needs at least two of them and runs
-// once eight are found or they fill an eighth of the output. Output objects
-// are no longer small, so every byte is packed only a few times.
+// bytes fill one output object; a job runs once eight are found, or four that
+// fill an eighth of the output.
 func (e *Engine) selectConsolidation(ctx context.Context, snapshot *Engine, options CompactionOptions, objectLimit int, cutoff int64) ([]BlockInfo, bool, error) {
 	limit := min(int64(smallObjectBytes), options.OutputObjectBytes/8)
 	capacity := min(options.JobMaxBytes, options.OutputObjectBytes)
@@ -28,7 +28,6 @@ func (e *Engine) selectConsolidation(ctx context.Context, snapshot *Engine, opti
 	var picked []ObjectInfo
 	var bytes int64
 	blocks := 0
-	full := false
 	var selectErr error
 	previous := e.consolidationCursor
 	resume, stopped := "", false
@@ -55,16 +54,13 @@ func (e *Engine) selectConsolidation(ctx context.Context, snapshot *Engine, opti
 		if ok && c.Size == 0 {
 			e.candidateSizes[c.Key] = candidateSize{modified: c.Modified, size: o.Size, pass: e.consolidationPass}
 		}
-		// An object one job cannot take whole stays as it is. Index packs are
-		// left out: relocated pages force their parents to be rewritten into
-		// yet another small pack, often including the pages just copied.
-		if !ok || o.Size == 0 || o.Size >= limit || o.Modified > cutoff || len(o.Blocks) == 0 || o.Blocks[0].Index || len(o.Blocks) > options.JobMaxBlocks || o.LiveBytes > capacity {
+		// An object one job cannot take whole stays as it is.
+		if !ok || o.Size == 0 || o.Size >= limit || o.Modified > cutoff || len(o.Blocks) == 0 || len(o.Blocks) > options.JobMaxBlocks || o.LiveBytes > capacity {
 			previous = c.Key
 			return true
 		}
 		if len(picked) >= objectLimit || blocks+len(o.Blocks) > options.JobMaxBlocks || bytes+o.LiveBytes > capacity {
 			// The next job starts with this object.
-			full = true
 			resume, stopped = previous, true
 			return false
 		}
@@ -94,7 +90,9 @@ func (e *Engine) selectConsolidation(ctx context.Context, snapshot *Engine, opti
 			}
 		}
 	}
-	if len(picked) < 2 || (!full && len(picked) < 8 && bytes < limit) {
+	// A job writes a data and an index pack of its own, so packing fewer than
+	// four objects would not reduce their number and could repeat forever.
+	if len(picked) < 4 || (len(picked) < 8 && bytes < limit) {
 		return nil, more, nil
 	}
 	var inputs []BlockInfo

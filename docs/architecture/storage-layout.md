@@ -59,7 +59,9 @@ blocks it would otherwise copy unchanged, so each block is recompressed once
 and then copied byte for byte. Strong compression costs only encoding time
 (about 0.5 ms per raw and 2.5 ms per aggregate block of 1024 records): a kind
 9 block decodes about twice as fast as a gzip block and is 15 to 25 % smaller.
-The decoded records of a recompressed block stay in the block cache.
+The decoded records of a recompressed block stay in the block cache. A
+best-level encoder holds about 70 MB of match tables, so compaction shares
+a single one; checkpoints use one fast encoder (about 4 MB) per core.
 
 Every object type has exactly one format. Data blocks, index, root and state
 pages, held deltas and WAL frames exist only in the binary formats described

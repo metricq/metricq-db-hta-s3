@@ -50,13 +50,17 @@ type settledRecords []hta.Record
 // settledBlock reports whether an encoded data block is strongly compressed.
 func settledBlock(b []byte) bool { return len(b) > 5 && b[5] == settledRecordKind }
 
-var zstdFast = sync.OnceValue(func() *zstd.Encoder { return newZstdEncoder(zstd.SpeedFastest) })
-var zstdStrong = sync.OnceValue(func() *zstd.Encoder { return newZstdEncoder(zstd.SpeedBestCompression) })
+// An encoder at the best level keeps about 70 MB of match tables, so
+// compaction shares one: at 0.5 ms per raw and 2.5 ms per aggregate block it
+// still keeps up with more than 300,000 samples/s of chunked ingest.
+// Checkpoints encode with one fast encoder (about 4 MB) per core.
+var zstdFast = sync.OnceValue(func() *zstd.Encoder { return newZstdEncoder(zstd.SpeedFastest, runtime.GOMAXPROCS(0)) })
+var zstdStrong = sync.OnceValue(func() *zstd.Encoder { return newZstdEncoder(zstd.SpeedBestCompression, 1) })
 
 // A data payload is at most about 70 KiB, so a small window costs no ratio
 // and bounds encoder memory. Like gzip, frames carry a checksum (4 bytes).
-func newZstdEncoder(level zstd.EncoderLevel) *zstd.Encoder {
-	z, err := zstd.NewWriter(nil, zstd.WithEncoderLevel(level), zstd.WithWindowSize(128<<10), zstd.WithEncoderConcurrency(runtime.GOMAXPROCS(0)))
+func newZstdEncoder(level zstd.EncoderLevel, concurrency int) *zstd.Encoder {
+	z, err := zstd.NewWriter(nil, zstd.WithEncoderLevel(level), zstd.WithWindowSize(128<<10), zstd.WithEncoderConcurrency(concurrency))
 	if err != nil {
 		panic(err)
 	}

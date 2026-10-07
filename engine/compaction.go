@@ -34,8 +34,10 @@ const maxCompactionObjects = 256
 // names the inputs and every output prefix so an interrupted job can be fenced
 // and its staging objects deleted.
 type CompactionJob struct {
-	Locality    bool
-	Consecutive [][2]blob
+	Locality bool
+	// Consolidation packs small objects together.
+	Consolidation bool
+	Consecutive   [][2]blob
 	// First blocks of runs rewritten into full blocks plus one remainder at
 	// the run's end; each run's blocks are consecutive in Consecutive.
 	Rechunk []blob
@@ -237,6 +239,22 @@ func (e *Engine) reserveCompaction(ctx context.Context) (CompactionJob, error) {
 			return CompactionJob{}, err
 		}
 		locality = len(inputs) > 0
+	}
+	consolidation := false
+	consolidationMore := false
+	consolidationChecked := false
+	selectConsolidation := func() ([]BlockInfo, bool, error) {
+		consolidationChecked = true
+		reader := &Engine{store: snapshot.store, options: snapshot.options, metrics: snapshot.metrics, state: snapshot.state, sharedNodes: snapshot.sharedNodes, sharedCatalog: snapshot.sharedCatalog, nodeCache: make(map[blob]indexNode), nodeReadLimit: 4096, catalogReadBudget: compactionCatalogBudget}
+		return e.selectConsolidation(ctx, reader, options, objectLimit, cutoff)
+	}
+	if len(inputs) == 0 && e.compactionCompletions%4 == 1 {
+		var err error
+		inputs, consolidationMore, err = selectConsolidation()
+		if err != nil {
+			return CompactionJob{}, err
+		}
+		consolidation = len(inputs) > 0
 	}
 	nextEvacuation := ""
 	if evacuateObject != "" && len(inputs) == 0 {
@@ -603,6 +621,14 @@ func (e *Engine) reserveCompaction(ctx context.Context) (CompactionJob, error) {
 		}
 		locality = len(inputs) > 0
 	}
+	if len(inputs) == 0 && !consolidationChecked {
+		var consolidationErr error
+		inputs, consolidationMore, consolidationErr = selectConsolidation()
+		if consolidationErr != nil {
+			return CompactionJob{}, consolidationErr
+		}
+		consolidation = len(inputs) > 0
+	}
 	e.mu.Lock()
 	e.compactionEvacuateObject = nextEvacuation
 	e.candidateCursor = cursor
@@ -611,7 +637,7 @@ func (e *Engine) reserveCompaction(ctx context.Context) (CompactionJob, error) {
 	if resumeObject != "" {
 		e.candidateCursor = resumeCandidate
 	}
-	e.compactionScanMore = len(inputs) == 0 && (seedLimited || cursor != "" || localityMore || fragmentMore)
+	e.compactionScanMore = len(inputs) == 0 && (seedLimited || cursor != "" || localityMore || fragmentMore || consolidationMore)
 	if e.closed {
 		e.mu.Unlock()
 		return CompactionJob{}, fmt.Errorf("engine closed")
@@ -649,7 +675,7 @@ func (e *Engine) reserveCompaction(ctx context.Context) (CompactionJob, error) {
 			consecutive = append(consecutive, [2]blob{inputs[i-1].Entry.Blob, inputs[i].Entry.Blob})
 		}
 	}
-	job := CompactionJob{Consecutive: consecutive, Rechunk: rechunk, Locality: locality, ID: id, Stage: "reserved", Generation: generation, Inputs: inputs, Created: time.Now().UnixNano()}
+	job := CompactionJob{Consecutive: consecutive, Rechunk: rechunk, Locality: locality, Consolidation: consolidation, ID: id, Stage: "reserved", Generation: generation, Inputs: inputs, Created: time.Now().UnixNano()}
 	// Register all staging namespaces before uploads, including COW metadata.
 	for _, prefix := range []string{"data/", "index/", "catalog/", "candidates/", "trash/", "state/", "roots/", "held-state/"} {
 		job.OutputPrefixes = append(job.OutputPrefixes, prefix+"compact-"+id+"/")
@@ -1427,6 +1453,9 @@ func (e *Engine) applyCompaction(ctx context.Context, job CompactionJob, replace
 			e.compactionCompletions++
 			e.mu.Unlock()
 			e.metrics.Compactions.Inc()
+			if job.Consolidation {
+				e.metrics.ConsolidationJobs.Inc()
+			}
 			if job.Locality {
 				e.metrics.LocalityJobs.Inc()
 			}

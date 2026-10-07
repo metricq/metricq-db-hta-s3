@@ -366,6 +366,11 @@ func (e *Engine) catalogWalk(ctx context.Context, root blob, limit int, visit fu
 	}
 	return walk(root)
 }
+
+// smallObjectBytes marks objects that consolidation packs together regardless
+// of dead bytes; compaction never consolidates above compaction_output_object_bytes/8.
+const smallObjectBytes = 512 << 10
+
 func candidateKey(o ObjectInfo) string {
 	if o.Size == 0 || len(o.Blocks) == 0 {
 		return ""
@@ -377,7 +382,7 @@ func candidateKey(o ObjectInfo) string {
 			break
 		}
 	}
-	if o.LiveBytes >= o.Size && !fragmented {
+	if o.LiveBytes >= o.Size && !fragmented && o.Size >= smallObjectBytes {
 		return ""
 	}
 	rank := 999 - int(999*(o.Size-o.LiveBytes)/o.Size)
@@ -478,7 +483,8 @@ func (e *Engine) catalogChanges(ctx context.Context, next *manifest, changes map
 				if next.MaintenanceStatsReady {
 					next.CandidateObjects++
 				}
-				candidates[candidate] = &ObjectInfo{Key: candidate, Target: key, Modified: time.Now().UnixNano()}
+				// Size lets consolidation find small objects without catalog reads.
+				candidates[candidate] = &ObjectInfo{Key: candidate, Target: key, Modified: time.Now().UnixNano(), Size: value.Size}
 			}
 		}
 	}

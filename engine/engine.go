@@ -200,6 +200,9 @@ type Engine struct {
 	deferredSeeds            map[string]int64         // merge seeds deferred until this time (unix ns)
 	idleCandidates           map[string]idleCandidate // candidates whose last scan found no work
 	idlePass                 uint64                   // completed candidate scan passes
+	consolidationCursor      string
+	consolidationPass        uint64
+	candidateSizes           map[string]candidateSize
 	fragmentScans            map[string]fragmentScan
 	fragmentCursor           string
 	localityCursor           string

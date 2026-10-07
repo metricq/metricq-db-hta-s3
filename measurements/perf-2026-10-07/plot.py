@@ -34,10 +34,10 @@ for ax, (typ, n) in zip(axes.flat, panels):
             ax.plot(xs, [st.mean(float(r["latency_ms"]) for r in old[k]) for k in keys], ls=":", color="gray", label=f"{name}: end-to-end before index aggregates" if name == "1 Sa/s" else None)
     ref = ilsche[(typ, n, "end_to_end")]
     xs = [float(r["span_s"]) for r in ref]
-    ax.plot(xs, [float(r["mean_ms"]) for r in ref], color="black", lw=1, label="Ilsche 2020 Fig. 4.9: end-to-end")
-    ax.fill_between(xs, [float(r["ci_low_ms"]) for r in ref], [float(r["ci_high_ms"]) for r in ref], color="black", alpha=.15, lw=0)
+    ax.plot(xs, [float(r["mean_ms"]) for r in ref], color="red", lw=1, label="Ilsche 2020 Fig. 4.9: end-to-end")
+    ax.fill_between(xs, [float(r["ci_low_ms"]) for r in ref], [float(r["ci_high_ms"]) for r in ref], color="red", alpha=.15, lw=0)
     server = ilsche[(typ, n, "server_request")]
-    ax.plot([float(r["span_s"]) for r in server], [float(r["mean_ms"]) for r in server], color="black", lw=1, ls="--", label="Ilsche 2020 Fig. 4.9: server request")
+    ax.plot([float(r["span_s"]) for r in server], [float(r["mean_ms"]) for r in server], color="red", lw=1, ls="--", label="Ilsche 2020 Fig. 4.9: server request")
     ax.set_xscale("log")
     ax.set_title(f"{typ}, {'random single metric' if n == 1 else 'six metrics'}")
     ax.grid(alpha=.3)

@@ -47,7 +47,7 @@ for ax in axes[:, 0]:
     ax.set_ylabel("Query response latency (ms)")
 axes[0][0].legend(fontsize=7, loc="upper left")
 axes[1][0].legend(fontsize=7, loc="upper left")
-fig.suptitle("metricq-db-hta-s3 dev database, 2026-10-07 (ae0054b), against Ilsche 2020 Fig. 4.9: mean ± 95 % CI of 20 random windows", fontsize=10)
+fig.suptitle("metricq-db-hta-s3 dev database, 2026-10-07 (f33c232), against Ilsche 2020 Fig. 4.9: mean ± 95 % CI of 20 random windows", fontsize=10)
 fig.tight_layout()
 fig.savefig("query-matrix.svg")
 fig.savefig("/tmp/claude-1000/-home-mario-repos-metricq-metricq-db-hta-s3/8957a7b3-5182-42a0-939b-3329ce85623a/scratchpad/query-matrix2.png", dpi=100)

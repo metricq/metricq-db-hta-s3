@@ -1,0 +1,3 @@
+mode,prefetch,metrics,points_per_metric,chunk,seconds,points_per_s,wal_syncs,chunks_per_sync,mean_sync_ms,flushes,mean_flush_ms
+batch,400,6,1000000,500,16.188,370643.9,77,155.84,15.649,44,338.6
+batch,2000,6,1000000,500,16.139,371773.5,44,272.73,19.230,37,348.5

@@ -4,20 +4,28 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
-	"github.com/klauspost/compress/gzip"
 	"io"
 	"math"
+	"runtime"
 	"sort"
 	"sync"
 
+	"github.com/klauspost/compress/gzip"
+	"github.com/klauspost/compress/zstd"
 	"github.com/metricq/metricq-db-hta-s3/hta"
 )
 
 // The envelope identifies a version and payload kind before decompression.
-// Each range still has its own gzip stream and SHA-256 in the owning index.
+// Each range still has its own compressed stream (zstd for data blocks, gzip
+// otherwise) and SHA-256 in the owning index.
 const blockMagic = "MQHB"
 const blockVersion byte = 1
-const recordKind byte = 7 // kind 1 were data blocks of fixed 80-byte records
+
+// Data blocks: the flush compresses fast (zstd fastest, kind 8); compaction
+// recompresses every block it writes or copies strongly (zstd best, kind 9),
+// which decodes as fast. Kind 1 were fixed 80-byte records, kind 7 gzip.
+const recordKind byte = 8
+const settledRecordKind byte = 9
 
 const indexKind byte = 6 // kind 2 were index pages without entry aggregates
 const rootKind byte = 3
@@ -36,19 +44,59 @@ const maxIndexKeyBytes = 65535
 // six aggregate fields.
 const indexEntryBytes = 118
 
+// settledRecords are encoded with strong compression (compaction output).
+type settledRecords []hta.Record
+
+// settledBlock reports whether an encoded data block is strongly compressed.
+func settledBlock(b []byte) bool { return len(b) > 5 && b[5] == settledRecordKind }
+
+var zstdFast = sync.OnceValue(func() *zstd.Encoder { return newZstdEncoder(zstd.SpeedFastest) })
+var zstdStrong = sync.OnceValue(func() *zstd.Encoder { return newZstdEncoder(zstd.SpeedBestCompression) })
+
+// A data payload is at most about 70 KiB, so a small window costs no ratio
+// and bounds encoder memory. Like gzip, frames carry a checksum (4 bytes).
+func newZstdEncoder(level zstd.EncoderLevel) *zstd.Encoder {
+	z, err := zstd.NewWriter(nil, zstd.WithEncoderLevel(level), zstd.WithWindowSize(128<<10), zstd.WithEncoderConcurrency(runtime.GOMAXPROCS(0)))
+	if err != nil {
+		panic(err)
+	}
+	return z
+}
+
+const maxRecordsPayloadBytes = 20 + maxDataBlockRecords*maxRecordWireBytes
+
+var zstdDecoder = sync.OnceValue(func() *zstd.Decoder {
+	z, err := zstd.NewReader(nil, zstd.WithDecoderConcurrency(0), zstd.WithDecoderMaxMemory(1<<20), zstd.WithDecoderMaxWindow(1<<20))
+	if err != nil {
+		panic(err)
+	}
+	return z
+})
+
 func encodeBinaryBlock(v any) ([]byte, bool, error) {
 	var payload []byte
 	var kind byte
 	switch value := v.(type) {
-	case []hta.Record:
+	case []hta.Record, settledRecords:
+		records, settled := value.(settledRecords)
 		kind = recordKind
-		if len(value) > maxDataBlockRecords {
+		if settled {
+			kind = settledRecordKind
+		} else {
+			records = value.([]hta.Record)
+		}
+		if len(records) > maxDataBlockRecords {
 			return nil, true, fmt.Errorf("too many data records")
 		}
-		var err error
-		if payload, err = appendRecordsPayload(make([]byte, 0, 16+len(value)*16), value); err != nil {
+		payload, err := appendRecordsPayload(make([]byte, 0, 16+len(records)*16), records)
+		if err != nil {
 			return nil, true, err
 		}
+		z := zstdFast()
+		if settled {
+			z = zstdStrong()
+		}
+		return z.EncodeAll(payload, append(make([]byte, 0, 6+len(payload)/2), blockMagic+string([]byte{blockVersion, kind})...)), true, nil
 	case indexNode:
 		kind = indexKind
 		if len(value.Entries) > indexFanout {
@@ -135,7 +183,7 @@ func encodeBinaryBlock(v any) ([]byte, bool, error) {
 }
 
 var gzipReaders sync.Pool
-var payloadBuffers = sync.Pool{New: func() any { return bytes.NewBuffer(make([]byte, 0, 32<<10)) }}
+var zstdPayloads = sync.Pool{New: func() any { b := make([]byte, 0, 32<<10); return &b }}
 
 func decodeBinaryBlock(b []byte, v any) error {
 	if len(b) < 6 || b[4] != blockVersion {
@@ -145,10 +193,21 @@ func decodeBinaryBlock(b []byte, v any) error {
 	limit := int64(0)
 	switch v.(type) {
 	case *[]hta.Record:
-		if kind != recordKind {
-			return fmt.Errorf("block payload type mismatch")
+		if kind == recordKind || kind == settledRecordKind {
+			// Data blocks copy every field out of the payload, so its buffer is reused.
+			buf := zstdPayloads.Get().(*[]byte)
+			defer zstdPayloads.Put(buf)
+			payload, err := zstdDecoder().DecodeAll(b[6:], (*buf)[:0])
+			if err != nil {
+				return err
+			}
+			*buf = payload
+			if len(payload) > maxRecordsPayloadBytes {
+				return fmt.Errorf("block payload exceeds size limit")
+			}
+			return decodeBinaryPayload(payload, v)
 		}
-		limit = 20 + maxDataBlockRecords*maxRecordWireBytes
+		return fmt.Errorf("block payload type mismatch")
 	case *indexNode:
 		if kind != indexKind {
 			return fmt.Errorf("block payload type mismatch")
@@ -185,13 +244,7 @@ func decodeBinaryBlock(b []byte, v any) error {
 	}
 	defer gzipReaders.Put(z)
 	z.Multistream(false)
-	// Data blocks copy every field out of the payload, so its buffer is reused.
 	buf := &bytes.Buffer{}
-	if _, ok := v.(*[]hta.Record); ok {
-		buf = payloadBuffers.Get().(*bytes.Buffer)
-		buf.Reset()
-		defer payloadBuffers.Put(buf)
-	}
 	if _, err = buf.ReadFrom(io.LimitReader(z, limit+1)); err != nil {
 		return err
 	}

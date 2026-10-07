@@ -84,6 +84,9 @@ func binaryTestEnvelope(kind byte, payload []byte) []byte {
 	out.WriteString(blockMagic)
 	out.WriteByte(blockVersion)
 	out.WriteByte(kind)
+	if kind == recordKind || kind == settledRecordKind {
+		return zstdFast().EncodeAll(payload, out.Bytes())
+	}
 	z := gzip.NewWriter(&out)
 	z.Write(payload)
 	z.Close()
@@ -108,12 +111,14 @@ func TestBinaryBlockRejectsDamageWithoutChangingDestination(t *testing.T) {
 	version[4]++
 	corrupt := append([]byte(nil), valid...)
 	corrupt[len(corrupt)-1] ^= 1
+	// Appended garbage is rejected. An appended empty zstd frame decodes to
+	// nothing and is caught only by the index entry's SHA-256 and length.
 	excessive := binary.AppendVarint(binary.AppendUvarint(nil, math.MaxUint32), 0)
 	trailing := []byte{0, 0, 1}
-	for _, bad := range [][]byte{version, corrupt, append(append([]byte(nil), valid...), 0), append(append([]byte(nil), valid...), binaryTestEnvelope(recordKind, nil)[6:]...), binaryTestEnvelope(recordKind, excessive), binaryTestEnvelope(recordKind, trailing), binaryTestEnvelope(recordKind, make([]byte, 21+maxDataBlockRecords*maxRecordWireBytes))} {
+	for i, bad := range [][]byte{version, corrupt, append(append([]byte(nil), valid...), 0), append(append([]byte(nil), valid...), binaryTestEnvelope(stateKind, nil)[6:]...), binaryTestEnvelope(recordKind, excessive), binaryTestEnvelope(recordKind, trailing), binaryTestEnvelope(recordKind, make([]byte, 21+maxDataBlockRecords*maxRecordWireBytes))} {
 		dst := []hta.Record{{Time: 42}}
 		if err := decode(bad, &dst); err == nil {
-			t.Fatal("accepted corrupt data block")
+			t.Fatalf("accepted corrupt data block %d", i)
 		}
 		if len(dst) != 1 || dst[0].Time != 42 {
 			t.Fatal("failed decode modified data destination")
@@ -148,6 +153,39 @@ func TestBinaryBlockRejectsDamageWithoutChangingDestination(t *testing.T) {
 	n.Entries[0].Blob.Key = string(make([]byte, maxIndexKeyBytes+1))
 	if _, err = encode(n); err == nil {
 		t.Fatal("unbounded index key")
+	}
+}
+
+// Compaction output is strongly compressed (kind 9); gzip data blocks
+// (kind 7) are no longer read.
+func TestDataBlockCompressionKinds(t *testing.T) {
+	for _, aggregate := range []bool{false, true} {
+		records := codecRecords(1024, aggregate)
+		fast, err := encode(records)
+		if err != nil {
+			t.Fatal(err)
+		}
+		settled, err := encode(settledRecords(records))
+		if err != nil {
+			t.Fatal(err)
+		}
+		payload, err := appendRecordsPayload(nil, records)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if settledBlock(fast) || !settledBlock(settled) {
+			t.Fatal("wrong compression kind")
+		}
+		var dst []hta.Record
+		if decode(binaryTestEnvelope(7, payload), &dst) == nil {
+			t.Fatal("gzip data block accepted")
+		}
+		for _, b := range [][]byte{fast, settled} {
+			var got []hta.Record
+			if err := decode(b, &got); err != nil || !reflect.DeepEqual(records, got) {
+				t.Fatalf("kind %d: %v", b[5], err)
+			}
+		}
 	}
 }
 
@@ -217,12 +255,16 @@ func FuzzBinaryBlock(f *testing.F) {
 			f.Fatal(err)
 		}
 		f.Add(b)
-		z, err := gzip.NewReader(bytes.NewReader(b[6:]))
-		if err != nil {
-			f.Fatal(err)
+		var payload []byte
+		if b[5] == recordKind {
+			payload, err = zstdDecoder().DecodeAll(b[6:], nil)
+		} else {
+			var z *gzip.Reader
+			if z, err = gzip.NewReader(bytes.NewReader(b[6:])); err == nil {
+				payload, err = io.ReadAll(z)
+				z.Close()
+			}
 		}
-		payload, err := io.ReadAll(z)
-		z.Close()
 		if err != nil {
 			f.Fatal(err)
 		}

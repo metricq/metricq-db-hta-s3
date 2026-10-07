@@ -370,10 +370,11 @@ func TestCompactionCopiesCompressedBytesAndRebasesRawAppend(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Flushed blocks are recompressed once; the records stay.
 	for _, input := range job.Inputs {
 		r := replacements[input.Entry.Blob]
-		if input.Entry.Blob.Hash != r.Entry.Blob.Hash {
-			t.Fatal("copy-only compaction changed encoded bytes")
+		if input.Entry.Blob.Hash == r.Entry.Blob.Hash || r.Entry.First != input.Entry.First || r.Entry.Last != input.Entry.Last || r.Entry.Records != input.Entry.Records {
+			t.Fatal("copy-only compaction did not recompress the flushed block")
 		}
 	}
 	oldRoot := e.state.Roots["x"][0]

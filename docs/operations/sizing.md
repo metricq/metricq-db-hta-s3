@@ -16,7 +16,9 @@ record plus completed aggregate records:
 
 ## Object storage capacity
 
-Data blocks use fixed binary fields compressed with gzip per block. Measured
+The table below was measured with an earlier codec (fixed binary fields
+compressed with gzip per block); varint records with zstd after compaction
+are smaller, see the size note below the table. Measured
 in the development stack (1000 metrics at 1 Hz with values as a random walk
 with two decimals, plus a 100 Hz metric, about 17 hours;
 `measurements/storage-per-record.md`):
@@ -27,6 +29,11 @@ with two decimals, plus a 100 Hz metric, about 17 hours;
 | raw, 100 Hz | 12.8 |
 | aggregates (six fields), 40 s and 400 s levels | 27 – 30 |
 | aggregates, 0.4 s and 4 s levels of the 100 Hz metric | 17 – 24 |
+
+With the current codec, compacted blocks (zstd best) of the same development
+stack store 2.8 bytes per raw 1 Hz record, 6.1 per raw 100 Hz record and 2.6
+per raw 1 kHz record, and 13 – 18 bytes per aggregate record; after the
+migration to zstd its data blocks shrank from 2273 to 1782 MB.
 
 Real measurements compress better or worse depending on their values.
 Bytes per sample are roughly *raw bytes + (records per sample − 1) ×

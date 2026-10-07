@@ -916,6 +916,8 @@ func (e *Engine) copyJob(ctx context.Context, job CompactionJob) (map[blob]repla
 		encodes [][]byte
 		// prev is the time of the raw value before the group (see blockAggregate).
 		prev int64
+		// recompressed marks a copied block encoded anew (same records).
+		recompressed bool
 	}
 	rechunkStart := make(map[blob]bool, len(job.Rechunk))
 	for _, ref := range job.Rechunk {
@@ -1000,7 +1002,23 @@ func (e *Engine) copyJob(ctx context.Context, job CompactionJob) (map[blob]repla
 			defer wg.Done()
 			for i := range work {
 				g := &groups[i]
-				if g.err = ctx.Err(); g.err != nil || g.end == g.start+1 {
+				if g.err = ctx.Err(); g.err != nil {
+					continue
+				}
+				// A copied data block is recompressed strongly once.
+				if g.end == g.start+1 && !g.rechunk {
+					if g.info.Index || settledBlock(g.encoded) {
+						continue
+					}
+					var records []hta.Record
+					if g.err = decode(g.encoded, &records); g.err == nil {
+						if len(records) != g.info.Entry.Records {
+							g.err = fmt.Errorf("invalid copied block record count")
+							continue
+						}
+						g.encoded, g.err = encode(settledRecords(records))
+						g.recompressed = true
+					}
 					continue
 				}
 				records := make([]hta.Record, 0, g.info.Entry.Records)
@@ -1036,14 +1054,14 @@ func (e *Engine) copyJob(ctx context.Context, job CompactionJob) (map[blob]repla
 				}
 				if !g.rechunk {
 					g.info.Entry.agg = blockAggregate(records, g.prev)
-					g.encoded, g.err = encode(records)
+					g.encoded, g.err = encode(settledRecords(records))
 					continue
 				}
 				prev := g.prev
 				for k := 0; k < len(records) && g.err == nil; k += maxDataBlockRecords {
 					part := records[k:min(k+maxDataBlockRecords, len(records))]
 					var b []byte
-					b, g.err = encode(part)
+					b, g.err = encode(settledRecords(part))
 					g.encodes = append(g.encodes, b)
 					g.parts = append(g.parts, BlockInfo{Metric: g.info.Metric, Level: g.info.Level, Entry: indexEntry{First: part[0].Time, Last: part[len(part)-1].LastTime(), Records: len(part), agg: blockAggregate(part, prev)}})
 					prev = part[len(part)-1].LastTime()
@@ -1098,6 +1116,9 @@ func (e *Engine) copyJob(ctx context.Context, job CompactionJob) (map[blob]repla
 		target, err := add(g.info, g.encoded)
 		if err != nil {
 			return nil, nil, err
+		}
+		if g.recompressed && e.sharedBlocks != nil {
+			e.sharedBlocks.alias(inputs[g.start].Entry.Blob, target.Blob)
 		}
 		// A copied block keeps the aggregate of its index entry.
 		replacements[inputs[g.start].Entry.Blob] = replacement{Entry: target, Index: g.info.Index, Old: inputs[g.start].Entry, Carry: g.end == g.start+1}

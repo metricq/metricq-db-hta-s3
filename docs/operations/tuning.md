@@ -151,7 +151,10 @@ The inventory upload comparison (`measurements/inventory-upload-pipeline.md`)
 measures the four-slot pipeline separately: catalog-phase latency decreases,
 while total local compaction/GC time remains effectively unchanged.
 
-Data blocks and index pages use a versioned binary codec with gzip BestSpeed.
+Data blocks use a versioned binary codec with zstd: fastest at checkpoints,
+best when compaction rewrites them (see
+[storage layout](../architecture/storage-layout.md#dataindex-block-codec)).
+Index pages use gzip BestSpeed.
 Fixed fields avoid per-block Gob schemas; full raw blocks can still
 be slightly larger. See the codec measurements (`measurements/binary-block-codec.md`)
 for allocation, byte-volume and compaction results.

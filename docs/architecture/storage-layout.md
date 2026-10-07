@@ -21,7 +21,7 @@ writing new objects and conditionally replacing `manifest`.
 ## Blocks
 
 A **block** holds up to 1024 records of one stream in time order, encoded
-with a versioned binary codec and compressed with gzip, and is addressed by
+with a versioned binary codec and compressed with zstd, and is addressed by
 `(object key, offset, length, SHA-256)`. It is the unit of reading: one block
 is one byte range of one object, verified by its hash. Several blocks are
 concatenated into one object ("pack") so a checkpoint needs few PUTs.
@@ -43,12 +43,23 @@ so concurrent readers keep a consistent view.
 ## Data/index block codec
 
 New data, index and root metadata pages begin with a six-byte envelope: ASCII
-`MQHB`, version byte `1`, and kind byte (`7` data, `6` index, `3` root page;
-kinds `1` and `2` were data blocks of fixed 80-byte records and index pages
-without aggregates, no longer read). An independent gzip BestSpeed
-stream follows. The range SHA-256 covers the envelope and compressed stream.
-Unknown versions/kinds, wrong destination types, truncation, invalid counts,
-invalid key IDs, gzip CRC errors and trailing payload bytes fail decoding.
+`MQHB`, version byte `1`, and kind byte (`8` and `9` data, `6` index, `3` root
+page; kinds `1`, `7` and `2` were data blocks of fixed 80-byte records, gzip
+data blocks and index pages without aggregates, no longer read). Data blocks
+follow with one zstd frame (with checksum), other pages with an independent
+gzip BestSpeed stream. The range SHA-256 covers the envelope and compressed
+stream. Unknown versions/kinds, wrong destination types, truncation, invalid
+counts, invalid key IDs, checksum errors and trailing payload bytes fail
+decoding.
+
+Data blocks are compressed in two stages. A checkpoint writes them with zstd
+"fastest" (kind 8), which costs about as much as gzip BestSpeed. Compaction
+writes every data block it produces with zstd "best" (kind 9), including
+blocks it would otherwise copy unchanged, so each block is recompressed once
+and then copied byte for byte. Strong compression costs only encoding time
+(about 0.5 ms per raw and 2.5 ms per aggregate block of 1024 records): a kind
+9 block decodes about twice as fast as a gzip block and is 15 to 25 % smaller.
+The decoded records of a recompressed block stay in the block cache.
 
 Every object type has exactly one format. Data blocks, index, root and state
 pages, held deltas and WAL frames exist only in the binary formats described

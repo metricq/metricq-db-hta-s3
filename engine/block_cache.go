@@ -41,6 +41,18 @@ func (c *dataBlockCache) get(key blob) ([]hta.Record, bool) {
 	return nil, false
 }
 
+// alias makes a cached block also hit under the address of its recompressed
+// copy (same records, other bytes).
+func (c *dataBlockCache) alias(old, recompressed blob) {
+	c.mu.Lock()
+	element := c.items[old.Hash]
+	c.mu.Unlock()
+	if element != nil {
+		block := element.Value.(cachedBlock)
+		c.add(recompressed, block.records, block.cost)
+	}
+}
+
 func (c *dataBlockCache) add(key blob, records []hta.Record, cost int64) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

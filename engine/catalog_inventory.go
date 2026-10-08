@@ -25,7 +25,8 @@ func (e *Engine) loadObjectInventory(ctx context.Context, o *ObjectInfo) error {
 	}
 	for start := 0; start < len(o.Inventory); start += maxQueryBlockBatch {
 		end := min(start+maxQueryBlockBatch, len(o.Inventory))
-		refs := make([]blob, end-start)
+		refs := make([]blob, 0, end-start)
+		cached := make([][]BlockInfo, end-start)
 		for i, page := range o.Inventory[start:end] {
 			if page.First < 0 || page.Last < page.First || page.Count <= 0 || page.Count > inventoryPageBlocks || page.Ref.Length <= 0 || page.Ref.Length > 32<<20 {
 				return fmt.Errorf("invalid object inventory page")
@@ -33,29 +34,43 @@ func (e *Engine) loadObjectInventory(ctx context.Context, o *ObjectInfo) error {
 			if start+i > 0 && o.Inventory[start+i-1].Last >= page.First {
 				return fmt.Errorf("unordered object inventory pages")
 			}
+			if e.sharedCatalog != nil {
+				if blocks, ok := e.sharedCatalog.inventoryGet(page.Ref); ok {
+					cached[i] = blocks
+					continue
+				}
+			}
 			if e.catalogReadBudget > 0 && e.catalogReadBytes+page.Ref.Length > e.catalogReadBudget {
 				return errCatalogBudget
 			}
 			e.catalogReadBytes += page.Ref.Length
-			refs[i] = page.Ref
+			refs = append(refs, page.Ref)
 		}
 		encoded, err := e.fetchEncoded(ctx, refs)
 		if err != nil {
 			return err
 		}
-		for i, b := range encoded {
-			var blocks []BlockInfo
-			if err := decode(b, &blocks); err != nil {
-				return err
-			}
+		next := 0
+		for i := range cached {
 			page := o.Inventory[start+i]
-			if len(blocks) != page.Count {
-				return fmt.Errorf("invalid inventory record count")
-			}
-			for j, block := range blocks {
-				ref := block.Entry.Blob
-				if ref.Key != o.Key || ref.Offset < page.First || ref.Offset > page.Last || ref.Length <= 0 || ref.Offset > o.Size || ref.Length > o.Size-ref.Offset || (j > 0 && blocks[j-1].Entry.Blob.Offset >= ref.Offset) {
-					return fmt.Errorf("invalid object inventory block")
+			blocks := cached[i]
+			if blocks == nil {
+				b := encoded[next]
+				next++
+				if err := decode(b, &blocks); err != nil {
+					return err
+				}
+				if len(blocks) != page.Count {
+					return fmt.Errorf("invalid inventory record count")
+				}
+				for j, block := range blocks {
+					ref := block.Entry.Blob
+					if ref.Key != o.Key || ref.Offset < page.First || ref.Offset > page.Last || ref.Length <= 0 || ref.Offset > o.Size || ref.Length > o.Size-ref.Offset || (j > 0 && blocks[j-1].Entry.Blob.Offset >= ref.Offset) {
+						return fmt.Errorf("invalid object inventory block")
+					}
+				}
+				if e.sharedCatalog != nil {
+					e.sharedCatalog.inventoryAdd(page.Ref, blocks)
 				}
 			}
 			o.Blocks = append(o.Blocks, blocks...)

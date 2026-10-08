@@ -66,7 +66,8 @@ func TestCatalogInventoryKeepsStablePagesAndRetiresLastReference(t *testing.T) {
 	s.mu.Unlock()
 	wire = changed
 	wire.Blocks = nil
-	if err = e.loadObjectInventory(ctx, &wire); err == nil {
+	// Without the shared cache, which holds only verified pages.
+	if err = (&Engine{store: e.store, metrics: e.metrics}).loadObjectInventory(ctx, &wire); err == nil {
 		t.Fatal("corrupt inventory accepted")
 	}
 }

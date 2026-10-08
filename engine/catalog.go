@@ -2,7 +2,6 @@ package engine
 
 import (
 	"context"
-	"crypto/sha256"
 	"errors"
 	"fmt"
 	"sort"
@@ -16,7 +15,15 @@ const catalogFanout = 64
 // its bound allows; compaction shrinks later jobs instead of failing forever.
 var errCatalogBudget = errors.New("catalog metadata byte budget exceeded")
 
-const catalogLeafTargetBytes = 256 << 10
+// Leaves aim at about 64 KiB of entries (before compression): a paged
+// entry costs its inventory references, an inline entry its descriptors.
+const catalogLeafTargetBytes = 64 << 10
+
+// Tree pages written by one update share one pack. A pack stays until no
+// page of the published tree references it; once the tree references more
+// than catalogTreePacks packs, the next update rewrites the whole tree into
+// a fresh pack, which also refills sparse leaves.
+const catalogTreePacks = 16
 
 // BlockInfo locates one data block or index page of a stream in an object.
 type BlockInfo struct {
@@ -51,14 +58,71 @@ type catalogNode struct {
 }
 
 type catalogWriter struct {
-	e            *Engine
-	ctx          context.Context
-	prefix       string
-	retired      []string
-	created      []string
-	pendingNodes []catalogNode
-	pending      []*pack
-	pendingBytes int
+	e      *Engine
+	ctx    context.Context
+	prefix string
+	// Packs of this update, the last one open; pages records each page for
+	// the shared cache and the tree page directory.
+	packs []*pack
+	pages []writtenCatalogPage
+}
+
+type writtenCatalogPage struct {
+	ref     blob
+	node    catalogNode
+	encoded int
+}
+
+// catalogTreePages remembers the child references of the pages of each
+// tree (by prefix), so the packs a tree references can be listed after
+// every update without reading its leaves again.
+type catalogTreePages struct {
+	mu       sync.Mutex
+	children map[string]map[[32]byte][]blob
+}
+
+func newCatalogTreePages() *catalogTreePages {
+	return &catalogTreePages{children: map[string]map[[32]byte][]blob{}}
+}
+
+func (t *catalogTreePages) get(prefix string, ref blob) ([]blob, bool) {
+	if t == nil {
+		return nil, false
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	children, ok := t.children[prefix][ref.Hash]
+	return children, ok
+}
+
+func (t *catalogTreePages) remember(prefix string, ref blob, n catalogNode) {
+	if t == nil {
+		return
+	}
+	children := make([]blob, len(n.Children))
+	for i, edge := range n.Children {
+		children[i] = edge.Ref
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.children[prefix] == nil {
+		t.children[prefix] = map[[32]byte][]blob{}
+	}
+	t.children[prefix][ref.Hash] = children
+}
+
+// keep drops the pages of a tree that its current version no longer has.
+func (t *catalogTreePages) keep(prefix string, pages map[[32]byte]bool) {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for hash := range t.children[prefix] {
+		if !pages[hash] {
+			delete(t.children[prefix], hash)
+		}
+	}
 }
 
 func (w *catalogWriter) read(ref blob) (catalogNode, error) {
@@ -91,13 +155,6 @@ func (w *catalogWriter) read(ref blob) (catalogNode, error) {
 	if err == nil && ((len(n.Items) == 0) == (len(n.Children) == 0) || len(n.Items) > catalogFanout || len(n.Children) > catalogFanout) {
 		err = fmt.Errorf("invalid catalog node")
 	}
-	if err == nil {
-		for i := range n.Items {
-			if err = w.e.loadObjectInventory(w.ctx, &n.Items[i]); err != nil {
-				return n, err
-			}
-		}
-	}
 	if err == nil && w.e.sharedCatalog != nil {
 		w.e.sharedCatalog.add(ref, n, len(b))
 		return n, nil
@@ -122,10 +179,6 @@ func (w *catalogWriter) read(ref blob) (catalogNode, error) {
 	return n, err
 }
 func (w *catalogWriter) write(n catalogNode) (catalogEdge, error) {
-	p, err := w.e.newMetadataPack(w.prefix)
-	if err != nil {
-		return catalogEdge{}, err
-	}
 	b, err := encode(catalogWire(n))
 	if err != nil {
 		return catalogEdge{}, err
@@ -133,16 +186,15 @@ func (w *catalogWriter) write(n catalogNode) (catalogEdge, error) {
 	if len(b) > 32<<20 {
 		return catalogEdge{}, fmt.Errorf("catalog page exceeds memory budget")
 	}
-	ref := p.add(b)
-	if w.pendingBytes+len(b) > 4<<20 {
-		if err = w.flush(); err != nil {
+	if len(w.packs) == 0 || w.packs[len(w.packs)-1].buf.Len()+len(b) > 4<<20 {
+		p, err := w.e.newMetadataPack(w.prefix)
+		if err != nil {
 			return catalogEdge{}, err
 		}
+		w.packs = append(w.packs, p)
 	}
-	w.pending = append(w.pending, p)
-	w.pendingNodes = append(w.pendingNodes, n)
-	w.pendingBytes += len(b)
-	w.created = append(w.created, p.key)
+	ref := w.packs[len(w.packs)-1].add(b)
+	w.pages = append(w.pages, writtenCatalogPage{ref: ref, node: n, encoded: len(b)})
 	edge := catalogEdge{Ref: ref}
 	if len(n.Items) > 0 {
 		edge.First = n.Items[0].Key
@@ -154,38 +206,139 @@ func (w *catalogWriter) write(n catalogNode) (catalogEdge, error) {
 	return edge, nil
 }
 
-// Independent immutable pages upload concurrently with a bounded batch buffer.
-// Publication still waits for every PUT and never retries failed calls.
+// flush uploads the packs of this update concurrently. Publication still
+// waits for every PUT and never retries failed calls.
 func (w *catalogWriter) flush() error {
-	for begin := 0; begin < len(w.pending); begin += 8 {
-		batch := w.pending[begin:min(begin+8, len(w.pending))]
-		errs := make([]error, len(batch))
-		var wg sync.WaitGroup
-		for i, p := range batch {
-			wg.Add(1)
-			go func(i int, p *pack) {
-				defer wg.Done()
-				absent := ""
-				_, errs[i] = w.e.put(w.ctx, p.key, p.buf.Bytes(), &absent)
-			}(i, p)
+	errs := make([]error, len(w.packs))
+	var wg sync.WaitGroup
+	for i, p := range w.packs {
+		wg.Add(1)
+		go func(i int, p *pack) {
+			defer wg.Done()
+			absent := ""
+			_, errs[i] = w.e.put(w.ctx, p.key, p.buf.Bytes(), &absent)
+		}(i, p)
+	}
+	wg.Wait()
+	for _, err := range errs {
+		if err != nil {
+			return err
 		}
-		wg.Wait()
-		for i, err := range errs {
-			if err == nil && w.e.sharedCatalog != nil {
-				p := batch[i]
-				data := p.buf.Bytes()
-				ref := blob{Key: p.key, Length: int64(len(data)), Hash: sha256.Sum256(data)}
-				w.e.sharedCatalog.add(ref, w.pendingNodes[begin+i], len(data))
+	}
+	for _, page := range w.pages {
+		if w.e.sharedCatalog != nil {
+			w.e.sharedCatalog.tree.remember(w.prefix, page.ref, page.node)
+			w.e.sharedCatalog.add(page.ref, catalogWire(page.node), page.encoded)
+		}
+	}
+	w.packs, w.pages = nil, nil
+	return nil
+}
+
+// readCatalogWire reads a tree page as stored: paged entries keep their
+// inventory references without loading the descriptors.
+func (w *catalogWriter) readCatalogWire(ref blob) (catalogNode, error) {
+	var n catalogNode
+	if ref.Length > 32<<20 {
+		return n, fmt.Errorf("catalog page too large")
+	}
+	b, err := w.e.readBlob(w.ctx, ref)
+	if err != nil {
+		return n, err
+	}
+	if err = decode(b, &n); err != nil {
+		return n, err
+	}
+	if (len(n.Items) == 0) == (len(n.Children) == 0) || len(n.Items) > catalogFanout || len(n.Children) > catalogFanout {
+		return n, fmt.Errorf("invalid catalog node")
+	}
+	return n, nil
+}
+
+// treePacks returns the pack keys and page hashes of all pages of a tree.
+func (w *catalogWriter) treePacks(root blob) (map[string]bool, map[[32]byte]bool, error) {
+	packs, pages := map[string]bool{}, map[[32]byte]bool{}
+	var tree *catalogTreePages
+	if w.e.sharedCatalog != nil {
+		tree = w.e.sharedCatalog.tree
+	}
+	var walk func(ref blob) error
+	walk = func(ref blob) error {
+		packs[ref.Key] = true
+		pages[ref.Hash] = true
+		children, known := tree.get(w.prefix, ref)
+		if !known {
+			n, ok := catalogNode{}, false
+			if w.e.sharedCatalog != nil {
+				n, ok = w.e.sharedCatalog.get(ref)
 			}
-			if err != nil {
+			if !ok {
+				var err error
+				if n, err = w.readCatalogWire(ref); err != nil {
+					return err
+				}
+			}
+			tree.remember(w.prefix, ref, n)
+			for _, edge := range n.Children {
+				children = append(children, edge.Ref)
+			}
+		}
+		for _, child := range children {
+			if err := walk(child); err != nil {
 				return err
 			}
 		}
+		return nil
 	}
-	w.pending = nil
-	w.pendingNodes = nil
-	w.pendingBytes = 0
-	return nil
+	if root.Key == "" {
+		return packs, pages, nil
+	}
+	return packs, pages, walk(root)
+}
+
+// rebuild writes the whole tree with the updates applied into fresh packs.
+func (w *catalogWriter) rebuild(root blob, updates map[string]*ObjectInfo) ([]catalogEdge, error) {
+	byKey := map[string]ObjectInfo{}
+	var walk func(ref blob) error
+	walk = func(ref blob) error {
+		n, ok := catalogNode{}, false
+		if w.e.sharedCatalog != nil {
+			n, ok = w.e.sharedCatalog.get(ref)
+		}
+		if !ok {
+			var err error
+			if n, err = w.readCatalogWire(ref); err != nil {
+				return err
+			}
+		}
+		for _, o := range n.Items {
+			byKey[o.Key] = o
+		}
+		for _, edge := range n.Children {
+			if err := walk(edge.Ref); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	if root.Key != "" {
+		if err := walk(root); err != nil {
+			return nil, err
+		}
+	}
+	for key, v := range updates {
+		if v == nil {
+			delete(byKey, key)
+		} else {
+			byKey[key] = *v
+		}
+	}
+	items := make([]ObjectInfo, 0, len(byKey))
+	for _, v := range byKey {
+		items = append(items, v)
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].Key < items[j].Key })
+	return w.leaves(items)
 }
 
 func (w *catalogWriter) leaves(items []ObjectInfo) ([]catalogEdge, error) {
@@ -197,7 +350,12 @@ func (w *catalogWriter) leaves(items []ObjectInfo) ([]catalogEdge, error) {
 			// Descriptor counts vary widely between mixed packs. Isolate a
 			// large object's inventory instead of recompressing it whenever
 			// one of up to 63 unrelated neighboring objects changes.
-			next := 128 + len(item.Key) + len(item.Target) + 192*len(item.Blocks)
+			next := 128 + len(item.Key) + len(item.Target)
+			if len(item.Inventory) > 0 {
+				next += 128 * len(item.Inventory)
+			} else {
+				next += 192 * len(item.Blocks)
+			}
 			if end > i && next > catalogLeafTargetBytes-cost {
 				break
 			}
@@ -250,7 +408,6 @@ func (w *catalogWriter) apply(ref blob, updates map[string]*ObjectInfo) ([]catal
 		}
 		return []catalogEdge{edge}, nil
 	}
-	w.retired = append(w.retired, ref.Key)
 	if len(n.Items) > 0 {
 		byKey := make(map[string]ObjectInfo, len(n.Items)+len(updates))
 		for _, v := range n.Items {
@@ -295,12 +452,25 @@ func (w *catalogWriter) apply(ref blob, updates map[string]*ObjectInfo) ([]catal
 	}
 	return w.branches(edges)
 }
+
+// updateCatalog applies updates to a catalog or candidate tree and returns
+// the new root and the packs no page of the new tree references.
 func (e *Engine) updateCatalog(ctx context.Context, root blob, updates map[string]*ObjectInfo, prefix string) (blob, []string, error) {
 	if len(updates) == 0 {
 		return root, nil, nil
 	}
 	w := catalogWriter{e: e, ctx: ctx, prefix: prefix}
-	edges, err := w.apply(root, updates)
+	before, _, err := w.treePacks(root)
+	if err != nil {
+		return blob{}, nil, err
+	}
+	var edges []catalogEdge
+	if len(before) >= catalogTreePacks {
+		e.metrics.CatalogRebuilds.WithLabelValues(prefix).Inc()
+		edges, err = w.rebuild(root, updates)
+	} else {
+		edges, err = w.apply(root, updates)
+	}
 	if err != nil {
 		return blob{}, nil, err
 	}
@@ -313,10 +483,27 @@ func (e *Engine) updateCatalog(ctx context.Context, root blob, updates map[strin
 	if err = w.flush(); err != nil {
 		return blob{}, nil, err
 	}
-	if len(edges) == 0 {
-		return blob{}, w.retired, nil
+	next := blob{}
+	if len(edges) > 0 {
+		next = edges[0].Ref
 	}
-	return edges[0].Ref, w.retired, nil
+	after, pages, err := w.treePacks(next)
+	if err != nil {
+		return blob{}, nil, err
+	}
+	if e.sharedCatalog != nil {
+		e.sharedCatalog.tree.keep(prefix, pages)
+	}
+	e.metrics.CatalogTreePacks.WithLabelValues(prefix).Set(float64(len(after)))
+	e.metrics.CatalogTreePages.WithLabelValues(prefix).Set(float64(len(pages)))
+	var retired []string
+	for key := range before {
+		if !after[key] {
+			retired = append(retired, key)
+		}
+	}
+	sort.Strings(retired)
+	return next, retired, nil
 }
 func (e *Engine) catalogGet(ctx context.Context, root blob, key string) (ObjectInfo, bool, error) {
 	w := catalogWriter{e: e, ctx: ctx}
@@ -328,7 +515,11 @@ func (e *Engine) catalogGet(ctx context.Context, root blob, key string) (ObjectI
 		if len(n.Items) > 0 {
 			i := sort.Search(len(n.Items), func(i int) bool { return n.Items[i].Key >= key })
 			if i < len(n.Items) && n.Items[i].Key == key {
-				return n.Items[i], true, nil
+				o := n.Items[i]
+				if err := e.loadObjectInventory(ctx, &o); err != nil {
+					return ObjectInfo{}, false, err
+				}
+				return o, true, nil
 			}
 			return ObjectInfo{}, false, nil
 		}
@@ -358,6 +549,9 @@ func (e *Engine) catalogWalk(ctx context.Context, root blob, limit int, visit fu
 			return err
 		}
 		for _, item := range n.Items {
+			if err := e.loadObjectInventory(ctx, &item); err != nil {
+				return err
+			}
 			if !visit(item) {
 				stop = true
 				return nil
@@ -539,6 +733,9 @@ func (e *Engine) catalogScan(ctx context.Context, root blob, after string, limit
 				continue
 			}
 			last = item.Key
+			if err := e.loadObjectInventory(ctx, &item); err != nil {
+				return err
+			}
 			if !visit(item) {
 				stopped = true
 				return nil

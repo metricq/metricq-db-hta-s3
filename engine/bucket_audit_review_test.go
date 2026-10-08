@@ -107,10 +107,13 @@ func auditSnapshot(ctx context.Context, s storage.Store) (*bucketSnapshot, *Engi
 		}
 		return nil
 	}
-	// read() loads paged inventories into Blocks and keeps their references.
+	var inventoryErr error
 	if err := walk(m.Catalog, "catalog pages", func(o ObjectInfo) {
 		for _, page := range o.Inventory {
 			mark(page.Ref.Key, "object inventory")
+		}
+		if err := e.loadObjectInventory(ctx, &o); err != nil && inventoryErr == nil {
+			inventoryErr = err
 		}
 		mark(o.Key, "catalog object")
 		r.objects[o.Key] = true
@@ -120,6 +123,9 @@ func auditSnapshot(ctx context.Context, s storage.Store) (*bucketSnapshot, *Engi
 		}
 	}); err != nil {
 		return nil, nil, err
+	}
+	if inventoryErr != nil {
+		return nil, nil, inventoryErr
 	}
 	if err := walk(m.Candidates, "candidate pages", func(o ObjectInfo) {
 		r.candidates++
@@ -334,6 +340,17 @@ func TestReviewLiveBucketAudit(t *testing.T) {
 			add(orphans, k, size)
 		}
 	}
+	byWhy := map[string]*group{}
+	for _, k := range keys {
+		if why := b.reach[k]; why != "" && listed[k] {
+			size, _ := e2.objectSize(ctx, k)
+			if byWhy[why] == nil {
+				byWhy[why] = &group{}
+			}
+			byWhy[why].count++
+			byWhy[why].bytes += size
+		}
+	}
 	var dangling []string
 	for k, why := range b.reach {
 		if !listed[k] && !b.pendingDelete[k] {
@@ -374,6 +391,10 @@ func TestReviewLiveBucketAudit(t *testing.T) {
 	fmt.Printf("trash journal: %d live pages, %d keys pending deletion (%d still present), TrashObjects %d, cleanups %d, garbage %d\n", b.trashPages, len(b.pendingDelete), pendingPresent, b.m.TrashObjects, len(b.m.TrashCleanups), len(b.m.Garbage))
 	fmt.Printf("listed %d objects, %.1f MB; reachable %d keys\n", len(listed), float64(listedBytes)/1e6, len(b.reach))
 	print("listed by prefix", all)
+	fmt.Printf("reachable by reference (snapshot B):\n")
+	for why, g := range byWhy {
+		fmt.Printf("  %-28s %6d objects %10.1f MB  (%.1f KB average)\n", why, g.count, float64(g.bytes)/1e6, float64(g.bytes)/float64(g.count)/1e3)
+	}
 	print("orphans (listed, unreachable in both snapshots, not pending deletion)", orphans)
 	fmt.Printf("dangling (reachable in snapshot B, missing): %d %v\n", len(dangling), dangling[:min(len(dangling), 10)])
 	fmt.Printf("streams with missing index objects: %d raced, %d real %v\n", len(missingStreams)-len(realMissing), len(realMissing), realMissing)

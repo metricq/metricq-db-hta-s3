@@ -134,6 +134,9 @@ This table is generated from `engine/metrics.go` by
 | `metricq_db_store_requests_total` | counter | op, kind | Object store requests by operation and object kind. |
 | **Metadata cache** | | | |
 | `metricq_db_metadata_cache_requests_total` | counter | kind, result | Decoded metadata cache lookups. |
+| `metricq_db_catalog_tree_packs` | gauge | tree | Objects holding the pages of the catalog or candidate tree (inventories excluded); a rebuild keeps it at most 16. |
+| `metricq_db_catalog_tree_pages` | gauge | tree | Pages of the catalog or candidate tree. |
+| `metricq_db_catalog_rebuilds_total` | counter | tree | Tree updates that rewrote the whole tree into a fresh pack. |
 | **Storage state** | | | |
 | `metricq_db_storage_data_sections` | gauge |  | Contiguous runs of consecutive blocks of one stream within one object; range requests to read every stream in full. |
 | `metricq_db_storage_dead_bytes` | gauge |  | Unreferenced bytes inside partially live data/index objects. |

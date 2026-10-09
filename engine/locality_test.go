@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"reflect"
 	"testing"
 	"time"
 
@@ -12,7 +13,7 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-func TestLocalityPacksWholeLevelAcrossTimeGapsAndPreservesSealedPrefix(t *testing.T) {
+func TestLocalityPacksWholeLevelAcrossTimeGapsAndSettles(t *testing.T) {
 	ctx := context.Background()
 	s := &countedRangeGCStore{rangeGCStore: &rangeGCStore{gcStore: &gcStore{memoryStore: newStore()}}}
 	opts := maintenanceOptions(t.TempDir(), true)
@@ -67,10 +68,6 @@ func TestLocalityPacksWholeLevelAcrossTimeGapsAndPreservesSealedPrefix(t *testin
 	if gets != 1 || !proto.Equal(before, after) {
 		t.Fatalf("locality: GETs=%d, unchanged=%v", gets, proto.Equal(before, after))
 	}
-	var prefix []blob
-	if err = e.indexRange(ctx, e.state.Roots["canonical.short"][0], 0, math.MaxInt64, &prefix); err != nil {
-		t.Fatal(err)
-	}
 	for i := 5; i < 10; i++ {
 		appendBlock(i)
 	}
@@ -79,14 +76,27 @@ func TestLocalityPacksWholeLevelAcrossTimeGapsAndPreservesSealedPrefix(t *testin
 			t.Fatal(err)
 		}
 	}
+	// A small single-stream object is not settled: the appended blocks join
+	// the stream's run, which then stays put.
+	full, gets := queryCold()
+	if gets != 1 || len(full.Value) != 10*maxDataBlockRecords {
+		t.Fatalf("after appending: GETs=%d points=%d", gets, len(full.Value))
+	}
 	var refs []blob
 	if err = e.indexRange(ctx, e.state.Roots["canonical.short"][0], 0, math.MaxInt64, &refs); err != nil {
 		t.Fatal(err)
 	}
-	for i, ref := range prefix {
-		if refs[i] != ref {
-			t.Fatal("appending data rewrote sealed historical prefix")
+	for i := 0; i < 32; i++ {
+		if err = e.CompactOnce(ctx); err != nil {
+			t.Fatal(err)
 		}
+	}
+	var again []blob
+	if err = e.indexRange(ctx, e.state.Roots["canonical.short"][0], 0, math.MaxInt64, &again); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(refs, again) {
+		t.Fatal("compaction did not reach a fixed point")
 	}
 	if err = e.Close(); err != nil {
 		t.Fatal(err)

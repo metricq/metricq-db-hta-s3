@@ -57,6 +57,29 @@ func TestConsolidationPacksSmallObjects(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	// Within each object, a stream's blocks form one run: jobs order their
+	// inputs by stream instead of copying object by object.
+	for name, levels := range f.e.state.Roots {
+		for level, root := range levels {
+			entries, err := f.e.indexEntriesAfter(f.ctx, root, math.MinInt64, 1<<20)
+			if err != nil {
+				t.Fatal(err)
+			}
+			objects := map[string]bool{}
+			for _, entry := range entries {
+				objects[entry.Blob.Key] = true
+			}
+			runs := 0
+			for i, entry := range entries {
+				if prev := entries[max(i-1, 0)].Blob; i == 0 || entry.Blob.Key != prev.Key || entry.Blob.Offset != prev.Offset+prev.Length {
+					runs++
+				}
+			}
+			if runs != len(objects) {
+				t.Errorf("%s level %d: %d runs in %d objects", name, level, runs, len(objects))
+			}
+		}
+	}
 	f.checkOrdered("consolidated")
 	f.check("consolidated")
 	checkCatalog(t, f.e)

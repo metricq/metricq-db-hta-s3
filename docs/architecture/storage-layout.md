@@ -8,7 +8,7 @@ writing new objects and conditionally replacing `manifest`.
 | --- | --- | --- |
 | `manifest` | Root of the current state: WAL sequence covered, generation, references to all metadata roots, catalog, trash journal and a pending compaction job. About 1 KB. | every publication (conditional PUT) |
 | `data/<id>` | Data blocks of one checkpoint, several streams concatenated | checkpoint |
-| `data/compact-<job>/…` | Data blocks rewritten by compaction; `…/locality/…` for level-local packs | compaction |
+| `data/compact-<job>/<n>` | Data blocks rewritten by compaction, in the same pack format; no job splits a stream's run across two objects unless the run exceeds `compaction_output_object_bytes` | compaction |
 | `index/<id>`, `index/compact-<job>` | Pages of the per-stream index trees | checkpoint, compaction |
 | `state/<id>` | Pages of the open HTA state (per metric), hash-partitioned | checkpoint |
 | `roots/<id>` | Pages of index roots per metric and level, hash-partitioned | checkpoint, compaction |

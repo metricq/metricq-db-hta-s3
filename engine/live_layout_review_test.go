@@ -45,8 +45,6 @@ func TestReviewLiveObjectLayout(t *testing.T) {
 		switch {
 		case strings.HasPrefix(key, "index/"):
 			return "index"
-		case strings.Contains(key, "/locality/"):
-			return "locality"
 		case strings.HasPrefix(key, "data/compact-"):
 			return "compact"
 		}

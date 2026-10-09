@@ -301,9 +301,6 @@ func TestReviewLiveBucketAudit(t *testing.T) {
 			return k
 		}
 		if strings.HasPrefix(k, "data/compact-") {
-			if strings.Contains(k, "/locality/") {
-				return "data/compact-*/locality"
-			}
 			return "data/compact-*"
 		}
 		return k[:i]

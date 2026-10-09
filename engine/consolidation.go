@@ -3,7 +3,6 @@ package engine
 import (
 	"context"
 	"errors"
-	"strings"
 )
 
 // candidateSize caches the object size of a candidate entry written before
@@ -63,12 +62,11 @@ func (e *Engine) selectConsolidation(ctx context.Context, snapshot *Engine, opti
 		if ok && c.Size == 0 {
 			e.candidateSizes[c.Key] = candidateSize{modified: c.Modified, size: o.Size, pass: e.consolidationPass}
 		}
-		// An object one job cannot take whole stays as it is. Locality outputs
-		// are sections that locality itself grows in tiers, and an object with
-		// a quarter of a job's blocks (index packs of hundreds of small pages)
-		// cannot grow much by packing; both move only to reclaim dead bytes.
+		// An object one job cannot take whole stays as it is. An object with a
+		// quarter of a job's blocks (index packs of hundreds of small pages)
+		// cannot grow much by packing; it moves only to reclaim dead bytes.
 		objectDirty := ok && o.Size > 0 && float64(o.Size-o.LiveBytes)/float64(o.Size) >= options.ReclaimDeadFraction
-		settled := strings.Contains(o.Key, "/locality/") || len(o.Blocks) >= options.JobMaxBlocks/4
+		settled := len(o.Blocks) >= options.JobMaxBlocks/4
 		if !ok || o.Size == 0 || o.Size >= limit || o.Modified > cutoff || len(o.Blocks) == 0 || len(o.Blocks) > options.JobMaxBlocks || o.LiveBytes > capacity || (settled && !objectDirty) {
 			previous = c.Key
 			return true

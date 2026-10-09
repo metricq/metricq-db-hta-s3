@@ -894,11 +894,7 @@ func (e *Engine) copyJob(ctx context.Context, job CompactionJob) (map[blob]repla
 			}
 		}
 		if current == nil {
-			suffix := ""
-			if job.Locality && prefix == "data" {
-				suffix = "/locality"
-			}
-			current = &pack{key: fmt.Sprintf("%s/compact-%s%s/%d", prefix, job.ID, suffix, counts[prefix])}
+			current = &pack{key: fmt.Sprintf("%s/compact-%s/%d", prefix, job.ID, counts[prefix])}
 			counts[prefix]++
 		}
 		info.Entry.Blob = current.add(encoded)
@@ -1074,18 +1070,16 @@ func (e *Engine) copyJob(ctx context.Context, job CompactionJob) (map[blob]repla
 	}
 	close(work)
 	wg.Wait()
-	// A locality section of one stream must not straddle two objects: start
-	// a new object when the next stream's blocks would not fit the current one.
+	// A stream's run must not straddle two objects: start a new object when
+	// the next stream's blocks would not fit the current one.
 	sectionBytes := make(map[int]int64)
-	if job.Locality {
-		for i, g := range groups {
-			stream := i
-			for stream > 0 && groups[stream-1].info.Metric == g.info.Metric && groups[stream-1].info.Level == g.info.Level && !groups[stream-1].info.Index {
-				stream--
-			}
-			for j := g.start; j < g.end; j++ {
-				sectionBytes[stream] += int64(len(encodedInputs[j]))
-			}
+	for i, g := range groups {
+		stream := i
+		for stream > 0 && groups[stream-1].info.Metric == g.info.Metric && groups[stream-1].info.Level == g.info.Level && !groups[stream-1].info.Index {
+			stream--
+		}
+		for j := g.start; j < g.end; j++ {
+			sectionBytes[stream] += int64(len(encodedInputs[j]))
 		}
 	}
 	for gi, g := range groups {

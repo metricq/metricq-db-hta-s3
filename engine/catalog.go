@@ -568,8 +568,10 @@ func (e *Engine) catalogWalk(ctx context.Context, root blob, limit int, visit fu
 }
 
 // smallObjectBytes marks objects that consolidation packs together regardless
-// of dead bytes; compaction never consolidates above compaction_output_object_bytes/8.
-const smallObjectBytes = 512 << 10
+// of dead bytes; compaction never consolidates above
+// compaction_output_object_bytes/2. Only a nearly full object is final, so
+// mid-sized compaction outputs are packed as well.
+const smallObjectBytes = 2 << 20
 
 func candidateKey(o ObjectInfo) string {
 	if o.Size == 0 || len(o.Blocks) == 0 {

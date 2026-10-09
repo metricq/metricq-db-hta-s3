@@ -15,17 +15,25 @@ type candidateSize struct {
 // consolidationLimit is the size below which objects are consolidated rather
 // than evacuated one by one.
 func (o CompactionOptions) consolidationLimit() int64 {
-	return min(int64(smallObjectBytes), o.OutputObjectBytes/8)
+	return min(int64(smallObjectBytes), o.OutputObjectBytes/2)
+}
+
+// evacuated reports whether a dirty object is evacuated in bounded parts
+// rather than consolidated: it is large, or a single job cannot take all its
+// blocks (thousands of small aggregate blocks or index pages).
+func (o CompactionOptions) evacuated(object ObjectInfo) bool {
+	return object.Size >= o.consolidationLimit() || len(object.Blocks) > o.JobMaxBlocks
 }
 
 // selectConsolidation packs small objects together. Merge outputs and the
 // index packs of jobs are small, and evacuating one object only shrinks it
 // further, so without packing their number grows with the number of jobs.
-// Index pages are rewritten with their ancestors into the job's index pack. Objects below compaction_output_object_bytes/8 (at most
-// smallObjectBytes) are collected, oldest candidates first, until their live
-// bytes fill one output object; a job runs once eight are found, four that
-// fill an eighth of the output, or any that is dirty (reclaim_dead_fraction):
-// small objects are never evacuated one by one.
+// Index pages are rewritten with their ancestors into the job's index pack.
+// Objects below compaction_output_object_bytes/2 (at most smallObjectBytes)
+// are collected, oldest candidates first, until their live bytes fill one
+// output object; a job runs once eight are found, four whose live bytes reach
+// that limit, or any that is dirty (reclaim_dead_fraction): small objects are
+// never evacuated one by one.
 func (e *Engine) selectConsolidation(ctx context.Context, snapshot *Engine, options CompactionOptions, objectLimit int, cutoff int64) ([]BlockInfo, bool, error) {
 	limit := options.consolidationLimit()
 	capacity := min(options.JobMaxBytes, options.OutputObjectBytes)

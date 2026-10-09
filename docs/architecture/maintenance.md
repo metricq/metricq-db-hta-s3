@@ -50,11 +50,12 @@ In order of preference:
 - **Small object consolidation.** Merge outputs hold a few blocks of
   different streams, every job writes a small index pack, and evacuating an
   object copies its live blocks into another small one, so the number of
-  small objects would grow with the number of jobs. Objects below
-  `compaction_output_object_bytes`/8 (at most 512 KiB) are candidates even
-  when fully live; every fourth job slot, and whenever nothing else is due,
-  packs eight of them, four that fill an eighth of the output, or any group
-  containing a dirty one into one data and one index pack. Fewer clean ones
+  small objects would grow with the number of jobs. Only a nearly full
+  object is final: objects below `compaction_output_object_bytes`/2 (at most
+  2 MiB) are candidates even when fully live; every fourth job slot, and
+  whenever nothing else is due, packs eight of them, four whose live bytes
+  reach that limit, or any group containing a dirty one into one data and
+  one index pack. Fewer clean ones
   would not reduce the object count, since each job writes packs of its own.
   Small objects are never evacuated one by one: evacuating a small index pack
   rewrites its pages' ancestors, which often leaves the next small pack dirty,

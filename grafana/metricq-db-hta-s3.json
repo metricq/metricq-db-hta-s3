@@ -1958,6 +1958,65 @@
       }
     },
     {
+      "type": "timeseries",
+      "title": "Orphaned objects",
+      "description": "Objects left by interrupted checkpoints or jobs. The hourly sweep moves keys unreachable in two consecutive sweeps to the trash journal. Candidates should be zero or a few; a steady stream of retired orphans means checkpoints or jobs keep failing after their uploads.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 82
+      },
+      "targets": [
+        {
+          "expr": "max(metricq_db_orphan_candidates{token=\"$token\"})",
+          "legendFormat": "unreachable in last sweep",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
+        },
+        {
+          "expr": "sum(increase(metricq_db_orphans_retired_total{token=\"$token\"}[1h]))",
+          "legendFormat": "retired per hour",
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "none"
+            }
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
       "type": "bargauge",
       "title": "Object fill",
       "description": "Objects by live bytes relative to compaction_output_object_bytes, in 10 % steps (the label is the lower bound; 100 % means at or above it). A settled layout has most data in the upper buckets; checkpoints add a few recent small objects that consolidation packs.",

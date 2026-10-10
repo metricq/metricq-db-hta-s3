@@ -184,6 +184,11 @@ panel("Stream locality", [(f"max(metricq_db_storage_fragmentation_ratio{T})", "f
                   "The ratio relates them to one per stream plus one per compaction_output_object_bytes of data: about 1 is ideal, "
                   "open tails add up to one per stream. Sections per stream grow with history, the ratio should not.")
 
+panel("Orphaned objects", [(f"max(metricq_db_orphan_candidates{T})", "unreachable in last sweep"),
+                          (f"sum(increase(metricq_db_orphans_retired_total{T}[1h]))", "retired per hour")], "short", w=8,
+      description="Objects left by interrupted checkpoints or jobs. The hourly sweep moves keys unreachable in two consecutive sweeps "
+                  "to the trash journal. Candidates should be zero or a few; a steady stream of retired orphans means "
+                  "checkpoints or jobs keep failing after their uploads.")
 panel("Object fill", [(f"max by (fill) (metricq_db_storage_object_fill{sel('kind=\"data\"')})", "data {{fill}}%"),
                       (f"max by (fill) (metricq_db_storage_object_fill{sel('kind=\"index\"')})", "index {{fill}}%")],
       "short", kind="bargauge", w=16,

@@ -144,6 +144,7 @@ This table is generated from `engine/metrics.go` by
 | `metricq_db_storage_fragmentation_ratio` | gauge |  | Data sections relative to one per stream plus one per compaction_output_object_bytes of data; about 1 is ideal, open tails add up to one per stream. |
 | `metricq_db_storage_live_bytes` | gauge |  | Referenced compressed data/index bytes in the maintenance catalog. |
 | `metricq_db_storage_objects` | gauge |  | Data and index objects tracked by the maintenance catalog. |
+| `metricq_db_storage_object_fill` | gauge | kind, fill | Data and index objects by live bytes relative to `compaction_output_object_bytes`; `fill` is the lower bound in percent of a 10 % bucket, `100` holds objects at or above it. Counted once, then updated with every catalog change; recounted when the output object size changes. |
 | `metricq_db_storage_small_block_bytes` | gauge |  | Compressed bytes in live data blocks below 1024 records. |
 | `metricq_db_storage_small_blocks` | gauge |  | Live data blocks below 1024 records, including single stream tails. |
 | `metricq_db_storage_streams` | gauge |  | Streams (metric and HTA level) with published data. |

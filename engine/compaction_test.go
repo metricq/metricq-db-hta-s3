@@ -90,7 +90,9 @@ func checkCatalog(t *testing.T, e *Engine) {
 		}
 	}
 	var live, stored, sections, dataBytes int64
+	fill := manifest{FillTarget: e.state.FillTarget}
 	err := e.catalogWalk(ctx, e.state.Catalog, 10000, func(o ObjectInfo) bool {
+		fill.addFill(o, 1)
 		s, b := objectSections(o.Blocks)
 		sections += s
 		dataBytes += b
@@ -121,6 +123,9 @@ func checkCatalog(t *testing.T, e *Engine) {
 	}
 	if e.state.SectionStatsReady && (sections != e.state.DataSections || dataBytes != e.state.DataBytes) {
 		t.Fatalf("section accounting differs: sections=%d/%d bytes=%d/%d", sections, e.state.DataSections, dataBytes, e.state.DataBytes)
+	}
+	if e.state.FillTarget > 0 && (fill.DataFill != e.state.DataFill || fill.IndexFill != e.state.IndexFill) {
+		t.Fatalf("fill accounting differs: data %v/%v index %v/%v", fill.DataFill, e.state.DataFill, fill.IndexFill, e.state.IndexFill)
 	}
 	checkIndexAggregates(t, e)
 }

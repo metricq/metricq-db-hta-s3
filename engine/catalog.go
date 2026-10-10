@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -567,6 +568,28 @@ func (e *Engine) catalogWalk(ctx context.Context, root blob, limit int, visit fu
 	return walk(root)
 }
 
+// fillBuckets counts objects by live bytes in tenths of the output object
+// size, plus one bucket at or above it.
+const fillBuckets = 11
+
+func fillBucket(live, target int64) int {
+	return int(min(max(live, 0)*10/target, fillBuckets-1))
+}
+
+// addFill counts an object into (delta 1) or out of (delta -1) the fill
+// statistic, if the statistic is established.
+func (m *manifest) addFill(o ObjectInfo, delta int64) {
+	if m.FillTarget <= 0 {
+		return
+	}
+	b := fillBucket(o.LiveBytes, m.FillTarget)
+	if strings.HasPrefix(o.Key, "index/") {
+		m.IndexFill[b] += delta
+	} else {
+		m.DataFill[b] += delta
+	}
+}
+
 // smallObjectBytes marks objects that consolidation packs together regardless
 // of dead bytes; compaction never consolidates above
 // compaction_output_object_bytes/2. Only a nearly full object is final, so
@@ -648,6 +671,7 @@ func (e *Engine) catalogChanges(ctx context.Context, next *manifest, changes map
 			next.LiveObjectBytes -= old.LiveBytes
 			next.StoredObjectBytes -= old.Size
 			next.LiveObjects--
+			next.addFill(old, -1)
 			if candidate := candidateKey(old); candidate != "" {
 				candidates[candidate] = nil
 				if next.MaintenanceStatsReady {
@@ -681,6 +705,7 @@ func (e *Engine) catalogChanges(ctx context.Context, next *manifest, changes map
 			next.LiveObjectBytes += value.LiveBytes
 			next.StoredObjectBytes += value.Size
 			next.LiveObjects++
+			next.addFill(*value, 1)
 			if candidate := candidateKey(*value); candidate != "" {
 				if next.MaintenanceStatsReady {
 					next.CandidateObjects++

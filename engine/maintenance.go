@@ -335,6 +335,7 @@ func (e *Engine) bootstrapCatalog(ctx context.Context) error {
 		e.state.CatalogReady = true
 		e.state.MaintenanceStatsReady = true
 		e.state.SectionStatsReady = true
+		e.state.FillTarget = e.options.CompactionOptions.defaults().OutputObjectBytes
 		return nil
 	}
 	next := cloneMaintenanceManifest(e.committed)
@@ -352,25 +353,29 @@ func (e *Engine) bootstrapCatalog(ctx context.Context) error {
 	return e.publishMaintenance(ctx, next)
 }
 
-// countDataSections establishes the section statistic of a database created
-// before it existed: one pass over the catalog while publication is paused,
-// so no catalog change can slip between the count and its publication.
-func (e *Engine) countDataSections(ctx context.Context) error {
+// countCatalogStats establishes the section and fill statistics when they
+// are missing or the fill was counted against another output object size:
+// one pass over the catalog while publication is paused, so no catalog
+// change can slip between the count and its publication.
+func (e *Engine) countCatalogStats(ctx context.Context) error {
 	e.publishMu.Lock()
 	defer e.publishMu.Unlock()
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if e.state.SectionStatsReady || !e.state.CatalogReady || e.version == "" {
+	target := e.options.CompactionOptions.defaults().OutputObjectBytes
+	if (e.state.SectionStatsReady && e.state.FillTarget == target) || !e.state.CatalogReady || e.version == "" {
 		return nil
 	}
 	root := e.state.Catalog
 	reader := &Engine{store: e.store, metrics: e.metrics, options: e.options, sharedCatalog: e.sharedCatalog}
 	var sections, bytes int64
+	fill := manifest{FillTarget: target}
 	e.mu.Unlock()
 	err := reader.catalogWalk(ctx, root, math.MaxInt, func(o ObjectInfo) bool {
 		s, b := objectSections(o.Blocks)
 		sections += s
 		bytes += b
+		fill.addFill(o, 1)
 		return true
 	})
 	e.mu.Lock()
@@ -383,6 +388,7 @@ func (e *Engine) countDataSections(ctx context.Context) error {
 	next.SectionStatsReady = true
 	next.DataSections = sections
 	next.DataBytes = bytes
+	next.FillTarget, next.DataFill, next.IndexFill = fill.FillTarget, fill.DataFill, fill.IndexFill
 	return e.publishMaintenanceLocked(ctx, next, e.preparationStore())
 }
 
@@ -392,7 +398,7 @@ func (e *Engine) RunMaintenance(ctx context.Context) {
 	if err := e.bootstrapTails(ctx); err != nil && ctx.Err() == nil {
 		slog.Warn("stream tail classification failed; fragment metrics unavailable", "error", err)
 	}
-	if err := e.countDataSections(ctx); err != nil && ctx.Err() == nil {
+	if err := e.countCatalogStats(ctx); err != nil && ctx.Err() == nil {
 		slog.Warn("data section count failed; fragmentation metrics unavailable", "error", err)
 	}
 	gcTicker := time.NewTicker(time.Second)
@@ -498,6 +504,15 @@ func (e *Engine) updateMaintenanceMetrics(m manifest) {
 	}
 	e.metrics.CompactionJobPending.Set(jobPending)
 	e.metrics.LiveObjectBytes.Set(float64(m.LiveObjectBytes))
+	for b := 0; b < fillBuckets; b++ {
+		data, index := float64(m.DataFill[b]), float64(m.IndexFill[b])
+		if m.FillTarget != e.options.CompactionOptions.defaults().OutputObjectBytes {
+			data, index = math.NaN(), math.NaN()
+		}
+		label := fmt.Sprintf("%03d", 10*b)
+		e.metrics.ObjectFill.WithLabelValues("data", label).Set(data)
+		e.metrics.ObjectFill.WithLabelValues("index", label).Set(index)
+	}
 	e.metrics.DeadObjectBytes.Set(float64(m.StoredObjectBytes - m.LiveObjectBytes))
 }
 

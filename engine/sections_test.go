@@ -42,7 +42,8 @@ func TestDataSectionsTrackCatalogAndRecount(t *testing.T) {
 	checkCatalog(t, f.e)
 	f.e.mu.Lock()
 	want := f.e.state.DataSections
-	if !f.e.state.SectionStatsReady || want == 0 {
+	wantFill := f.e.state.DataFill
+	if !f.e.state.SectionStatsReady || want == 0 || f.e.state.FillTarget == 0 {
 		f.e.mu.Unlock()
 		t.Fatalf("statistic not tracked: %+v", f.e.state.SectionStatsReady)
 	}
@@ -52,6 +53,7 @@ func TestDataSectionsTrackCatalogAndRecount(t *testing.T) {
 	next.rootDirtyKnown = true
 	next.Generation = f.e.state.Generation + 1
 	next.SectionStatsReady, next.DataSections, next.DataBytes = false, 0, 0
+	next.FillTarget, next.DataFill, next.IndexFill = 0, [fillBuckets]int64{}, [fillBuckets]int64{}
 	f.e.mu.Unlock()
 	if ratio := metricValue(t, f.e.metrics.FragmentationRatio); math.IsNaN(ratio) || ratio <= 0 {
 		t.Fatalf("fragmentation ratio %v", ratio)
@@ -69,11 +71,14 @@ func TestDataSectionsTrackCatalogAndRecount(t *testing.T) {
 	if f.e.state.SectionStatsReady || !math.IsNaN(metricValue(t, f.e.metrics.FragmentationRatio)) {
 		t.Fatal("legacy manifest reports sections")
 	}
-	if err := f.e.countDataSections(f.ctx); err != nil {
+	if !math.IsNaN(metricValue(t, f.e.metrics.ObjectFill.WithLabelValues("data", "000"))) {
+		t.Fatal("legacy manifest reports object fill")
+	}
+	if err := f.e.countCatalogStats(f.ctx); err != nil {
 		t.Fatal(err)
 	}
-	if !f.e.state.SectionStatsReady || f.e.state.DataSections != want {
-		t.Fatalf("recount %d, want %d", f.e.state.DataSections, want)
+	if !f.e.state.SectionStatsReady || f.e.state.DataSections != want || f.e.state.DataFill != wantFill {
+		t.Fatalf("recount %d %v, want %d %v", f.e.state.DataSections, f.e.state.DataFill, want, wantFill)
 	}
 	checkCatalog(t, f.e)
 	f.restart()

@@ -49,6 +49,13 @@ def panel(title, targets, unit="short", kind="timeseries", w=8, h=8, x=None,
             p["fieldConfig"]["defaults"]["min"] = 0
         p["options"] = {"legend": {"displayMode": "list", "placement": "bottom"},
                         "tooltip": {"mode": "multi", "sort": "desc"}}
+    if kind == "bargauge":
+        p["options"] = {"reduceOptions": {"calcs": ["lastNotNull"]}, "orientation": "vertical",
+                        "displayMode": "basic", "showUnfilled": False, "valueMode": "text",
+                        "namePlacement": "top", "minVizHeight": 10}
+        for t in p["targets"]:
+            t["instant"] = True
+        thresholds = thresholds or [{"color": "blue", "value": None}]
     if kind == "stat":
         p["options"] = {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "value",
                         "graphMode": "area", "textMode": text_mode}
@@ -176,6 +183,13 @@ panel("Stream locality", [(f"max(metricq_db_storage_fragmentation_ratio{T})", "f
       description="Contiguous sections are runs of one metric level in one object, each read with one range request. "
                   "The ratio relates them to one per stream plus one per compaction_output_object_bytes of data: about 1 is ideal, "
                   "open tails add up to one per stream. Sections per stream grow with history, the ratio should not.")
+
+panel("Object fill", [(f"max by (fill) (metricq_db_storage_object_fill{sel('kind=\"data\"')})", "data {{fill}}%"),
+                      (f"max by (fill) (metricq_db_storage_object_fill{sel('kind=\"index\"')})", "index {{fill}}%")],
+      "short", kind="bargauge", w=16,
+      description="Objects by live bytes relative to compaction_output_object_bytes, in 10 % steps (the label is the lower bound; "
+                  "100 % means at or above it). A settled layout has most data in the upper buckets; checkpoints add a few recent "
+                  "small objects that consolidation packs.")
 
 newrow("Compaction")
 panel("Jobs", [(f"sum(rate(metricq_db_compaction_jobs_total{T}[$__rate_interval]))", "published"),

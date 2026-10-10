@@ -70,6 +70,10 @@ so the dashboard draws them next to the measured values.
   queries. The main lever for compaction throughput.
 - **`compaction_job_max_blocks`**, **`compaction_job_max_bytes`** — job size. Larger jobs amortize the
   per-job metadata cost; each job takes a catalog snapshot and one publication.
+  The block limit must let a job fill `compaction_output_object_bytes`: with
+  compacted blocks of about 3 KB, 512 blocks write at most about 1.5 MB, so
+  locality never builds a full section and consolidation cannot pack
+  1–2 MB objects; the object count then grows steadily.
 - **`compaction_merge_cooldown_seconds`** — do not merge objects younger than this; avoids
   re-merging a growing tail repeatedly.
 - **`compaction_output_object_bytes`** — output pack size. Larger packs mean fewer objects; a pack

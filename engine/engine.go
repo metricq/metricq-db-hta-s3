@@ -338,7 +338,7 @@ func Open(ctx context.Context, s storage.Store, o Options, configs map[string]ht
 	}
 	if o.MaintenanceEnabled {
 		c := o.CompactionOptions
-		if c.CycleMaxSeconds < 1 || c.CycleMaxSeconds > 3600 || c.JobTimeoutSeconds < 1 || c.JobTimeoutSeconds > 3600 || c.CycleIntervalSeconds < 1 || c.MergeCooldownSeconds < 0 || c.LocalityFanIn < 2 || c.LocalityFanIn > 64 || c.JobMaxBlocks < 1 || c.JobMaxBlocks > 512 || c.JobMaxBytes < 1 || c.JobMaxBytes > 64<<20 || c.OutputObjectBytes < 1 || c.OutputObjectBytes > c.JobMaxBytes || c.IOBytesPerSecond < 1 || c.ReclaimDeadFraction <= 0 || c.ReclaimDeadFraction >= 1 {
+		if c.CycleMaxSeconds < 1 || c.CycleMaxSeconds > 3600 || c.JobTimeoutSeconds < 1 || c.JobTimeoutSeconds > 3600 || c.CycleIntervalSeconds < 1 || c.MergeCooldownSeconds < 0 || c.LocalityFanIn < 2 || c.LocalityFanIn > 64 || c.JobMaxBlocks < 1 || c.JobMaxBlocks > 8192 || c.JobMaxBytes < 1 || c.JobMaxBytes > 64<<20 || c.OutputObjectBytes < 1 || c.OutputObjectBytes > c.JobMaxBytes || c.IOBytesPerSecond < 1 || c.ReclaimDeadFraction <= 0 || c.ReclaimDeadFraction >= 1 {
 			return nil, fmt.Errorf("invalid compaction options")
 		}
 	}

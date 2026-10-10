@@ -28,7 +28,7 @@
     "compaction_cycle_interval_seconds": 60,
     "compaction_cycle_max_seconds": 30,
     "compaction_job_timeout_seconds": 60,
-    "compaction_job_max_blocks": 512,
+    "compaction_job_max_blocks": 4096,
     "compaction_job_max_bytes": 33554432,
     "compaction_output_object_bytes": 4194304,
     "compaction_io_bytes_per_second": 8388608,

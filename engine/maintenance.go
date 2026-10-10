@@ -27,7 +27,9 @@ type CompactionOptions struct {
 	CycleMaxSeconds int64 `json:"compaction_cycle_max_seconds"`
 	// JobTimeoutSeconds bounds one job.
 	JobTimeoutSeconds int64 `json:"compaction_job_timeout_seconds"`
-	// JobMaxBlocks bounds the source blocks of one job.
+	// JobMaxBlocks bounds the source blocks of one job. A job must be able to
+	// fill an output object: with compacted raw blocks of about 3 KB, 4 MiB
+	// take about 1400 blocks.
 	JobMaxBlocks int `json:"compaction_job_max_blocks"`
 	// JobMaxBytes bounds the source bytes of one job.
 	JobMaxBytes int64 `json:"compaction_job_max_bytes"`

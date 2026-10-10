@@ -78,7 +78,7 @@ integers. Option names start with the area they affect: `wal_`,
     "compaction_cycle_interval_seconds": 60,
     "compaction_cycle_max_seconds": 30,
     "compaction_job_timeout_seconds": 60,
-    "compaction_job_max_blocks": 512,
+    "compaction_job_max_blocks": 4096,
     "compaction_job_max_bytes": 33554432,
     "compaction_output_object_bytes": 4194304,
     "compaction_io_bytes_per_second": 8388608,
@@ -128,7 +128,7 @@ integers. Option names start with the area they affect: `wal_`,
 | `compaction_cycle_interval_seconds` | 60 | ≥ 1 | Period of compaction cycles |
 | `compaction_cycle_max_seconds` | 30 (executable), 10 | 1–3600 | Consecutive jobs are started within this window per cycle |
 | `compaction_job_timeout_seconds` | 60 | 1–3600 | Timeout of one job |
-| `compaction_job_max_blocks` | 512 (executable), 128 | 1–512 | Source blocks per job |
+| `compaction_job_max_blocks` | 4096 (executable), 128 | 1–8192 | Source blocks per job; must let a job fill `compaction_output_object_bytes` with small blocks (a compacted raw block is about 3 KB) |
 | `compaction_job_max_bytes` | 32 MiB | ≤ 64 MiB | Source bytes per job |
 | `compaction_output_object_bytes` | 4 MiB | ≤ `compaction_job_max_bytes` | Size of output packs |
 | `compaction_io_bytes_per_second` | 8 MiB | ≥ 1 | Rate limit for all maintenance reads and writes |

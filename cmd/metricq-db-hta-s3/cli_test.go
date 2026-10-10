@@ -86,7 +86,7 @@ func TestExampleConfigAndUnknownKeys(t *testing.T) {
 		t.Fatal(err)
 	}
 	e := o.config.Engine
-	if o.config.Prefetch != 400 || e.CheckpointUnsavedBytes != 4<<20 || e.HoldMemoryBytes != 512<<20 || e.JobMaxBlocks != 512 || e.ReclaimDeadFraction != 0.4 || !e.MergeEnabled {
+	if o.config.Prefetch != 400 || e.CheckpointUnsavedBytes != 4<<20 || e.HoldMemoryBytes != 512<<20 || e.JobMaxBlocks != 4096 || e.ReclaimDeadFraction != 0.4 || !e.MergeEnabled {
 		t.Fatalf("example config not fully applied: %+v", o.config)
 	}
 	config := filepath.Join(t.TempDir(), "old.json")

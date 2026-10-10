@@ -46,7 +46,7 @@ func defaultConfig() localConfig {
 	cfg.Engine.CompactionOptions.Enabled = true
 	cfg.Engine.CompactionOptions.MergeEnabled = true
 	cfg.Engine.CompactionOptions.MergeCooldownSeconds = 60
-	cfg.Engine.CompactionOptions.JobMaxBlocks = 512
+	cfg.Engine.CompactionOptions.JobMaxBlocks = 4096
 	cfg.Engine.CompactionOptions.CycleMaxSeconds = 30
 	return cfg
 }

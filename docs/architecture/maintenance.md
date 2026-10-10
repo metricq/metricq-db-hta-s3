@@ -92,6 +92,16 @@ In order of preference:
   (partial tail blocks) is left to merging. Every fourth job gives locality a
   turn; otherwise it runs when there is nothing to merge.
   `compaction_locality_disabled` turns it off.
+- **Orphan sweep.** A checkpoint or job that fails or whose process stops
+  after uploading but before publishing leaves objects no manifest
+  references. Once an hour the maintenance loop lists the bucket and compares
+  it with everything the published manifest reaches: metadata pages, catalog
+  and candidate trees with object inventories, held deltas, the trash journal
+  including the keys awaiting deletion, and the staging prefixes of a pending
+  compaction job. Keys unreachable in two consecutive sweeps go into the
+  trash journal and are deleted like any retired object; uploads in flight
+  are published long before the second sweep. Listing and reachability run
+  without the publication lock.
 - **Reclamation.** Objects whose dead fraction exceeds `compaction_reclaim_dead_fraction`
   are evacuated (live blocks copied) so the whole object can be deleted.
 

@@ -175,6 +175,8 @@ This table is generated from `engine/metrics.go` by
 | **Maintenance (deletion of retired objects)** | | | |
 | `metricq_db_maintenance_delete_errors_total` | counter |  | Failed retired-object deletion attempts. |
 | `metricq_db_maintenance_delete_pending_objects` | gauge |  | Fully retired objects awaiting deletion, including reader-pinned objects. |
+| `metricq_db_orphan_candidates` | gauge |  | Objects no manifest reached in the last hourly orphan sweep; retired if the next sweep confirms them. Should be zero or a few. |
+| `metricq_db_orphans_retired_total` | counter |  | Objects left by interrupted checkpoints or jobs and moved to the trash journal by the orphan sweep. |
 | `metricq_db_maintenance_deleted_objects_total` | counter |  | Successfully deleted retired objects. |
 | **Queries** | | | |
 | `metricq_db_query_data_requests` | histogram |  | Object store range requests for data blocks per history request; cached blocks need none. |

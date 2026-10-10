@@ -459,6 +459,11 @@ func (e *Engine) RunMaintenance(ctx context.Context) {
 			if err := e.recoverCompaction(ctx); err != nil && ctx.Err() == nil {
 				slog.Warn("compaction recovery failed", "error", err)
 			}
+			if e.orphanSweepDue() {
+				if err := e.SweepOrphans(ctx); err != nil && ctx.Err() == nil {
+					slog.Warn("orphan sweep failed", "error", err)
+				}
+			}
 			if e.reclaimDue() {
 				// ErrPressure: a checkpoint holds the publication lock; retried.
 				if err := e.Reclaim(ctx); err != nil && ctx.Err() == nil && !errors.Is(err, ErrPressure) {

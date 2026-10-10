@@ -201,61 +201,64 @@ type Engine struct {
 	compactionBudget         *rateBudget
 	lastCompactionEnd        time.Time
 	compactionCompletions    uint64
-	compactionScanMore       bool
-	localityScans            map[string]localityScan
-	deferredSeeds            map[string]int64         // merge seeds deferred until this time (unix ns)
-	idleCandidates           map[string]idleCandidate // candidates whose last scan found no work
-	idlePass                 uint64                   // completed candidate scan passes
-	consolidationCursor      string
-	consolidationPass        uint64
-	candidateSizes           map[string]candidateSize
-	fragmentScans            map[string]fragmentScan
-	fragmentCursor           string
-	localityCursor           string
-	compactionObjectLimit    int // source objects per job, adapted to the catalog budget
-	lastReclaim              time.Time
-	deletedCleanups          map[string]bool
-	catalogCache             map[blob]catalogNode
-	catalogCacheBytes        int64
-	catalogReadBudget        int64
-	catalogReadBytes         int64
-	nodeReadLimit            int
-	nodeReads                int
-	store                    storage.Store
-	wal                      *wal
-	options                  Options
-	metrics                  *Metrics
-	nodeCache                map[blob]indexNode
-	sharedNodes              *indexPageCache
-	sharedBlocks             *dataBlockCache
-	tailPages                map[blob]indexNode
-	tailPaths                map[string]tailPath
-	tailEntries              int
-	tails                    map[string]streamTail
-	queryBudget              *queryBudget
-	tailBlocks               int // sum of open suffix blocks over tails
-	tailsKnown               bool
-	streamCount              int       // streams with data in the manifest of streamCountOf
-	streamCountOf            [2]uint64 // generation and sequence
-	state                    manifest
-	committed                manifest
-	pins                     map[uint64]int
-	version                  string
-	sequence                 uint64
-	pending                  pendingSet
-	pendingBytes             int64
-	flushing                 pendingSet // frozen by a running Flush, still queryable
-	flushWanted              chan struct{}
-	held                     map[string]*heldStream
-	coveredRecords           int64
-	now                      func() time.Time
-	flushingBytes            int64
-	oldestWAL                int64
-	closed                   bool
-	fatal                    error
-	objectRefs               map[string]int64
-	garbage                  map[string]bool
-	readers                  int
+	// Orphan sweep: keys unreachable in the last sweep, and when it ran.
+	orphanCandidates      map[string]bool
+	lastOrphanSweep       time.Time
+	compactionScanMore    bool
+	localityScans         map[string]localityScan
+	deferredSeeds         map[string]int64         // merge seeds deferred until this time (unix ns)
+	idleCandidates        map[string]idleCandidate // candidates whose last scan found no work
+	idlePass              uint64                   // completed candidate scan passes
+	consolidationCursor   string
+	consolidationPass     uint64
+	candidateSizes        map[string]candidateSize
+	fragmentScans         map[string]fragmentScan
+	fragmentCursor        string
+	localityCursor        string
+	compactionObjectLimit int // source objects per job, adapted to the catalog budget
+	lastReclaim           time.Time
+	deletedCleanups       map[string]bool
+	catalogCache          map[blob]catalogNode
+	catalogCacheBytes     int64
+	catalogReadBudget     int64
+	catalogReadBytes      int64
+	nodeReadLimit         int
+	nodeReads             int
+	store                 storage.Store
+	wal                   *wal
+	options               Options
+	metrics               *Metrics
+	nodeCache             map[blob]indexNode
+	sharedNodes           *indexPageCache
+	sharedBlocks          *dataBlockCache
+	tailPages             map[blob]indexNode
+	tailPaths             map[string]tailPath
+	tailEntries           int
+	tails                 map[string]streamTail
+	queryBudget           *queryBudget
+	tailBlocks            int // sum of open suffix blocks over tails
+	tailsKnown            bool
+	streamCount           int       // streams with data in the manifest of streamCountOf
+	streamCountOf         [2]uint64 // generation and sequence
+	state                 manifest
+	committed             manifest
+	pins                  map[uint64]int
+	version               string
+	sequence              uint64
+	pending               pendingSet
+	pendingBytes          int64
+	flushing              pendingSet // frozen by a running Flush, still queryable
+	flushWanted           chan struct{}
+	held                  map[string]*heldStream
+	coveredRecords        int64
+	now                   func() time.Time
+	flushingBytes         int64
+	oldestWAL             int64
+	closed                bool
+	fatal                 error
+	objectRefs            map[string]int64
+	garbage               map[string]bool
+	readers               int
 }
 
 func encode(v any) ([]byte, error) {

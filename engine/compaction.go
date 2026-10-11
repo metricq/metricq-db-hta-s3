@@ -818,7 +818,7 @@ func (e *Engine) copyJob(ctx context.Context, job CompactionJob) (map[blob]repla
 	defer e.metrics.phaseTimer("copy_merge")()
 	options := e.options.CompactionOptions.defaults()
 	reader := &Engine{store: e.preparationStore(), metrics: e.metrics, options: e.options}
-	indexReader := &Engine{store: e.preparationStore(), metrics: e.metrics, options: e.options, sharedNodes: e.sharedNodes, sharedCatalog: e.sharedCatalog, nodeCache: make(map[blob]indexNode), nodeReadLimit: 4096}
+	indexReader := &Engine{store: e.preparationStore(), metrics: e.metrics, options: e.options, sharedNodes: e.sharedNodes, sharedCatalog: e.sharedCatalog, nodeCache: make(map[blob]indexNode), nodeReadLimit: options.jobIndexReads()}
 	budget := rateBudget{start: time.Now(), rate: options.IOBytesPerSecond}
 	take := func(n int64) error {
 		if e.compactionBudget != nil {
@@ -1502,7 +1502,7 @@ func (e *Engine) applyCompaction(ctx context.Context, job CompactionJob, replace
 			e.mu.Unlock()
 			return err
 		}
-		snapshot := &Engine{store: publication, options: e.options, metrics: e.metrics, state: cloneMaintenanceManifest(e.committed), committed: cloneMaintenanceManifest(e.committed), sharedNodes: e.sharedNodes, sharedCatalog: e.sharedCatalog, activeMaintenance: job.ID, nodeReadLimit: 4096, catalogReadBudget: 4 * compactionCatalogBudget}
+		snapshot := &Engine{store: publication, options: e.options, metrics: e.metrics, state: cloneMaintenanceManifest(e.committed), committed: cloneMaintenanceManifest(e.committed), sharedNodes: e.sharedNodes, sharedCatalog: e.sharedCatalog, activeMaintenance: job.ID, nodeReadLimit: e.options.CompactionOptions.defaults().jobIndexReads(), catalogReadBudget: 4 * compactionCatalogBudget}
 		e.mu.Unlock()
 		next, err := snapshot.prepareCompaction(ctx, job, replacements, packs, nil)
 		if err != nil {

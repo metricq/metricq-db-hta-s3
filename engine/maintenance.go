@@ -52,6 +52,13 @@ type CompactionOptions struct {
 	LocalityDisabled bool `json:"compaction_locality_disabled"`
 }
 
+// jobIndexReads bounds the index pages that copying and publishing one job
+// may read: up to one leaf per moved block plus the pages above. Selection
+// stops its scans at 2048 reads and keeps the fixed bound of 4096.
+func (o CompactionOptions) jobIndexReads() int {
+	return 4096 + 2*o.JobMaxBlocks
+}
+
 func (o CompactionOptions) defaults() CompactionOptions {
 	if o.LocalityFanIn == 0 {
 		o.LocalityFanIn = 4

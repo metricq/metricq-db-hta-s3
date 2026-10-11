@@ -91,6 +91,74 @@ expected held set, otherwise streams are written early as small blocks.
 A reasonable starting point for 1500 metrics at 1 Hz: `hold_memory_bytes` 512 MiB,
 `ingest_memory_limit_bytes` 768 MiB, and 2 GiB of memory for the process.
 
+## Example: 10 000 metrics at 1 Hz
+
+An estimate for a load test, scaled from the development database on
+2026-10-11. It ran 1009 metrics, of which 1000 run at 1 Hz with `interval_min`
+40 s and factor 10, plus a 100 Hz and a few slower metrics, about 1100
+samples/s and 6060 streams. Its current codec and layout were measured over
+24 hours:
+
+| Measured, 1009 metrics | 24 h |
+| --- | ---: |
+| Samples | 95 M (1100 /s) |
+| Growth of live data | 350 MB (3.7 bytes per sample including aggregates) |
+| Stored, including dead bytes and partial objects | live + 9 % |
+| Held and pending records | 0.59 M on average, 1.22 M at most (≈ 1200 per metric) |
+| Ingest memory (estimated at 96 bytes per record) | 117 MB at most |
+| Process memory (RSS) | 640 MB on average, 880 MB at most |
+| Checkpoints | 94 per hour, each rewriting about 240 KB of state pages |
+
+Storage and held records scale with the number of streams and samples. Caches
+and encoders do not: block cache 128 MiB, inventory cache 64 MiB, catalog
+cache 32 MiB, and one best-level zstd encoder of about 70 MB. Ten times the
+metrics give:
+
+| Projected, 10 000 metrics × 1 Hz | |
+| --- | ---: |
+| Samples | 864 M per day (10 000 /s) |
+| Live data | ≈ 3.2 GB per day, ≈ 1.2 TB per year; stored ≈ 3.5 GB per day, ≈ 1.3 TB per year |
+| New objects | ≈ 1000 per day at about 3 MB each, ≈ 370 000 per year; catalog inventories add about 2 % |
+| Streams | ≈ 60 000 (six levels per metric) |
+| Held and pending records | ≈ 6 M on average, 12 M at peak: 0.6–1.2 GB |
+| Process memory | ≈ 2–3 GB |
+| WAL, one sample per delivery | ≈ 85 bytes × 10 000 /s ≈ 0.85 MB/s |
+| Compaction merges with holding | ≈ 60 000 streams / 3600 s ≈ 17 blocks/s |
+
+A checkpoint is due after `checkpoint_unsaved_bytes` of records held only in
+the WAL. With the default 4 MiB that is every 38 s at 1100 samples/s, but
+every 4 s at 10 000 samples/s. Each checkpoint also rewrites the state pages
+of all metrics, about 2.4 MB for 10 000 metrics, which would be about 2 GB/h
+of writes. Scale the checkpoint threshold with the load so checkpoints stay
+at roughly two per minute:
+
+```json
+{
+  "engine": {
+    "checkpoint_unsaved_bytes": 33554432,
+    "wal_target_bytes": 67108864,
+    "wal_high_bytes": 268435456,
+    "wal_hard_bytes": 335544320,
+    "hold_memory_bytes": 1610612736,
+    "ingest_memory_limit_bytes": 2147483648
+  }
+}
+```
+
+- `hold_memory_bytes` above the peak held set (1.2 GB) keeps streams from
+  being written early as small blocks; `ingest_memory_limit_bytes` leaves
+  room for pending records on top.
+- With `wal_hard_bytes` of 320 MiB, the WAL absorbs about six minutes of S3
+  outage at 0.85 MB/s before backpressure.
+- Give the process 4 GiB and set `GOMEMLIMIT` to about 3.5 GiB, so garbage
+  collection tightens before the container limit.
+- Ingest of single-sample deliveries was measured at 25 000–30 000 per
+  second. That leaves 2.5–3 times headroom: a backlog from a 10-minute
+  outage (6 M deliveries) drains in about 7 minutes.
+
+These are extrapolations; held records, checkpoint rate and process memory
+should be verified with the dashboard during the test.
+
 ## Throughput reference
 
 | Operation | Measured |

@@ -2017,9 +2017,9 @@
       }
     },
     {
-      "type": "bargauge",
+      "type": "barchart",
       "title": "Object fill",
-      "description": "Objects by live bytes relative to compaction_output_object_bytes, in 10 % steps (the label is the lower bound; 100 % means at or above it). A settled layout has most data in the upper buckets; checkpoints add a few recent small objects that consolidation packs.",
+      "description": "Objects by live bytes relative to compaction_output_object_bytes, in 10 % steps (the label is the lower bound; 100 % means at or above it), for data, index and catalog objects. A settled layout has most data in the upper buckets. Catalog objects (tree and inventory packs) are small by design and counted hourly by the orphan sweep.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -2032,54 +2032,70 @@
       },
       "targets": [
         {
-          "expr": "max by (fill) (metricq_db_storage_object_fill{token=\"$token\",kind=\"data\"})",
-          "legendFormat": "data {{fill}}%",
+          "expr": "max by (kind, fill) (metricq_db_storage_object_fill{token=\"$token\"})",
+          "legendFormat": "",
           "refId": "A",
           "datasource": {
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "instant": true
-        },
-        {
-          "expr": "max by (fill) (metricq_db_storage_object_fill{token=\"$token\",kind=\"index\"})",
-          "legendFormat": "index {{fill}}%",
-          "refId": "B",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
+          "format": "table",
           "instant": true
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "short",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "blue",
-                "value": null
-              }
-            ]
-          }
+          "unit": "short"
         },
         "overrides": []
       },
       "options": {
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ]
-        },
         "orientation": "vertical",
-        "displayMode": "basic",
-        "showUnfilled": false,
-        "valueMode": "text",
-        "namePlacement": "top",
-        "minVizHeight": 10
-      }
+        "xField": "fill %",
+        "groupWidth": 0.8,
+        "barWidth": 0.9,
+        "showValue": "never",
+        "stacking": "none",
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        },
+        "xTickLabelRotation": 0
+      },
+      "transformations": [
+        {
+          "id": "groupingToMatrix",
+          "options": {
+            "columnField": "kind",
+            "rowField": "fill",
+            "valueField": "Value",
+            "emptyValue": "zero"
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "sort": [
+              {
+                "field": "fill\\kind"
+              }
+            ]
+          }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "renameByName": {
+              "fill\\kind": "fill %"
+            }
+          }
+        }
+      ]
     },
     {
       "type": "row",

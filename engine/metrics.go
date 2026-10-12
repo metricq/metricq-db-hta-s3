@@ -17,6 +17,7 @@ type Metrics struct {
 	CatalogTreePacks, CatalogTreePages                                                      *prometheus.GaugeVec
 	ObjectFill                                                                              *prometheus.GaugeVec
 	OrphanCandidates                                                                        prometheus.Gauge
+	CompactionInputBytes                                                                    *prometheus.CounterVec
 	OrphansRetired                                                                          prometheus.Counter
 	CandidateObjects, SmallBlocks, SmallBlockBytes                                          prometheus.Gauge
 	TailBlocks, FragmentBlocks                                                              prometheus.Gauge
@@ -113,9 +114,10 @@ func NewMetrics(r prometheus.Registerer) *Metrics {
 		CatalogRebuilds:           counterVec("catalog_rebuilds_total", "Catalog or candidate tree updates that rewrote the whole tree into a fresh pack.", "tree"),
 		CatalogTreePacks:          gaugeVec("catalog_tree_packs", "Objects holding the pages of the catalog or candidate tree (inventories excluded).", "tree"),
 		CatalogTreePages:          gaugeVec("catalog_tree_pages", "Pages of the catalog or candidate tree.", "tree"),
+		CompactionInputBytes:      counterVec("compaction_input_bytes_total", "Bytes of source blocks moved by published compaction jobs, by job kind (merge, rechunk, locality, consolidation, evacuation).", "kind"),
 		OrphanCandidates:          gauge("orphan_candidates", "Objects no manifest reached in the last orphan sweep; retired if the next sweep, an hour later, confirms them."),
 		OrphansRetired:            counter("orphans_retired_total", "Objects left by interrupted checkpoints or jobs and moved to the trash journal by the orphan sweep."),
-		ObjectFill:                gaugeVec("storage_object_fill", "Data and index objects by live bytes relative to compaction_output_object_bytes; fill is the lower bound in percent of a 10 % bucket, 100 holds objects at or above it.", "kind", "fill"),
+		ObjectFill:                gaugeVec("storage_object_fill", "Data, index and catalog objects by live bytes relative to compaction_output_object_bytes; fill is the lower bound in percent of a 10 % bucket, 100 holds objects at or above it. Catalog objects are counted hourly by the orphan sweep.", "kind", "fill"),
 		Config:                    gaugeVec("config", "Configured engine option values; the parameter label names the option.", "parameter"),
 		IngestBatches:             counter("ingest_batches_total", "Group-committed delivery batches (one WAL fsync each)."),
 		IngestBatchSize:           batchSize,

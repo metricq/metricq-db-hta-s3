@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"sort"
 	"strings"
@@ -51,10 +52,11 @@ func (e *Engine) SweepOrphans(ctx context.Context) error {
 	e.pin(generation)
 	e.mu.Unlock()
 	defer func() { e.mu.Lock(); e.unpin(generation); e.mu.Unlock() }()
-	reach, protected, err := snapshot.reachableKeys(ctx)
+	reach, protected, catalogBytes, err := snapshot.reachableKeys(ctx)
 	if err != nil {
 		return err
 	}
+	e.setCatalogFill(catalogBytes)
 	var unreachable []string
 	token := ""
 	for {
@@ -111,6 +113,41 @@ func (e *Engine) SweepOrphans(ctx context.Context) error {
 	return nil
 }
 
+// setCatalogFill reports catalog and candidate objects in the fill gauge.
+// They are not catalog entries themselves, so the hourly sweep (and the
+// start of maintenance) counts them instead of every catalog change.
+func (e *Engine) setCatalogFill(catalogBytes map[string]int64) {
+	target := e.options.CompactionOptions.defaults().OutputObjectBytes
+	var fill [fillBuckets]int
+	for _, bytes := range catalogBytes {
+		fill[fillBucket(bytes, target)]++
+	}
+	for b := 0; b < fillBuckets; b++ {
+		e.metrics.ObjectFill.WithLabelValues("catalog", fmt.Sprintf("%03d", 10*b)).Set(float64(fill[b]))
+	}
+}
+
+// countCatalogFill sets the catalog part of the fill gauge from the
+// published manifest.
+func (e *Engine) countCatalogFill(ctx context.Context) error {
+	e.mu.Lock()
+	if e.closed || e.fatal != nil || e.version == "" {
+		e.mu.Unlock()
+		return nil
+	}
+	generation := e.committed.Generation
+	snapshot := &Engine{store: e.store, options: e.options, metrics: e.metrics, state: cloneMaintenanceManifest(e.committed), sharedCatalog: e.sharedCatalog}
+	e.pin(generation)
+	e.mu.Unlock()
+	defer func() { e.mu.Lock(); e.unpin(generation); e.mu.Unlock() }()
+	_, _, catalogBytes, err := snapshot.reachableKeys(ctx)
+	if err != nil {
+		return err
+	}
+	e.setCatalogFill(catalogBytes)
+	return nil
+}
+
 func hasAnyPrefix(key string, prefixes []string) bool {
 	for _, p := range prefixes {
 		if strings.HasPrefix(key, p) {
@@ -121,9 +158,10 @@ func hasAnyPrefix(key string, prefixes []string) bool {
 }
 
 // reachableKeys returns every key the manifest of this snapshot references,
-// including keys awaiting deletion in the trash journal, and the staging
-// prefixes of a pending compaction job (recovery removes those).
-func (e *Engine) reachableKeys(ctx context.Context) (map[string]bool, []string, error) {
+// including keys awaiting deletion in the trash journal, the staging
+// prefixes of a pending compaction job (recovery removes those), and the
+// live bytes of each catalog object (tree and inventory packs).
+func (e *Engine) reachableKeys(ctx context.Context) (map[string]bool, []string, map[string]int64, error) {
 	m := e.state
 	reach := map[string]bool{"manifest": true}
 	mark := func(key string) {
@@ -157,11 +195,11 @@ func (e *Engine) reachableKeys(ctx context.Context) (map[string]bool, []string, 
 		mark(ref.Key)
 		b, err := e.readBlob(ctx, ref)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		var page trashPage
 		if err = decode(b, &page); err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		for _, key := range page.Keys {
 			mark(key)
@@ -173,11 +211,12 @@ func (e *Engine) reachableKeys(ctx context.Context) (map[string]bool, []string, 
 		mark(m.CompactionJob.Key)
 		job, err := e.readJob(ctx)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		protected = job.OutputPrefixes
 	}
 	// Tree pages as stored: entries keep their inventory references.
+	catalogBytes := map[string]int64{}
 	w := catalogWriter{e: e, ctx: ctx}
 	var walk func(ref blob, objects bool) error
 	walk = func(ref blob, objects bool) error {
@@ -185,6 +224,7 @@ func (e *Engine) reachableKeys(ctx context.Context) (map[string]bool, []string, 
 			return nil
 		}
 		mark(ref.Key)
+		catalogBytes[ref.Key] += ref.Length
 		n, err := w.read(ref)
 		if err != nil {
 			return err
@@ -194,6 +234,7 @@ func (e *Engine) reachableKeys(ctx context.Context) (map[string]bool, []string, 
 				mark(o.Key)
 				for _, page := range o.Inventory {
 					mark(page.Ref.Key)
+					catalogBytes[page.Ref.Key] += page.Ref.Length
 				}
 			}
 		}
@@ -205,10 +246,10 @@ func (e *Engine) reachableKeys(ctx context.Context) (map[string]bool, []string, 
 		return nil
 	}
 	if err := walk(m.Catalog, true); err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	if err := walk(m.Candidates, false); err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	return reach, protected, nil
+	return reach, protected, catalogBytes, nil
 }

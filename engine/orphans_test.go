@@ -67,7 +67,7 @@ func TestOrphanSweepRetiresObjectsUnreachableTwice(t *testing.T) {
 	e.mu.Lock()
 	snapshot := &Engine{store: s, options: e.options, metrics: e.metrics, state: cloneMaintenanceManifest(e.committed)}
 	e.mu.Unlock()
-	reach, _, err := snapshot.reachableKeys(ctx)
+	reach, _, _, err := snapshot.reachableKeys(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}

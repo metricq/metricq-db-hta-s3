@@ -408,6 +408,9 @@ func (e *Engine) RunMaintenance(ctx context.Context) {
 	if err := e.countCatalogStats(ctx); err != nil && ctx.Err() == nil {
 		slog.Warn("data section count failed; fragmentation metrics unavailable", "error", err)
 	}
+	if err := e.countCatalogFill(ctx); err != nil && ctx.Err() == nil {
+		slog.Warn("catalog fill count failed", "error", err)
+	}
 	gcTicker := time.NewTicker(time.Second)
 	defer gcTicker.Stop()
 	options := e.options.CompactionOptions.defaults()

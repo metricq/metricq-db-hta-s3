@@ -1534,18 +1534,13 @@ func (e *Engine) applyCompaction(ctx context.Context, job CompactionJob, replace
 			}
 			e.metrics.CompactionRechunkedBlocks.Add(float64(rechunked))
 			e.metrics.CompactionOutputBlocks.Add(float64(outputBlocks))
+			kind := job.kind()
+			var inputBytes int64
+			for _, b := range job.Inputs {
+				inputBytes += b.Entry.Blob.Length
+			}
+			e.metrics.CompactionInputBytes.WithLabelValues(kind).Add(float64(inputBytes))
 			if slog.Default().Enabled(ctx, slog.LevelDebug) {
-				kind := "evacuation"
-				switch {
-				case job.Locality:
-					kind = "locality"
-				case job.Consolidation:
-					kind = "consolidation"
-				case len(job.Rechunk) > 0:
-					kind = "rechunk"
-				case len(job.Consecutive) > 0:
-					kind = "merge"
-				}
 				pages := 0
 				sources := map[string]bool{}
 				for _, b := range job.Inputs {
@@ -1554,11 +1549,32 @@ func (e *Engine) applyCompaction(ctx context.Context, job CompactionJob, replace
 						pages++
 					}
 				}
-				slog.Debug("compaction job published", "kind", kind, "inputs", len(job.Inputs), "index_pages", pages, "source_objects", len(sources), "output_blocks", outputBlocks, "rechunked", rechunked)
+				keys := make([]string, 0, len(sources))
+				for key := range sources {
+					keys = append(keys, key)
+				}
+				sort.Strings(keys)
+				slog.Debug("compaction job published", "id", job.ID, "kind", kind, "inputs", len(job.Inputs), "input_bytes", inputBytes, "index_pages", pages, "source_objects", len(sources), "output_blocks", outputBlocks, "rechunked", rechunked, "sources", strings.Join(keys, ","))
 			}
 		}
 		return err
 	}
+}
+
+// kind names what a job does, for metrics and logs. A merge job may also
+// evacuate a dirty object.
+func (job CompactionJob) kind() string {
+	switch {
+	case job.Locality:
+		return "locality"
+	case job.Consolidation:
+		return "consolidation"
+	case len(job.Rechunk) > 0:
+		return "rechunk"
+	case len(job.Consecutive) > 0:
+		return "merge"
+	}
+	return "evacuation"
 }
 
 // Build maintenance metadata without the ingestion mutex. Generation pins keep

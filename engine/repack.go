@@ -12,6 +12,15 @@ func (o CompactionOptions) smallObjectLimit() int64 {
 	return min(int64(smallObjectBytes), o.OutputObjectBytes/2)
 }
 
+// repackNodeReads bounds the index pages one repack selection reads; it
+// stops gathering at three quarters of it. A checkpoint object holds blocks
+// of hundreds of streams, each planned from up to repackStreamEntries of its
+// index entries after its settled prefix.
+const (
+	repackNodeReads     = 16384
+	repackStreamEntries = 2048
+)
+
 // repackFill is the share of an output object a repack job gathers before
 // it runs: its output is then nearly full and never a candidate again.
 const repackFillPercent = 75
@@ -64,7 +73,7 @@ func (e *Engine) repackStreamPlan(ctx context.Context, snapshot *Engine, options
 	if !ok {
 		after = math.MinInt64
 	}
-	limit := max(options.JobMaxBlocks*4, 1024)
+	limit := repackStreamEntries
 	entries, err := snapshot.indexEntriesAfter(ctx, root, after, limit)
 	if err != nil {
 		return nil, err
@@ -163,8 +172,10 @@ func (e *Engine) selectRepack(ctx context.Context, snapshot *Engine, options Com
 		return true
 	}
 	cursor, err := snapshot.catalogScan(ctx, snapshot.state.Candidates, e.repackCursor, 256, func(c ObjectInfo) bool {
-		if len(inputs) > 0 && snapshot.nodeReads >= 2048 {
-			resume, stopped = previous, true
+		if len(inputs) > 0 && snapshot.nodeReads >= repackNodeReads*3/4 {
+			// Out of read budget: run with what is gathered, so selection
+			// always progresses instead of gathering the same objects again.
+			resume, stopped, limited = previous, true, true
 			return false
 		}
 		if c.Size >= limit && c.Size > 0 {
@@ -177,7 +188,7 @@ func (e *Engine) selectRepack(ctx context.Context, snapshot *Engine, options Com
 		}
 		o, ok, err := snapshot.catalogGet(ctx, snapshot.state.Catalog, c.Target)
 		if errors.Is(err, errCatalogBudget) {
-			resume, stopped = previous, true
+			resume, stopped, limited = previous, true, len(inputs) > 0
 			return false
 		}
 		if err != nil {

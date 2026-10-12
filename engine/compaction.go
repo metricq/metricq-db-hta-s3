@@ -234,7 +234,9 @@ func (e *Engine) reserveCompaction(ctx context.Context) (CompactionJob, error) {
 		// Repack search must not consume the merger's catalog budget: a layout
 		// needing more inventories than the limit must never starve merge progress.
 		repackChecked = true
-		reader := &Engine{store: snapshot.store, options: snapshot.options, metrics: snapshot.metrics, state: snapshot.state, sharedNodes: snapshot.sharedNodes, sharedCatalog: snapshot.sharedCatalog, nodeCache: make(map[blob]indexNode), nodeReadLimit: 4096, catalogReadBudget: compactionCatalogBudget}
+		// Planning reads the index of every stream of the start objects; the
+		// shared page cache serves most of it, without a cache per job.
+		reader := &Engine{store: snapshot.store, options: snapshot.options, metrics: snapshot.metrics, state: snapshot.state, sharedNodes: snapshot.sharedNodes, sharedCatalog: snapshot.sharedCatalog, nodeReadLimit: repackNodeReads, catalogReadBudget: compactionCatalogBudget}
 		return e.selectRepack(ctx, reader, options, objectLimit, cutoff)
 	}
 	// Every second job slot repacks first; otherwise it runs when there is

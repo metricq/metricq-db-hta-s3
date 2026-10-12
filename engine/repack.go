@@ -108,18 +108,19 @@ func (e *Engine) repackStreamPlan(ctx context.Context, snapshot *Engine, options
 // streams and full objects. Start objects are small (below half the object
 // target) or have reached compaction_reclaim_dead_fraction. A job takes a
 // start object whole together with, for each of its streams, the runs of
-// sections the tier rule merges now; it gathers start objects until its
-// input fills 75 % of an output object, and never more than one. Moved
-// sections thus join their stream once, the output is nearly full, and
-// nothing has to be packed or pulled apart again later. After a complete
-// pass a job also runs with less if it reclaims dead bytes or merges
-// sections: at most once per pass in a large database, and in a small one
-// bounded by its few small objects. A start object one job cannot take whole
-// moves stream by stream.
+// sections the tier rule merges now, so moved sections join their stream once
+// and nothing has to be pulled apart again later. It gathers start objects up
+// to the job limits (compaction_job_max_bytes and _blocks, the source object
+// limit, its index read budget) and runs once its input fills 75 % of an
+// output object. Outputs are filled stream by stream without splitting a
+// run, so at most the last output of a job stays partly empty. After a
+// complete pass over the candidates a job also runs with less if it reclaims
+// dead bytes or merges sections. A start object larger than a job moves
+// stream by stream.
 func (e *Engine) selectRepack(ctx context.Context, snapshot *Engine, options CompactionOptions, objectLimit int, cutoff int64) ([]BlockInfo, bool, error) {
 	limit := options.smallObjectLimit()
-	capacity := min(options.JobMaxBytes, options.OutputObjectBytes)
-	fill := capacity * repackFillPercent / 100
+	capacity := options.JobMaxBytes
+	fill := min(capacity, options.OutputObjectBytes) * repackFillPercent / 100
 	picked := map[blob]bool{}
 	objects := map[string]bool{}
 	var inputs []BlockInfo
@@ -127,7 +128,7 @@ func (e *Engine) selectRepack(ctx context.Context, snapshot *Engine, options Com
 	dirtySeen, mergesDue := false, false
 	var selectErr error
 	previous := e.repackCursor
-	resume, stopped, full, limited := "", false, false, false
+	resume, stopped, limited := "", false, false
 	// add takes a group of blocks entirely or not at all; the first group of a
 	// job is cut to the job limits instead (a stream too large for one job).
 	add := func(group []BlockInfo) bool {
@@ -252,10 +253,6 @@ func (e *Engine) selectRepack(ctx context.Context, snapshot *Engine, options Com
 			return false
 		}
 		previous = c.Key
-		if bytes >= fill {
-			full = true
-			return false
-		}
 		return true
 	})
 	if err != nil {
@@ -264,12 +261,9 @@ func (e *Engine) selectRepack(ctx context.Context, snapshot *Engine, options Com
 	if selectErr != nil {
 		return nil, false, selectErr
 	}
-	complete := cursor == "" && !stopped && !full
-	switch {
-	case stopped:
+	complete := cursor == "" && !stopped
+	if stopped {
 		cursor = resume
-	case full:
-		cursor = previous
 	}
 	e.repackCursor = cursor
 	if len(inputs) == 0 || (bytes < fill && !limited && !(complete && (dirtySeen || mergesDue))) {

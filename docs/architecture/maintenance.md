@@ -76,9 +76,10 @@ In order of preference:
   merges as a cascade, so what tiered jobs would merge one after the other
   is written once. Sections of at least half the target are settled. The
   open suffix (partial tail blocks) is left to merging. A job gathers start
-  objects until its input fills 75 % of one output object and never takes
-  more than one; outputs are therefore nearly full and never start objects
-  themselves. After a complete pass over the candidates a job also runs with
+  objects up to the job limits and runs once its input fills 75 % of one
+  output object. Outputs are filled stream by stream without splitting a
+  run, so at most the last output of a job stays partly empty; full outputs
+  are never start objects. After a complete pass over the candidates a job also runs with
   less if it reclaims dead bytes or merges sections. A start object larger
   than a job moves stream by stream. Index packs of hundreds of small pages
   are start objects only when dirty. Every second job slot repacks first;

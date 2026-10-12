@@ -34,10 +34,10 @@ const maxCompactionObjects = 256
 // names the inputs and every output prefix so an interrupted job can be fenced
 // and its staging objects deleted.
 type CompactionJob struct {
-	Locality bool
-	// Consolidation packs small objects together.
-	Consolidation bool
-	Consecutive   [][2]blob
+	// Repack moves small or partly dead objects together with the due
+	// merges of their streams' sections (see selectRepack).
+	Repack      bool
+	Consecutive [][2]blob
 	// First blocks of runs rewritten into full blocks plus one remainder at
 	// the run's end; each run's blocks are consecutive in Consecutive.
 	Rechunk []blob
@@ -180,7 +180,6 @@ func (e *Engine) reserveCompaction(ctx context.Context) (CompactionJob, error) {
 	snapshot := &Engine{store: e.preparationStore(), options: e.options, metrics: e.metrics, state: cloneMaintenanceManifest(e.committed), sharedNodes: e.sharedNodes, sharedCatalog: e.sharedCatalog, nodeCache: make(map[blob]indexNode), nodeReadLimit: 4096, catalogReadBudget: compactionCatalogBudget}
 	scanAfter := e.candidateCursor
 	seedObject, seedOffset := e.compactionSeedObject, e.compactionSeedOffset
-	evacuateObject := e.compactionEvacuateObject
 	// Publication reads every source object's inventory; bound their number.
 	objectLimit := e.compactionObjectLimit
 	if objectLimit <= 0 {
@@ -228,56 +227,25 @@ func (e *Engine) reserveCompaction(ctx context.Context) (CompactionJob, error) {
 		copied += b.Entry.Blob.Length
 		return true
 	}
-	locality := false
-	localityMore := false
-	localityChecked := false
-	selectLocality := func() ([]BlockInfo, bool, error) {
-		// Locality search must not consume the merger's catalog budget: a layout
+	repack := false
+	repackMore := false
+	repackChecked := false
+	selectRepack := func() ([]BlockInfo, bool, error) {
+		// Repack search must not consume the merger's catalog budget: a layout
 		// needing more inventories than the limit must never starve merge progress.
-		localityChecked = true
+		repackChecked = true
 		reader := &Engine{store: snapshot.store, options: snapshot.options, metrics: snapshot.metrics, state: snapshot.state, sharedNodes: snapshot.sharedNodes, sharedCatalog: snapshot.sharedCatalog, nodeCache: make(map[blob]indexNode), nodeReadLimit: 4096, catalogReadBudget: compactionCatalogBudget}
-		return e.selectLocality(ctx, reader, options, objectLimit)
+		return e.selectRepack(ctx, reader, options, objectLimit, cutoff)
 	}
-	if !options.LocalityDisabled && e.compactionCompletions%4 == 3 {
+	// Every second job slot repacks first; otherwise it runs when there is
+	// nothing to merge.
+	if e.compactionCompletions%2 == 1 {
 		var err error
-		inputs, localityMore, err = selectLocality()
+		inputs, repackMore, err = selectRepack()
 		if err != nil {
 			return CompactionJob{}, err
 		}
-		locality = len(inputs) > 0
-	}
-	consolidation := false
-	consolidationMore := false
-	consolidationChecked := false
-	selectConsolidation := func() ([]BlockInfo, bool, error) {
-		consolidationChecked = true
-		reader := &Engine{store: snapshot.store, options: snapshot.options, metrics: snapshot.metrics, state: snapshot.state, sharedNodes: snapshot.sharedNodes, sharedCatalog: snapshot.sharedCatalog, nodeCache: make(map[blob]indexNode), nodeReadLimit: 4096, catalogReadBudget: compactionCatalogBudget}
-		return e.selectConsolidation(ctx, reader, options, objectLimit, cutoff)
-	}
-	if len(inputs) == 0 && e.compactionCompletions%4 == 1 {
-		var err error
-		inputs, consolidationMore, err = selectConsolidation()
-		if err != nil {
-			return CompactionJob{}, err
-		}
-		consolidation = len(inputs) > 0
-	}
-	nextEvacuation := ""
-	if evacuateObject != "" && len(inputs) == 0 {
-		o, ok, err := snapshot.catalogGet(ctx, snapshot.state.Catalog, evacuateObject)
-		if err != nil && !errors.Is(err, errCatalogBudget) {
-			return CompactionJob{}, err
-		}
-		if ok && o.Modified <= cutoff && options.evacuated(o) && float64(o.Size-o.LiveBytes)/float64(o.Size) >= options.ReclaimDeadFraction {
-			for _, b := range o.Blocks {
-				if !add(b) {
-					break
-				}
-			}
-			if len(inputs) < len(o.Blocks) && len(inputs) > 0 {
-				nextEvacuation = o.Key
-			}
-		}
+		repack = len(inputs) > 0
 	}
 	cursor := scanAfter
 	var err error
@@ -332,10 +300,8 @@ func (e *Engine) reserveCompaction(ctx context.Context) (CompactionJob, error) {
 				previousCandidate = candidate.Key
 				return true
 			}
-			// Small objects are consolidated in groups instead: evacuating one
-			// small index pack rewrites the ancestors of its pages, which often
-			// leaves the next small pack dirty, one job per pack.
-			dirty := options.evacuated(object) && float64(object.Size-object.LiveBytes)/float64(object.Size) >= options.ReclaimDeadFraction
+			// Dead bytes are reclaimed by repacking; a dirty object is never idle.
+			dirty := float64(object.Size-object.LiveBytes)/float64(object.Size) >= options.ReclaimDeadFraction
 
 			if options.MergeEnabled {
 				// Candidate inventories identify a bounded set of stream roots.
@@ -568,22 +534,6 @@ func (e *Engine) reserveCompaction(ctx context.Context) (CompactionJob, error) {
 					}
 				}
 			}
-			if dirty && (len(inputs) == 0 || !options.MergeEnabled) {
-				// Consolidation retires source fragments naturally. Evacuating
-				// unrelated live blocks first repeatedly relocates growing mixed
-				// tails without improving queries. Use copy-only reclamation when
-				// this bounded scan has no merge work left (or merging is disabled).
-				remaining := 0
-				for _, b := range object.Blocks {
-					if !add(b) {
-						remaining++
-					}
-				}
-				if remaining > 0 && len(inputs) > 0 {
-					nextEvacuation = object.Key
-					return false
-				}
-			}
 			if idle && !dirty && len(inputs) == inputsBefore {
 				if e.idleCandidates == nil {
 					e.idleCandidates = make(map[string]idleCandidate)
@@ -622,31 +572,22 @@ func (e *Engine) reserveCompaction(ctx context.Context) (CompactionJob, error) {
 			}
 		}
 	}
-	if len(inputs) == 0 && !options.LocalityDisabled && !localityChecked {
-		var localityErr error
-		inputs, localityMore, localityErr = selectLocality()
-		if localityErr != nil {
-			return CompactionJob{}, localityErr
+	if len(inputs) == 0 && !repackChecked {
+		var repackErr error
+		inputs, repackMore, repackErr = selectRepack()
+		if repackErr != nil {
+			return CompactionJob{}, repackErr
 		}
-		locality = len(inputs) > 0
-	}
-	if len(inputs) == 0 && !consolidationChecked {
-		var consolidationErr error
-		inputs, consolidationMore, consolidationErr = selectConsolidation()
-		if consolidationErr != nil {
-			return CompactionJob{}, consolidationErr
-		}
-		consolidation = len(inputs) > 0
+		repack = len(inputs) > 0
 	}
 	e.mu.Lock()
-	e.compactionEvacuateObject = nextEvacuation
 	e.candidateCursor = cursor
 	e.compactionSeedObject = resumeObject
 	e.compactionSeedOffset = resumeOffset
 	if resumeObject != "" {
 		e.candidateCursor = resumeCandidate
 	}
-	e.compactionScanMore = len(inputs) == 0 && (seedLimited || cursor != "" || localityMore || fragmentMore || consolidationMore)
+	e.compactionScanMore = len(inputs) == 0 && (seedLimited || cursor != "" || repackMore || fragmentMore)
 	if e.closed {
 		e.mu.Unlock()
 		return CompactionJob{}, fmt.Errorf("engine closed")
@@ -679,12 +620,7 @@ func (e *Engine) reserveCompaction(ctx context.Context) (CompactionJob, error) {
 		return CompactionJob{}, err
 	}
 	id := strings.TrimPrefix(idPack.key, "job/")
-	if locality {
-		for i := 1; i < len(inputs); i++ {
-			consecutive = append(consecutive, [2]blob{inputs[i-1].Entry.Blob, inputs[i].Entry.Blob})
-		}
-	}
-	job := CompactionJob{Consecutive: consecutive, Rechunk: rechunk, Locality: locality, Consolidation: consolidation, ID: id, Stage: "reserved", Generation: generation, Inputs: inputs, Created: time.Now().UnixNano()}
+	job := CompactionJob{Consecutive: consecutive, Rechunk: rechunk, Repack: repack, ID: id, Stage: "reserved", Generation: generation, Inputs: inputs, Created: time.Now().UnixNano()}
 	// Register all staging namespaces before uploads, including COW metadata.
 	for _, prefix := range []string{"data/", "index/", "catalog/", "candidates/", "trash/", "state/", "roots/", "held-state/"} {
 		job.OutputPrefixes = append(job.OutputPrefixes, prefix+"compact-"+id+"/")
@@ -1516,11 +1452,8 @@ func (e *Engine) applyCompaction(ctx context.Context, job CompactionJob, replace
 			e.compactionCompletions++
 			e.mu.Unlock()
 			e.metrics.Compactions.Inc()
-			if job.Consolidation {
-				e.metrics.ConsolidationJobs.Inc()
-			}
-			if job.Locality {
-				e.metrics.LocalityJobs.Inc()
+			if job.Repack {
+				e.metrics.RepackJobs.Inc()
 			}
 			e.metrics.CompactionInputBlocks.Add(float64(len(job.Inputs)))
 			outputBlocks, rechunked := 0, 0
@@ -1561,14 +1494,11 @@ func (e *Engine) applyCompaction(ctx context.Context, job CompactionJob, replace
 	}
 }
 
-// kind names what a job does, for metrics and logs. A merge job may also
-// evacuate a dirty object.
+// kind names what a job does, for metrics and logs.
 func (job CompactionJob) kind() string {
 	switch {
-	case job.Locality:
-		return "locality"
-	case job.Consolidation:
-		return "consolidation"
+	case job.Repack:
+		return "repack"
 	case len(job.Rechunk) > 0:
 		return "rechunk"
 	case len(job.Consecutive) > 0:

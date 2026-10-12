@@ -157,7 +157,7 @@ func TestIndexPrefetchCoalescesAndVerifiesPages(t *testing.T) {
 
 }
 
-func TestLocalityBatchesIndependentLevelsWithinJobBudget(t *testing.T) {
+func TestRepackBatchesIndependentLevelsWithinJobBudget(t *testing.T) {
 	ctx := context.Background()
 	store := &rangeGCStore{gcStore: &gcStore{memoryStore: newStore()}}
 	options := maintenanceOptions(t.TempDir(), true)
@@ -195,8 +195,8 @@ func TestLocalityBatchesIndependentLevelsWithinJobBudget(t *testing.T) {
 	for _, input := range job.Inputs {
 		metrics[input.Metric] = true
 	}
-	if !job.Locality || len(metrics) != 3 || len(job.Inputs) != 12 {
-		t.Fatalf("locality job: metrics=%d inputs=%d locality=%v", len(metrics), len(job.Inputs), job.Locality)
+	if !job.Repack || len(metrics) != 3 || len(job.Inputs) != 12 {
+		t.Fatalf("repack job: metrics=%d inputs=%d repack=%v", len(metrics), len(job.Inputs), job.Repack)
 	}
 	repl, packs, err := e.copyJob(ctx, job)
 	if err != nil {

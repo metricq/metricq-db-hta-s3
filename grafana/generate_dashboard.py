@@ -221,9 +221,11 @@ panel("Job duration", [
     (cfg("compaction_job_timeout_seconds"), "timeout")], "s")
 panel("Active and source-object limit", [(f"max(metricq_db_compaction_active{T})", "active"),
                                          (f"max(metricq_db_compaction_job_object_limit{T})", "object limit")], "short")
-panel("Level locality", [(f"sum(rate(metricq_db_compaction_locality_jobs_total{T}[$__rate_interval]))", "locality jobs/s"),
-                         (f"max(metricq_db_compaction_locality_pending_streams{T})", "streams to inspect")], "short",
-      description="Jobs laying out consecutive blocks of a metric level contiguously (fewer GETs per FLEX query).")
+panel("Moved bytes by job kind", [(f"sum by (kind) (rate(metricq_db_compaction_input_bytes_total{T}[$__rate_interval]))", "{{kind}}"),
+                                  (f"sum(deriv(metricq_db_storage_live_bytes{T}[30m]))", "growth of live data")], "Bps",
+      description="Source bytes moved by compaction per job kind. Repack jobs pack small or partly dead objects together with the due "
+                  "merges of their streams' sections; merge and rechunk rewrite partial blocks. Their sum over the growth of live "
+                  "data is the compaction write amplification.")
 panel("Last successful job", [(f"time() - (max(metricq_db_compaction_job_last_success_timestamp_seconds{T}) > 0)", "age")], "s")
 
 newrow("Reclamation")

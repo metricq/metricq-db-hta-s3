@@ -145,7 +145,7 @@ This table is generated from `engine/metrics.go` by
 | `metricq_db_storage_live_bytes` | gauge |  | Referenced compressed data/index bytes in the maintenance catalog. |
 | `metricq_db_storage_objects` | gauge |  | Data and index objects tracked by the maintenance catalog. |
 | `metricq_db_storage_object_fill` | gauge | kind, fill | Data, index and catalog objects by live bytes relative to `compaction_output_object_bytes`; `fill` is the lower bound in percent of a 10 % bucket, `100` holds objects at or above it. Data and index objects are counted once and then updated with every catalog change (recounted when the output object size changes); catalog objects (tree and inventory packs) are counted at maintenance start and by the hourly orphan sweep. |
-| `metricq_db_compaction_input_bytes_total` | counter | kind | Bytes of source blocks moved by published compaction jobs, by kind: `merge`, `rechunk`, `locality`, `consolidation`, `evacuation`. |
+| `metricq_db_compaction_input_bytes_total` | counter | kind | Bytes of source blocks moved by published compaction jobs, by kind: `merge`, `rechunk`, `repack`. |
 | `metricq_db_storage_small_block_bytes` | gauge |  | Compressed bytes in live data blocks below 1024 records. |
 | `metricq_db_storage_small_blocks` | gauge |  | Live data blocks below 1024 records, including single stream tails. |
 | `metricq_db_storage_streams` | gauge |  | Streams (metric and HTA level) with published data. |
@@ -154,7 +154,6 @@ This table is generated from `engine/metrics.go` by
 | `metricq_db_compaction_active` | gauge |  | One while a background compaction job runs. |
 | `metricq_db_compaction_candidate_objects` | gauge |  | Tracked candidate objects, including cooldown and single tails. |
 | `metricq_db_compaction_conflicts_total` | counter |  | Metadata proposals rebuilt after concurrent publication. |
-| `metricq_db_compaction_consolidation_jobs_total` | counter |  | Published jobs packing small objects (below compaction_output_object_bytes/2) into one. |
 | `metricq_db_compaction_deferred_merges_total` | counter |  | Large tail merge candidates deferred until sufficient growth or age. |
 | `metricq_db_compaction_idle_candidate_skips_total` | counter |  | Candidate visits skipped without a catalog read: the candidate and its streams are unchanged since a scan found no work. |
 | `metricq_db_compaction_idle_candidates` | gauge |  | Candidates remembered as having no work, mostly objects holding only open stream tails. |
@@ -168,10 +167,9 @@ This table is generated from `engine/metrics.go` by
 | `metricq_db_compaction_job_pending` | gauge |  | One while a reserved or aborted compaction job is recorded in the manifest. |
 | `metricq_db_compaction_job_seconds` | histogram |  | Background compaction job duration. |
 | `metricq_db_compaction_jobs_total` | counter |  | Successfully published background compactions. |
-| `metricq_db_compaction_locality_jobs_total` | counter |  | Published jobs packing consecutive blocks of a metric level. |
-| `metricq_db_compaction_locality_pending_streams` | gauge |  | Changed stream roots awaiting layout inspection; not necessarily actionable fragmentation. |
+| `metricq_db_compaction_repack_jobs_total` | counter |  | Published jobs moving small or partly dead objects together with the due merges of their streams' sections into a nearly full object. |
 | `metricq_db_compaction_noop_total` | counter |  | Candidate scans with no actionable job. |
-| `metricq_db_compaction_output_blocks_total` | counter |  | Copied or consolidated source replacements in successfully published jobs. |
+| `metricq_db_compaction_output_blocks_total` | counter |  | Copied, merged or repacked source replacements in successfully published jobs. |
 | `metricq_db_compaction_rechunked_blocks_total` | counter |  | Source blocks rewritten to move a fragment towards the end of its stream. |
 | **Maintenance (deletion of retired objects)** | | | |
 | `metricq_db_maintenance_delete_errors_total` | counter |  | Failed retired-object deletion attempts. |

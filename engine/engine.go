@@ -186,35 +186,31 @@ func aggregationConfig(c hta.Config) hta.Config {
 // Engine is one open database. All exported methods are safe for concurrent
 // use; only one Engine (one process) may own a WAL directory and store prefix.
 type Engine struct {
-	maintenanceWanted        chan struct{}
-	sharedCatalog            *catalogPageCache
-	dirtySeries              map[string]bool
-	mu                       sync.Mutex
-	maintenanceMu            sync.Mutex
-	publishMu                sync.Mutex
-	activeMaintenance        string
-	stagingKeys              []string
-	candidateCursor          string
-	compactionSeedObject     string
-	compactionSeedOffset     int
-	compactionEvacuateObject string
-	compactionBudget         *rateBudget
-	lastCompactionEnd        time.Time
-	compactionCompletions    uint64
+	maintenanceWanted     chan struct{}
+	sharedCatalog         *catalogPageCache
+	dirtySeries           map[string]bool
+	mu                    sync.Mutex
+	maintenanceMu         sync.Mutex
+	publishMu             sync.Mutex
+	activeMaintenance     string
+	stagingKeys           []string
+	candidateCursor       string
+	compactionSeedObject  string
+	compactionSeedOffset  int
+	compactionBudget      *rateBudget
+	lastCompactionEnd     time.Time
+	compactionCompletions uint64
 	// Orphan sweep: keys unreachable in the last sweep, and when it ran.
 	orphanCandidates      map[string]bool
 	lastOrphanSweep       time.Time
 	compactionScanMore    bool
-	localityScans         map[string]localityScan
+	repackAfter           map[string]int64         // per stream, the end of its settled prefix
 	deferredSeeds         map[string]int64         // merge seeds deferred until this time (unix ns)
 	idleCandidates        map[string]idleCandidate // candidates whose last scan found no work
 	idlePass              uint64                   // completed candidate scan passes
-	consolidationCursor   string
-	consolidationPass     uint64
-	candidateSizes        map[string]candidateSize
+	repackCursor          string
 	fragmentScans         map[string]fragmentScan
 	fragmentCursor        string
-	localityCursor        string
 	compactionObjectLimit int // source objects per job, adapted to the catalog budget
 	lastReclaim           time.Time
 	deletedCleanups       map[string]bool

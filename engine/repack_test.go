@@ -13,7 +13,7 @@ import (
 // consolidation limit.
 func (f *holdFixture) smallObjects() (n int) {
 	f.t.Helper()
-	limit := f.e.options.CompactionOptions.defaults().consolidationLimit()
+	limit := f.e.options.CompactionOptions.defaults().smallObjectLimit()
 	if err := f.e.catalogWalk(f.ctx, f.e.state.Catalog, math.MaxInt, func(o ObjectInfo) bool {
 		if o.Size < limit {
 			n++
@@ -27,7 +27,7 @@ func (f *holdFixture) smallObjects() (n int) {
 
 // Small objects from many checkpoints and jobs are packed together; data and
 // catalog accounting stay intact.
-func TestConsolidationPacksSmallObjects(t *testing.T) {
+func TestRepackPacksSmallObjects(t *testing.T) {
 	f := newHoldFixture(t)
 	for i := 0; i < 12; i++ {
 		f.ingest("x", 40)
@@ -41,8 +41,8 @@ func TestConsolidationPacksSmallObjects(t *testing.T) {
 	}
 	f.compactAll()
 	after := f.smallObjects()
-	if after >= before/2 || metricValue(t, f.e.metrics.ConsolidationJobs) == 0 {
-		t.Fatalf("small objects %d -> %d, consolidation jobs %v", before, after, metricValue(t, f.e.metrics.ConsolidationJobs))
+	if after >= before/2 || metricValue(t, f.e.metrics.RepackJobs) == 0 {
+		t.Fatalf("small objects %d -> %d, repack jobs %v", before, after, metricValue(t, f.e.metrics.RepackJobs))
 	}
 	t.Logf("small objects %d -> %d", before, after)
 	// Index pages are rewritten with their ancestors, never copied into a
@@ -86,4 +86,44 @@ func TestConsolidationPacksSmallObjects(t *testing.T) {
 	f.restart()
 	f.check("after restart")
 	checkCatalog(t, f.e)
+}
+
+// The cascade merges in one step what tiered jobs would merge one after the
+// other: the runs are disjoint, and afterwards no merge is due anymore.
+func TestMergeCascadeLeavesNothingDue(t *testing.T) {
+	const target, fanIn = 4 << 20, 4
+	for _, sizes := range [][]int64{
+		{4 << 10, 4 << 10, 4 << 10, 4 << 10},
+		{1 << 20, 256 << 10, 256 << 10, 256 << 10, 256 << 10, 4 << 10, 4 << 10, 4 << 10, 4 << 10},
+		{3 << 20, 3 << 20, 64 << 10, 16 << 10, 16 << 10, 16 << 10, 16 << 10, 16 << 10},
+	} {
+		sections := make([]localitySection, len(sizes))
+		for i, n := range sizes {
+			sections[i] = localitySection{begin: i, end: i + 1, bytes: n}
+		}
+		runs := mergeCascade(sections, target, fanIn)
+		if len(runs) == 0 {
+			t.Fatalf("%v: nothing merged", sizes)
+		}
+		var after []localitySection
+		next := 0
+		for _, r := range runs {
+			if r[0] < next || r[1]-r[0] < 2 {
+				t.Fatalf("%v: runs %v overlap or are trivial", sizes, runs)
+			}
+			for i := next; i < r[0]; i++ {
+				after = append(after, sections[i])
+			}
+			merged := localitySection{begin: r[0], end: r[1]}
+			for i := r[0]; i < r[1]; i++ {
+				merged.bytes += sections[i].bytes
+			}
+			after = append(after, merged)
+			next = r[1]
+		}
+		after = append(after, sections[next:]...)
+		if first, end := localityMerge(after, target, fanIn); first != end {
+			t.Fatalf("%v: merge of %d..%d still due after runs %v", sizes, first, end, runs)
+		}
+	}
 }

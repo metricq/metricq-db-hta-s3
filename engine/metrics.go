@@ -67,11 +67,9 @@ type Metrics struct {
 	CompactionObjectLimit, CompactionJobPending prometheus.Gauge
 	CompactionLastSuccess                       prometheus.Gauge
 	CompactionBudgetExceeded                    prometheus.Counter
-	LocalityJobs                                prometheus.Counter
+	RepackJobs                                  prometheus.Counter
 	CompactionIdleSkips                         prometheus.Counter
-	ConsolidationJobs                           prometheus.Counter
 	CompactionIdleCandidates                    prometheus.Gauge
-	LocalityPendingStreams                      prometheus.Gauge
 }
 
 // NewMetrics creates and registers all engine metrics with r.
@@ -114,7 +112,7 @@ func NewMetrics(r prometheus.Registerer) *Metrics {
 		CatalogRebuilds:           counterVec("catalog_rebuilds_total", "Catalog or candidate tree updates that rewrote the whole tree into a fresh pack.", "tree"),
 		CatalogTreePacks:          gaugeVec("catalog_tree_packs", "Objects holding the pages of the catalog or candidate tree (inventories excluded).", "tree"),
 		CatalogTreePages:          gaugeVec("catalog_tree_pages", "Pages of the catalog or candidate tree.", "tree"),
-		CompactionInputBytes:      counterVec("compaction_input_bytes_total", "Bytes of source blocks moved by published compaction jobs, by job kind (merge, rechunk, locality, consolidation, evacuation).", "kind"),
+		CompactionInputBytes:      counterVec("compaction_input_bytes_total", "Bytes of source blocks moved by published compaction jobs, by job kind (merge, rechunk, repack).", "kind"),
 		OrphanCandidates:          gauge("orphan_candidates", "Objects no manifest reached in the last orphan sweep; retired if the next sweep, an hour later, confirms them."),
 		OrphansRetired:            counter("orphans_retired_total", "Objects left by interrupted checkpoints or jobs and moved to the trash journal by the orphan sweep."),
 		ObjectFill:                gaugeVec("storage_object_fill", "Data, index and catalog objects by live bytes relative to compaction_output_object_bytes; fill is the lower bound in percent of a 10 % bucket, 100 holds objects at or above it. Catalog objects are counted hourly by the orphan sweep.", "kind", "fill"),
@@ -144,10 +142,8 @@ func NewMetrics(r prometheus.Registerer) *Metrics {
 		CompactionObjectLimit:     gauge("compaction_job_object_limit", "Current maximum source objects per compaction job (adapts to the catalog budget)."),
 		CompactionJobPending:      gauge("compaction_job_pending", "One while a reserved or aborted compaction job is recorded in the manifest."),
 		CompactionLastSuccess:     gauge("compaction_job_last_success_timestamp_seconds", "Unix time of the last published compaction job."),
-		LocalityJobs:              counter("compaction_locality_jobs_total", "Published jobs packing consecutive blocks of a metric level."),
-		LocalityPendingStreams:    gauge("compaction_locality_pending_streams", "Changed stream roots awaiting layout inspection; not necessarily actionable fragmentation."),
+		RepackJobs:                counter("compaction_repack_jobs_total", "Published jobs moving small or partly dead objects together with the due merges of their streams' sections into a nearly full object."),
 		CompactionBudgetExceeded:  counter("compaction_job_budget_exceeded_total", "Compaction jobs aborted because publication exceeded the catalog budget."),
-		ConsolidationJobs:         counter("compaction_consolidation_jobs_total", "Published jobs packing small objects (below compaction_output_object_bytes/2) into one."),
 		CompactionIdleSkips:       counter("compaction_idle_candidate_skips_total", "Candidate visits skipped without a catalog read: the candidate and its streams are unchanged since a scan found no work."),
 		CompactionIdleCandidates:  gauge("compaction_idle_candidates", "Candidates remembered as having no work, mostly objects holding only open stream tails."),
 		CandidateObjects:          gauge("compaction_candidate_objects", "Tracked candidate objects, including cooldown and single tails."),
@@ -160,7 +156,7 @@ func NewMetrics(r prometheus.Registerer) *Metrics {
 		FragmentBlocks:            gauge("storage_fragment_blocks", "Small data blocks followed by a newer block of their stream; compaction work."),
 		CompactionRechunkedBlocks: counter("compaction_rechunked_blocks_total", "Source blocks rewritten to move a fragment towards the end of its stream."),
 		CompactionInputBlocks:     counter("compaction_input_blocks_total", "Source blocks in successfully published jobs."),
-		CompactionOutputBlocks:    counter("compaction_output_blocks_total", "Copied or consolidated source replacements in successfully published jobs."),
+		CompactionOutputBlocks:    counter("compaction_output_blocks_total", "Copied, merged or repacked source replacements in successfully published jobs."),
 		CompactionNoop:            counter("compaction_noop_total", "Candidate scans with no actionable job."),
 		CompactionActive:          gauge("compaction_active", "One while a background compaction job runs."),
 		CompactionDuration:        hist("compaction_job_seconds", "Background compaction job duration."),

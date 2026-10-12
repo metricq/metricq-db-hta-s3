@@ -590,10 +590,9 @@ func (m *manifest) addFill(o ObjectInfo, delta int64) {
 	}
 }
 
-// smallObjectBytes marks objects that consolidation packs together regardless
-// of dead bytes; compaction never consolidates above
-// compaction_output_object_bytes/2. Only a nearly full object is final, so
-// mid-sized compaction outputs are packed as well.
+// smallObjectBytes marks objects that repacking packs together regardless of
+// dead bytes (at most half of compaction_output_object_bytes). Only a nearly
+// full object is final, so mid-sized outputs are packed as well.
 const smallObjectBytes = 2 << 20
 
 func candidateKey(o ObjectInfo) string {
@@ -710,7 +709,7 @@ func (e *Engine) catalogChanges(ctx context.Context, next *manifest, changes map
 				if next.MaintenanceStatsReady {
 					next.CandidateObjects++
 				}
-				// Size lets consolidation find small objects without catalog reads.
+				// Size lets repacking find small objects without catalog reads.
 				candidates[candidate] = &ObjectInfo{Key: candidate, Target: key, Modified: time.Now().UnixNano(), Size: value.Size}
 			}
 		}

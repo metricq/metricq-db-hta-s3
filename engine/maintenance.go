@@ -48,7 +48,7 @@ type CompactionOptions struct {
 	// OutputObjectBytes; larger values rewrite data less often but leave more
 	// sections per stream.
 	LocalityFanIn int `json:"compaction_locality_fan_in"`
-	// LocalityDisabled turns level locality off.
+	// LocalityDisabled turns off merging stream sections when repacking.
 	LocalityDisabled bool `json:"compaction_locality_disabled"`
 }
 

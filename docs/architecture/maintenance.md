@@ -47,24 +47,6 @@ In order of preference:
 - **Deferred merges.** A large tail and a small new block are merged only after
   25 % growth or an hour; such seeds are skipped for up to 10 minutes instead of
   being re-examined on every pass.
-- **Small object consolidation.** Merge outputs hold a few blocks of
-  different streams, every job writes a small index pack, and evacuating an
-  object copies its live blocks into another small one, so the number of
-  small objects would grow with the number of jobs. Only a nearly full
-  object is final: objects below `compaction_output_object_bytes`/2 (at most
-  2 MiB) are candidates even when fully live; every fourth job slot, and
-  whenever nothing else is due, packs eight of them, four whose live bytes
-  reach that limit, or any group containing a dirty one into one data and
-  one index pack. Fewer clean ones
-  would not reduce the object count, since each job writes packs of its own.
-  Small objects are never evacuated one by one: evacuating a small index pack
-  rewrites its pages' ancestors, which often leaves the next small pack dirty,
-  and on the development database this chained into hundreds of one-page jobs
-  per minute. Objects holding a quarter of a job's blocks (index packs of
-  hundreds of small pages, which packing cannot grow much) take part only
-  when dirty. The inputs are ordered by stream and time, so the sections of a
-  stream from several small objects become one run and none is split.
-  `compaction_consolidation_jobs_total` counts the jobs.
 - **Index page relocation.** Index pages are never copied: a relocated page
   is rewritten into the job's index pack together with its ancestors, whose
   child pointers change anyway. A copied inner page whose children move
@@ -78,20 +60,37 @@ In order of preference:
   object changes) or one of those roots changes. Outcomes that depend on time
   (cooldown, deferred merges) or on the job being assembled are not
   remembered. `compaction_idle_candidate_skips_total` counts the skips.
-- **Level locality.** A stream (metric level) consists of *sections*: runs of
-  consecutive blocks stored contiguously in one object, each read with one
-  range request. Locality lets sections grow in tiers, like a size-tiered LSM
-  tree: `compaction_locality_fan_in` (default 4) consecutive sections of one
-  size tier (powers of the fan-in below `compaction_output_object_bytes`) are
-  rewritten into one section of the next tier; in the top tier (at least a
-  quarter of the target) sections merge while they fit into the target.
-  Sections of at least half the target are settled and not rewritten again.
-  A stream thus has its settled sections plus at most fan-in − 1 sections per
-  smaller tier, and every byte is rewritten about log_fanIn(target / first
-  section) times (about 3 times from 40 KiB to 4 MiB). The open suffix
-  (partial tail blocks) is left to merging. Every fourth job gives locality a
-  turn; otherwise it runs when there is nothing to merge.
-  `compaction_locality_disabled` turns it off.
+- **Repacking.** Two layout goals are planned together: every stream
+  (metric level) should consist of few *sections* (runs of consecutive blocks
+  stored contiguously in one object, each read with one range request), and
+  objects should be nearly full. Only an object with a single stream that
+  fills most of `compaction_output_object_bytes` is final. A repack job
+  starts from objects below half the object target (at most 2 MiB) or with a
+  dead fraction of at least `compaction_reclaim_dead_fraction`, taken from
+  the candidate tree. It moves a start object whole and, for each of its
+  streams, the runs of sections that are due to merge. Sections grow in
+  tiers like a size-tiered LSM tree: `compaction_locality_fan_in` (default
+  4) consecutive sections of one size tier (powers of the fan-in below the
+  object target) become one section of the next tier, and in the top tier
+  sections merge while they fit into the target. The job applies these
+  merges as a cascade, so what tiered jobs would merge one after the other
+  is written once. Sections of at least half the target are settled. The
+  open suffix (partial tail blocks) is left to merging. A job gathers start
+  objects until its input fills 75 % of one output object and never takes
+  more than one; outputs are therefore nearly full and never start objects
+  themselves. After a complete pass over the candidates a job also runs with
+  less if it reclaims dead bytes or merges sections. A start object larger
+  than a job moves stream by stream. Index packs of hundreds of small pages
+  are start objects only when dirty. Every second job slot repacks first;
+  otherwise repacking runs when there is nothing to merge.
+  `compaction_locality_disabled` turns off merging sections (start objects
+  are still packed). `compaction_repack_jobs_total` counts the jobs.
+
+  Separate packing of small objects and level locality used to undo each
+  other's work. Consolidation packed small job outputs within a minute,
+  including its own outputs below the limit. Locality then pulled sections
+  out of those objects again, and evacuation copied what remained. On the
+  development database this wrote 56 times the new data.
 - **Orphan sweep.** A checkpoint or job that fails or whose process stops
   after uploading but before publishing leaves objects no manifest
   references. Once an hour the maintenance loop lists the bucket and compares
@@ -102,8 +101,6 @@ In order of preference:
   trash journal and are deleted like any retired object; uploads in flight
   are published long before the second sweep. Listing and reachability run
   without the publication lock.
-- **Reclamation.** Objects whose dead fraction exceeds `compaction_reclaim_dead_fraction`
-  are evacuated (live blocks copied) so the whole object can be deleted.
 
 ## Garbage collection
 

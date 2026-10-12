@@ -83,7 +83,7 @@ the prefix, then restart.
 
 ## Slow queries
 
-- Many GETs per query: fragmented layout; compaction and level locality fix it
+- Many GETs per query: fragmented layout; repacking (compaction) fixes it
   over time. Check *Fragmentation* and *Jobs*.
 - `history response ... would exceed query_max_response_bytes`: the response
   would not fit into one AMQP message; request a shorter range or a larger

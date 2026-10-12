@@ -44,6 +44,7 @@ nav:
   - Architecture:
       - Components: architecture/overview.md
       - Data model: architecture/data-model.md
+      - Data structures: architecture/data-structures.md
       - Storage layout: architecture/storage-layout.md
       - Write path: architecture/write-path.md
       - Read path: architecture/read-path.md

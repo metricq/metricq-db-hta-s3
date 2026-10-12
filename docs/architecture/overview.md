@@ -2,6 +2,8 @@
 
 The executable `metricq-db-hta-s3` wires a MetricQ database client to a
 storage engine. Everything that touches data lives in the `engine` package.
+[Data structures](data-structures.md) shows how the stored structures build
+on each other and which operation touches which.
 
 ```mermaid
 flowchart TB
@@ -35,7 +37,7 @@ flowchart TB
 | WAL (`wal.go`) | Local, checksummed log of accepted data deliveries. Each WAL frame is one log entry; each WAL segment is a file containing one or more frames. Acknowledged samples survive a crash until a checkpoint stores them. |
 | Checkpoint (`Flush`) | Writes pending records as data blocks and index pages to S3, persists held records as deltas, publishes a new manifest, releases WAL segments. |
 | Query | Reads the index of one metric level and the needed data blocks, plus unflushed records in memory. |
-| Maintenance (`RunMaintenance`) | Compaction (merging small blocks, level locality, reclaiming partly dead objects), deletion of retired objects, recovery of interrupted jobs. |
+| Maintenance (`RunMaintenance`) | Compaction (merging partial blocks, repacking small or partly dead objects with their streams' sections), deletion of retired objects, recovery of interrupted jobs. |
 
 ## Concurrency
 

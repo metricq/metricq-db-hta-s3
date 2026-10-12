@@ -43,6 +43,6 @@ checkpoint does not block queries.
 
 The number of range GETs of a cold query is the number of distinct, non-adjacent
 byte ranges it needs. Blocks of one stream written by many checkpoints live in
-many objects; compaction's *level locality* rewrites consecutive blocks of a
+many objects; compaction's *repacking* rewrites consecutive blocks of a
 metric level into one contiguous section, so a typical `FLEX_TIMELINE`
 request needs one or two GETs (see [Maintenance](maintenance.md)).

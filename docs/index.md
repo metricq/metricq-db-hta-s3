@@ -41,7 +41,7 @@ Properties that shape its operation:
 | Check your S3 and plan capacity | [Requirements](operations/requirements.md), [Sizing](operations/sizing.md) |
 | Understand a dashboard panel or alert | [Monitoring](operations/monitoring.md) |
 | Fix backpressure, slow queries or backlog | [Tuning](operations/tuning.md), [Troubleshooting](operations/troubleshooting.md) |
-| Understand the design | [Architecture](architecture/overview.md) |
+| Understand the design | [Architecture](architecture/overview.md), [Data structures](architecture/data-structures.md) |
 | Change the code | [Code structure](development/code-structure.md), [Testing](development/testing.md) |
 
 The [data model](architecture/data-model.md) defines the terms used for MetricQ

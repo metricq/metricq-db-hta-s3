@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"math"
+	"sort"
 )
 
 // smallObjectLimit is the size below which an object is a repack start
@@ -115,8 +116,10 @@ func (e *Engine) repackStreamPlan(ctx context.Context, snapshot *Engine, options
 // output object. Outputs are filled stream by stream without splitting a
 // run, so at most the last output of a job stays partly empty. After a
 // complete pass over the candidates a job also runs with less if it reclaims
-// dead bytes or merges sections. A start object larger than a job moves
-// stream by stream.
+// dead bytes. A job with due merges always runs. Streams fragmented inside
+// large clean objects are in no start object, so the selection also walks
+// the streams round robin and adds their due merges. A start object larger
+// than a job moves stream by stream.
 func (e *Engine) selectRepack(ctx context.Context, snapshot *Engine, options CompactionOptions, objectLimit int, cutoff int64) ([]BlockInfo, bool, error) {
 	limit := options.smallObjectLimit()
 	capacity := options.JobMaxBytes
@@ -280,6 +283,52 @@ func (e *Engine) selectRepack(ctx context.Context, snapshot *Engine, options Com
 	if stopped {
 		cursor = resume
 	}
+	// Streams fragmented inside large, clean objects (written by a checkpoint
+	// after a restart, say) are in no start object. Walk the streams round
+	// robin and add their due merges, skipping streams unchanged since a walk
+	// found nothing due.
+	if !options.LocalityDisabled && !(limited && len(inputs) > 0) {
+		if e.repackClean == nil {
+			e.repackClean = make(map[string]blob)
+		}
+		var streams []localityStream
+		for name, levels := range snapshot.state.Roots {
+			for level, root := range levels {
+				if root.Key != "" {
+					streams = append(streams, localityStream{name, level, streamKey(name, level)})
+				}
+			}
+		}
+		sort.Slice(streams, func(i, j int) bool { return streams[i].Key < streams[j].Key })
+		start := sort.Search(len(streams), func(i int) bool { return streams[i].Key > e.repackStreamCursor })
+		checked := 0
+		for n := 0; n < len(streams); n++ {
+			st := streams[(start+n)%len(streams)]
+			root := snapshot.state.Roots[st.Metric][st.Level]
+			if e.repackClean[st.Key] == root {
+				continue
+			}
+			if checked >= 256 || snapshot.nodeReads >= repackNodeReads*3/4 {
+				break
+			}
+			checked++
+			due, err := e.repackStreamPlan(ctx, snapshot, options, st.Metric, st.Level)
+			if err != nil {
+				return nil, false, err
+			}
+			if len(due) == 0 {
+				e.repackClean[st.Key] = root
+				e.repackStreamCursor = st.Key
+				continue
+			}
+			if !add(due) {
+				limited = true
+				break
+			}
+			mergesDue = true
+			e.repackStreamCursor = st.Key
+		}
+	}
 	// Index packs fill what the data left, up to a quarter of the job's
 	// blocks. A job of index packs alone runs after a complete pass, when
 	// eight have accumulated or one is dirty, so their number stays bounded
@@ -304,7 +353,10 @@ func (e *Engine) selectRepack(ctx context.Context, snapshot *Engine, options Com
 		return inputs, !complete, nil
 	}
 	e.repackCursor = cursor
-	if len(inputs) == 0 || (bytes < fill && !limited && !(complete && (dirtySeen || mergesDue))) {
+	// Due merges always run (the stream walk does not revisit them);
+	// otherwise a job waits for 75 % of an output, its limits or the end of
+	// a pass that found dead bytes.
+	if len(inputs) == 0 || (bytes < fill && !limited && !mergesDue && !(complete && dirtySeen)) {
 		return nil, !complete, nil
 	}
 	return inputs, !complete, nil

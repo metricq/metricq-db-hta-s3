@@ -79,8 +79,14 @@ In order of preference:
   objects up to the job limits and runs once its input fills 75 % of one
   output object. Outputs are filled stream by stream without splitting a
   run, so at most the last output of a job stays partly empty; full outputs
-  are never start objects. After a complete pass over the candidates a job also runs with
-  less if it reclaims dead bytes or merges sections. A start object larger
+  are never start objects. A job with due merges always runs; after a complete
+  pass over the candidates one also runs with less if it reclaims dead
+  bytes. Streams fragmented inside large, clean objects (for example blocks
+  of all streams written at a restart) are in no start object, so the
+  selection also walks the streams round robin, skipping streams unchanged
+  since a walk found nothing due, and adds their due merges to the job.
+  Index packs, which every job and checkpoint leaves partly dead, join after
+  the data and fill at most a quarter of a job's blocks. A start object larger
   than a job moves stream by stream. Index packs of hundreds of small pages
   are start objects only when dirty. Every second job slot repacks first;
   otherwise repacking runs when there is nothing to merge.

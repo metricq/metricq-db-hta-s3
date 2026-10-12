@@ -209,6 +209,8 @@ type Engine struct {
 	idleCandidates        map[string]idleCandidate // candidates whose last scan found no work
 	idlePass              uint64                   // completed candidate scan passes
 	repackCursor          string
+	repackStreamCursor    string
+	repackClean           map[string]blob // streams with nothing due at this root
 	fragmentScans         map[string]fragmentScan
 	fragmentCursor        string
 	compactionObjectLimit int // source objects per job, adapted to the catalog budget

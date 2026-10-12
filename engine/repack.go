@@ -126,6 +126,8 @@ func (e *Engine) selectRepack(ctx context.Context, snapshot *Engine, options Com
 	var inputs []BlockInfo
 	var bytes int64
 	dirtySeen, mergesDue := false, false
+	var indexPacks []ObjectInfo
+	indexDirty := false
 	var selectErr error
 	previous := e.repackCursor
 	resume, stopped, limited := "", false, false
@@ -212,6 +214,19 @@ func (e *Engine) selectRepack(ctx context.Context, snapshot *Engine, options Com
 			previous = c.Key
 			return true
 		}
+		indexOnly := true
+		for _, b := range o.Blocks {
+			indexOnly = indexOnly && b.Index
+		}
+		if indexOnly {
+			// Every job and checkpoint replaces index pages, so index packs
+			// rank first by dead fraction. Taken first, their pages would fill
+			// the job and starve the data merges; they join after the data.
+			indexPacks = append(indexPacks, o)
+			indexDirty = indexDirty || dirty
+			previous = c.Key
+			return true
+		}
 		// The start object's blocks per stream, each with its due merges.
 		type stream struct {
 			metric string
@@ -264,6 +279,29 @@ func (e *Engine) selectRepack(ctx context.Context, snapshot *Engine, options Com
 	complete := cursor == "" && !stopped
 	if stopped {
 		cursor = resume
+	}
+	// Index packs fill what the data left, up to a quarter of the job's
+	// blocks. A job of index packs alone runs after a complete pass, when
+	// eight have accumulated or one is dirty, so their number stays bounded
+	// without crowding out data merges.
+	dataInputs := len(inputs)
+	indexBlocks := 0
+	for _, o := range indexPacks {
+		if indexBlocks+len(o.Blocks) > options.JobMaxBlocks/4 && indexBlocks > 0 {
+			break
+		}
+		if !add(o.Blocks) {
+			break
+		}
+		indexBlocks += len(o.Blocks)
+	}
+	if dataInputs == 0 && len(inputs) > 0 && !(complete && (indexDirty || len(indexPacks) >= 8)) {
+		e.repackCursor = cursor
+		return nil, !complete, nil
+	}
+	if dataInputs == 0 && len(inputs) > 0 {
+		e.repackCursor = cursor
+		return inputs, !complete, nil
 	}
 	e.repackCursor = cursor
 	if len(inputs) == 0 || (bytes < fill && !limited && !(complete && (dirtySeen || mergesDue))) {

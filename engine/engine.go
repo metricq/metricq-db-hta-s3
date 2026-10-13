@@ -210,6 +210,7 @@ type Engine struct {
 	idlePass              uint64                   // completed candidate scan passes
 	repackCursor          string
 	repackStreamCursor    string
+	repackDueSince        time.Time       // first selection that left due merges waiting
 	repackClean           map[string]blob // streams with nothing due at this root
 	fragmentScans         map[string]fragmentScan
 	fragmentCursor        string

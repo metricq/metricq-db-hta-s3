@@ -116,9 +116,10 @@ walk found nothing due there.
 become partly dead quickly and rank first in the candidate tree. If they came
 first, their pages would fill a job's block limit and starve the data merges.
 They are therefore only noted during the pass. After the data, a job takes
-them as filler while it has room, up to a quarter of its blocks. A job of index
-packs alone runs only after a complete pass, when eight have accumulated or
-one is dirty. Index packs of hundreds of small pages, which packing cannot
+dirty index packs as filler while it has room, up to a quarter of its blocks.
+Clean, small index packs only gather in a job of index packs alone, which
+runs after a complete pass when eight have accumulated or one is dirty; this
+bounds their number without moving them in every job. Index packs of hundreds of small pages, which packing cannot
 grow much, are start objects only when dirty.
 
 **When a job runs.** A job gathers start objects, due merges from the stream
@@ -130,20 +131,26 @@ full outputs are never start objects. A job runs when one of these holds:
 
 - its input fills 75 % of one output object;
 - it has reached one of its limits;
-- it has due merges (the stream walk does not revisit them);
-- a complete pass over the candidates found dead bytes to reclaim.
+- a complete pass over the candidates found dead bytes to reclaim;
+- it has due merges that have waited for 30 minutes.
+
+Due merges wait for a nearly full job like everything else: a job that ran
+for a few merges would leave a partly filled last output, which becomes a
+start object and is moved again. The stream walk moves past due streams only
+with a job that merges them, so a waiting merge is found again. The 30-minute
+bound lets a quiet database merge as well.
 
 `compaction_locality_disabled` turns off merging sections; start objects are
 still packed. `compaction_repack_jobs_total` counts the jobs, and
 `compaction_input_bytes_total{kind}` the bytes moved per job kind.
 
 **Costs.** On the development database (1009 metrics, about 14 MB of new data
-per hour, after the first catch-up), compaction moved about 190 MB per hour.
+per hour, after the first catch-up), compaction moved about 190 MB per hour
+while due merges ran at once and every job took index packs as filler.
 Repack inputs split into roughly 45 % start objects, 23 % index packs, 19 %
 due merges of the start objects' streams and 12 % stream walk. Start objects
-are more than the checkpoint outputs (about 23 MB per hour), because jobs
-that run only for due merges leave a partly filled last output, which becomes
-a start object itself.
+exceeded the checkpoint outputs (about 23 MB per hour) because jobs that ran
+only for due merges left a partly filled last output behind.
 
 **History.** Packing small objects ("consolidation") and merging sections
 ("level locality") used to be separate job kinds that undid each other's

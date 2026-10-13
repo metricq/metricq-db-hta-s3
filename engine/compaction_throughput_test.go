@@ -158,6 +158,10 @@ func TestIndexPrefetchCoalescesAndVerifiesPages(t *testing.T) {
 }
 
 func TestRepackBatchesIndependentLevelsWithinJobBudget(t *testing.T) {
+	// Merges of this small database would wait for a nearly full job.
+	previousWait := repackMergeWait
+	repackMergeWait = 0
+	defer func() { repackMergeWait = previousWait }()
 	ctx := context.Background()
 	store := &rangeGCStore{gcStore: &gcStore{memoryStore: newStore()}}
 	options := maintenanceOptions(t.TempDir(), true)

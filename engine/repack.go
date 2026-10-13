@@ -3,8 +3,12 @@ package engine
 import (
 	"context"
 	"errors"
+	"fmt"
+	"log/slog"
 	"math"
 	"sort"
+	"strings"
+	"time"
 )
 
 // smallObjectLimit is the size below which an object is a repack start
@@ -21,6 +25,10 @@ const (
 	repackNodeReads     = 16384
 	repackStreamEntries = 2048
 )
+
+// repackMergeWait bounds how long due merges wait for a nearly full job.
+// Tests of small databases set it to zero.
+var repackMergeWait = 30 * time.Minute
 
 // repackFill is the share of an output object a repack job gathers before
 // it runs: its output is then nearly full and never a candidate again.
@@ -129,7 +137,14 @@ func (e *Engine) selectRepack(ctx context.Context, snapshot *Engine, options Com
 	var inputs []BlockInfo
 	var bytes int64
 	dirtySeen, mergesDue := false, false
-	var indexPacks []ObjectInfo
+	walkCursor, waitCursor := e.repackStreamCursor, e.repackStreamCursor
+	// Where the job's bytes come from, for the debug log.
+	var plan repackPlanStats
+	type indexPack struct {
+		o     ObjectInfo
+		dirty bool
+	}
+	var indexPacks []indexPack
 	indexDirty := false
 	var selectErr error
 	previous := e.repackCursor
@@ -225,7 +240,7 @@ func (e *Engine) selectRepack(ctx context.Context, snapshot *Engine, options Com
 			// Every job and checkpoint replaces index pages, so index packs
 			// rank first by dead fraction. Taken first, their pages would fill
 			// the job and starve the data merges; they join after the data.
-			indexPacks = append(indexPacks, o)
+			indexPacks = append(indexPacks, indexPack{o, dirty})
 			indexDirty = indexDirty || dirty
 			previous = c.Key
 			return true
@@ -248,8 +263,11 @@ func (e *Engine) selectRepack(ctx context.Context, snapshot *Engine, options Com
 		whole, taken := true, false
 		for _, s := range order {
 			group := groups[s]
+			own := len(group)
+			var due []BlockInfo
 			if !s.index {
-				due, err := e.repackStreamPlan(ctx, snapshot, options, s.metric, s.level)
+				var err error
+				due, err = e.repackStreamPlan(ctx, snapshot, options, s.metric, s.level)
 				if err != nil {
 					selectErr = err
 					return false
@@ -257,11 +275,21 @@ func (e *Engine) selectRepack(ctx context.Context, snapshot *Engine, options Com
 				mergesDue = mergesDue || len(due) > 0
 				group = append(group, due...)
 			}
+			before := bytes
+			ownBytes := plan.unpicked(picked, group[:own])
 			if !add(group) {
 				whole = false
 				break
 			}
+			plan.startBytes += ownBytes
+			if len(due) > 0 {
+				plan.dueBytes += bytes - before - ownBytes
+				plan.stream(fmt.Sprintf("%s/%d", s.metric, s.level), bytes-before-ownBytes)
+			}
 			taken = true
+		}
+		if taken {
+			plan.startObjects++
 		}
 		dirtySeen = dirtySeen || (dirty && taken)
 		if !whole {
@@ -302,6 +330,8 @@ func (e *Engine) selectRepack(ctx context.Context, snapshot *Engine, options Com
 		sort.Slice(streams, func(i, j int) bool { return streams[i].Key < streams[j].Key })
 		start := sort.Search(len(streams), func(i int) bool { return streams[i].Key > e.repackStreamCursor })
 		checked := 0
+		walked, beforeDue := e.repackStreamCursor, ""
+		dueFound := false
 		for n := 0; n < len(streams); n++ {
 			st := streams[(start+n)%len(streams)]
 			root := snapshot.state.Roots[st.Metric][st.Level]
@@ -318,48 +348,117 @@ func (e *Engine) selectRepack(ctx context.Context, snapshot *Engine, options Com
 			}
 			if len(due) == 0 {
 				e.repackClean[st.Key] = root
-				e.repackStreamCursor = st.Key
+				walked = st.Key
 				continue
 			}
+			if !dueFound {
+				dueFound, beforeDue = true, walked
+			}
+			before := bytes
 			if !add(due) {
 				limited = true
 				break
 			}
+			plan.walkBytes += bytes - before
+			plan.walkStreams++
+			plan.stream(st.Key, bytes-before)
 			mergesDue = true
-			e.repackStreamCursor = st.Key
+			walked = st.Key
+		}
+		// The walk moves past due streams only with a job that merges them;
+		// otherwise the next selection finds them again.
+		walkCursor, waitCursor = walked, walked
+		if dueFound {
+			waitCursor = beforeDue
 		}
 	}
-	// Index packs fill what the data left, up to a quarter of the job's
-	// blocks. A job of index packs alone runs after a complete pass, when
-	// eight have accumulated or one is dirty, so their number stays bounded
-	// without crowding out data merges.
+	// Dirty index packs fill what the data left, up to a quarter of the
+	// job's blocks. Clean ones only gather in a job of index packs alone,
+	// which runs after a complete pass when eight have accumulated or one is
+	// dirty, so their number stays bounded without carrying them along in
+	// every job.
 	dataInputs := len(inputs)
 	indexBlocks := 0
-	for _, o := range indexPacks {
-		if indexBlocks+len(o.Blocks) > options.JobMaxBlocks/4 && indexBlocks > 0 {
+	for _, p := range indexPacks {
+		if dataInputs > 0 && !p.dirty {
+			continue
+		}
+		if indexBlocks+len(p.o.Blocks) > options.JobMaxBlocks/4 && indexBlocks > 0 {
 			break
 		}
-		if !add(o.Blocks) {
+		before := bytes
+		if !add(p.o.Blocks) {
 			break
 		}
-		indexBlocks += len(o.Blocks)
-	}
-	if dataInputs == 0 && len(inputs) > 0 && !(complete && (indexDirty || len(indexPacks) >= 8)) {
-		e.repackCursor = cursor
-		return nil, !complete, nil
-	}
-	if dataInputs == 0 && len(inputs) > 0 {
-		e.repackCursor = cursor
-		return inputs, !complete, nil
+		plan.indexBytes += bytes - before
+		indexBlocks += len(p.o.Blocks)
 	}
 	e.repackCursor = cursor
-	// Due merges always run (the stream walk does not revisit them);
-	// otherwise a job waits for 75 % of an output, its limits or the end of
-	// a pass that found dead bytes.
-	if len(inputs) == 0 || (bytes < fill && !limited && !mergesDue && !(complete && dirtySeen)) {
+	if dataInputs == 0 {
+		if len(inputs) == 0 || !(complete && (indexDirty || len(indexPacks) >= 8)) {
+			return nil, !complete, nil
+		}
+		return inputs, !complete, nil
+	}
+	// A job waits for 75 % of an output, its limits or, at the end of a pass,
+	// dead bytes to reclaim. Due merges wait as well, so jobs do not leave a
+	// partly filled last output that becomes a start object again, but no
+	// longer than repackMergeWait, so a quiet database still merges.
+	if mergesDue && e.repackDueSince.IsZero() {
+		e.repackDueSince = time.Now()
+	}
+	overdue := mergesDue && time.Since(e.repackDueSince) >= repackMergeWait
+	if bytes < fill && !limited && !overdue && !(complete && dirtySeen) {
+		e.repackStreamCursor = waitCursor
 		return nil, !complete, nil
 	}
+	e.repackStreamCursor = walkCursor
+	e.repackDueSince = time.Time{}
+	plan.log(limited, mergesDue, complete && dirtySeen)
 	return inputs, !complete, nil
+}
+
+// repackPlanStats splits a repack job's input by origin for the debug log.
+type repackPlanStats struct {
+	startObjects, walkStreams                   int
+	startBytes, dueBytes, walkBytes, indexBytes int64
+	streams                                     map[string]int64
+}
+
+// unpicked sums the blocks of group not yet in the job.
+func (p *repackPlanStats) unpicked(picked map[blob]bool, group []BlockInfo) int64 {
+	var n int64
+	for _, b := range group {
+		if !picked[b.Entry.Blob] {
+			n += b.Entry.Blob.Length
+		}
+	}
+	return n
+}
+
+func (p *repackPlanStats) stream(name string, bytes int64) {
+	if p.streams == nil {
+		p.streams = make(map[string]int64)
+	}
+	p.streams[name] += bytes
+}
+
+func (p *repackPlanStats) log(limited, merges, reclaim bool) {
+	if !slog.Default().Enabled(context.Background(), slog.LevelDebug) {
+		return
+	}
+	names := make([]string, 0, len(p.streams))
+	for name := range p.streams {
+		names = append(names, name)
+	}
+	sort.Slice(names, func(i, j int) bool { return p.streams[names[i]] > p.streams[names[j]] })
+	var top []string
+	for _, name := range names[:min(3, len(names))] {
+		top = append(top, fmt.Sprintf("%s:%d", name, p.streams[name]))
+	}
+	slog.Debug("repack plan", "start_objects", p.startObjects, "start_bytes", p.startBytes, "due_bytes", p.dueBytes,
+		"walk_streams", p.walkStreams, "walk_bytes", p.walkBytes, "index_bytes", p.indexBytes, "merge_streams", len(p.streams),
+		"limited", limited, "merges", merges, "reclaim", reclaim, "top", strings.Join(top, ","))
 }
 
 // candidateRank is the rank a candidate key starts with (999 = no dead bytes).

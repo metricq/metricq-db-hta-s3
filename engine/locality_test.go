@@ -14,6 +14,10 @@ import (
 )
 
 func TestLocalityPacksWholeLevelAcrossTimeGapsAndSettles(t *testing.T) {
+	// Merges of this small database would wait for a nearly full job.
+	previousWait := repackMergeWait
+	repackMergeWait = 0
+	defer func() { repackMergeWait = previousWait }()
 	ctx := context.Background()
 	s := &countedRangeGCStore{rangeGCStore: &rangeGCStore{gcStore: &gcStore{memoryStore: newStore()}}}
 	opts := maintenanceOptions(t.TempDir(), true)

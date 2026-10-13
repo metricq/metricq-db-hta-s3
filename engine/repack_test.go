@@ -1,12 +1,15 @@
 package engine
 
 import (
+	"context"
 	"math"
 	"path"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/metricq/metricq-db-hta-s3/hta"
 )
 
 // smallObjects counts live data objects and index packs below the
@@ -125,5 +128,52 @@ func TestMergeCascadeLeavesNothingDue(t *testing.T) {
 		if first, end := localityMerge(after, target, fanIn); first != end {
 			t.Fatalf("%v: merge of %d..%d still due after runs %v", sizes, first, end, runs)
 		}
+	}
+}
+
+// Due merges below a nearly full job wait, so jobs do not leave a partly
+// filled output that becomes a start object again, but no longer than
+// repackMergeWait.
+func TestRepackMergesWaitForAFullJob(t *testing.T) {
+	ctx := context.Background()
+	store := &rangeGCStore{gcStore: &gcStore{memoryStore: newStore()}}
+	options := maintenanceOptions(t.TempDir(), true)
+	options.OutputObjectBytes = 4 << 20
+	configs := map[string]hta.Config{"a": {IntervalMin: 1000000000000, IntervalMax: 1000000000000, IntervalFactor: 10}}
+	e, err := Open(ctx, store, options, configs, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer e.Close()
+	for batch := 0; batch < 4; batch++ {
+		points := make([]hta.Point, maxDataBlockRecords)
+		for i := range points {
+			points[i] = hta.Point{Time: int64(batch*maxDataBlockRecords + i + 1), Value: float64(i)}
+		}
+		if err = e.Ingest(ctx, "a", chunk(points...)); err != nil {
+			t.Fatal(err)
+		}
+		if err = e.Flush(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	e.compactionCompletions = 1
+	job, err := e.reserveCompaction(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job.Repack {
+		t.Fatal("repacked four small blocks without waiting")
+	}
+	if e.repackDueSince.IsZero() {
+		t.Fatal("due merges not noted")
+	}
+	e.repackDueSince = time.Now().Add(-repackMergeWait)
+	e.compactionCompletions = 1
+	if job, err = e.reserveCompaction(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if !job.Repack || len(job.Inputs) != 4 {
+		t.Fatalf("overdue merges: repack=%v inputs=%d", job.Repack, len(job.Inputs))
 	}
 }

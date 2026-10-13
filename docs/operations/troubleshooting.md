@@ -98,10 +98,14 @@ the prefix, then restart.
 ## Orphaned objects
 
 A checkpoint or compaction that uploaded objects but never published a
-manifest leaves unreferenced objects. Aborted compaction jobs are cleaned up
-automatically; objects of failed checkpoints are not. They waste space but do
-not affect correctness. Compare `metricq_db_storage_live_bytes` with the
-bucket usage below the prefix to estimate them.
+manifest leaves unreferenced objects, for example after an S3 timeout or when
+the process stops during a checkpoint. They do not affect correctness. The
+hourly orphan sweep moves objects that stay unreachable in two consecutive
+sweeps to the trash journal, so they are deleted within about two hours (see
+[Maintenance](../architecture/maintenance.md#supporting-mechanisms)).
+`metricq_db_orphan_candidates` should be zero or a few; a steadily rising
+`metricq_db_orphans_retired_total` means checkpoints or jobs keep failing
+after their uploads.
 
 ## Data safety checklist
 

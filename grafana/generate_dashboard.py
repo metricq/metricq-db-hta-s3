@@ -189,10 +189,12 @@ panel("Orphaned objects", [(f"max(metricq_db_orphan_candidates{T})", "unreachabl
       description="Objects left by interrupted checkpoints or jobs. The hourly sweep moves keys unreachable in two consecutive sweeps "
                   "to the trash journal. Candidates should be zero or a few; a steady stream of retired orphans means "
                   "checkpoints or jobs keep failing after their uploads.")
-panel("Object fill", [(f"max by (kind, fill) (metricq_db_storage_object_fill{sel('kind!=\"catalog\"')})", "")], "short", kind="barchart", w=16,
-      description="Data and index objects by live bytes relative to compaction_output_object_bytes, in 10 % steps (the label is the "
-                  "lower bound; 100 % means at or above it). A settled layout has most data in the upper buckets. Catalog objects "
-                  "are small by design and left out; the metric reports them with kind=\"catalog\".")
+fill_by_kind = f"max by (kind, fill) (metricq_db_storage_object_fill{T})"
+panel("Object fill", [(f"{fill_by_kind} / on (kind) group_left () sum by (kind) ({fill_by_kind})", "")], "percentunit", kind="barchart", w=16,
+      description="Share of each object kind (data, index, catalog) per fill bucket: live bytes relative to "
+                  "compaction_output_object_bytes, in 10 % steps (the label is the lower bound; 100 % means at or above it). "
+                  "Each kind sums to 100 %. A settled layout has most data objects in the upper buckets; catalog objects "
+                  "(tree and inventory packs) are small by design and counted hourly by the orphan sweep.")
 # One bar group per fill bucket, one bar per object kind.
 panels[-1]["targets"][0].update({"format": "table", "instant": True})
 panels[-1]["transformations"] = [

@@ -202,6 +202,9 @@ panels[-1]["transformations"] = [
     {"id": "sortBy", "options": {"sort": [{"field": "fill\\kind"}]}},
     {"id": "organize", "options": {"renameByName": {"fill\\kind": "fill %"}}},
 ]
+# The bucket labels become numbers 0-100: percent, not the shares' percentunit.
+panels[-1]["fieldConfig"]["overrides"] = [
+    {"matcher": {"id": "byName", "options": "fill %"}, "properties": [{"id": "unit", "value": "percent"}]}]
 panels[-1]["options"] = {"orientation": "vertical", "xField": "fill %", "groupWidth": 0.8, "barWidth": 0.9, "showValue": "never",
                          "stacking": "none", "legend": {"displayMode": "list", "placement": "bottom", "showLegend": True},
                          "tooltip": {"mode": "multi", "sort": "none"}, "xTickLabelRotation": 0}

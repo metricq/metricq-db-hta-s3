@@ -192,8 +192,9 @@ panel("Orphaned objects", [(f"max(metricq_db_orphan_candidates{T})", "unreachabl
 fill_by_kind = f"max by (kind, fill) (metricq_db_storage_object_fill{T})"
 panel("Object fill", [(f"{fill_by_kind} / on (kind) group_left () sum by (kind) ({fill_by_kind})", "")], "percentunit", kind="barchart", w=16,
       description="Share of each object kind (data, index, catalog) per fill bucket: live bytes relative to "
-                  "compaction_output_object_bytes, in 10 % steps (the label is the lower bound; 100 % means at or above it). "
-                  "Each kind sums to 100 %. A settled layout has most data objects in the upper buckets; catalog objects "
+                  "compaction_output_object_bytes, in 10 % steps (the label is the upper bound: 100 % holds objects above 90 %, "
+                  "including full ones, which a cut leaves a block short of the target; 0 % holds objects without live bytes). "
+                  "Each kind sums to 100 %. A settled layout has most data objects in the 100 % bucket; catalog objects "
                   "(tree and inventory packs) are small by design and counted hourly by the orphan sweep.")
 # One bar group per fill bucket, one bar per object kind.
 panels[-1]["targets"][0].update({"format": "table", "instant": True})

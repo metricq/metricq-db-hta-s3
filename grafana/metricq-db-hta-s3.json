@@ -2019,7 +2019,7 @@
     {
       "type": "barchart",
       "title": "Object fill",
-      "description": "Share of each object kind (data, index, catalog) per fill bucket: live bytes relative to compaction_output_object_bytes, in 10 % steps (the label is the lower bound; 100 % means at or above it). Each kind sums to 100 %. A settled layout has most data objects in the upper buckets; catalog objects (tree and inventory packs) are small by design and counted hourly by the orphan sweep.",
+      "description": "Share of each object kind (data, index, catalog) per fill bucket: live bytes relative to compaction_output_object_bytes, in 10 % steps (the label is the upper bound: 100 % holds objects above 90 %, including full ones, which a cut leaves a block short of the target; 0 % holds objects without live bytes). Each kind sums to 100 %. A settled layout has most data objects in the 100 % bucket; catalog objects (tree and inventory packs) are small by design and counted hourly by the orphan sweep.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"

@@ -81,10 +81,46 @@ func TestDataSectionsTrackCatalogAndRecount(t *testing.T) {
 		t.Fatalf("recount %d %v, want %d %v", f.e.state.DataSections, f.e.state.DataFill, want, wantFill)
 	}
 	checkCatalog(t, f.e)
+	// A fill counted with other bucket semantics is recounted as well.
+	f.e.mu.Lock()
+	next = cloneMaintenanceManifest(f.e.committed)
+	next.rootDirtyKnown = true
+	next.Generation = f.e.state.Generation + 1
+	next.FillVersion, next.DataFill = 0, [fillBuckets]int64{}
+	err = f.e.publishMaintenance(f.ctx, next)
+	f.e.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.restart()
+	if !math.IsNaN(metricValue(t, f.e.metrics.ObjectFill.WithLabelValues("data", "100"))) {
+		t.Fatal("fill of another bucket version reported")
+	}
+	if err := f.e.countCatalogStats(f.ctx); err != nil {
+		t.Fatal(err)
+	}
+	if f.e.state.FillVersion != fillVersion || f.e.state.DataFill != wantFill {
+		t.Fatalf("recount %v (version %d), want %v", f.e.state.DataFill, f.e.state.FillVersion, wantFill)
+	}
+	checkCatalog(t, f.e)
 	f.restart()
 	checkCatalog(t, f.e)
 	f.ingest("x", 1000)
 	f.flush()
 	checkCatalog(t, f.e)
 	f.check("after recount")
+}
+
+// Buckets are named by their upper bound: a full object, which a cut leaves
+// a block short of the target, counts as 100 %.
+func TestFillBucket(t *testing.T) {
+	const target = 4 << 20
+	for _, c := range []struct {
+		live int64
+		want int
+	}{{0, 0}, {-5, 0}, {1, 1}, {target / 10, 1}, {target/10 + 1, 2}, {target / 2, 5}, {target - 3000, 10}, {target * 15 / 16, 10}, {target, 10}, {2 * target, 10}} {
+		if got := fillBucket(c.live, target); got != c.want {
+			t.Errorf("fillBucket(%d) = %d, want %d", c.live, got, c.want)
+		}
+	}
 }

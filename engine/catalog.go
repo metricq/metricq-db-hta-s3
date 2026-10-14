@@ -569,11 +569,21 @@ func (e *Engine) catalogWalk(ctx context.Context, root blob, limit int, visit fu
 }
 
 // fillBuckets counts objects by live bytes in tenths of the output object
-// size, plus one bucket at or above it.
+// size, each bucket named by its upper bound: bucket b holds objects above
+// (b-1)/10 and up to b/10 of the target, so full objects, which a cut leaves
+// a block short of the target, count as 100 %. Bucket 0 holds objects
+// without live bytes; the last bucket also holds objects above the target.
 const fillBuckets = 11
 
+// fillVersion numbers the bucket semantics; manifests counted with another
+// one are recounted.
+const fillVersion = 1
+
 func fillBucket(live, target int64) int {
-	return int(min(max(live, 0)*10/target, fillBuckets-1))
+	if live <= 0 {
+		return 0
+	}
+	return int(min((live*10+target-1)/target, fillBuckets-1))
 }
 
 // addFill counts an object into (delta 1) or out of (delta -1) the fill

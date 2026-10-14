@@ -157,9 +157,10 @@ type manifest struct {
 	DataSections, DataBytes int64
 
 	// Objects by live bytes relative to FillTarget (the output object size
-	// they were counted against), in tenths; the last bucket holds objects
-	// at or above the target. Recounted when the target changes.
+	// they were counted against), in tenths (see fillBucket). Recounted when
+	// the target or FillVersion changes.
 	FillTarget          int64
+	FillVersion         int
 	DataFill, IndexFill [fillBuckets]int64
 
 	Version    int

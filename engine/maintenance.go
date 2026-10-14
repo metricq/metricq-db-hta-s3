@@ -343,6 +343,7 @@ func (e *Engine) bootstrapCatalog(ctx context.Context) error {
 		e.state.MaintenanceStatsReady = true
 		e.state.SectionStatsReady = true
 		e.state.FillTarget = e.options.CompactionOptions.defaults().OutputObjectBytes
+		e.state.FillVersion = fillVersion
 		return nil
 	}
 	next := cloneMaintenanceManifest(e.committed)
@@ -370,7 +371,7 @@ func (e *Engine) countCatalogStats(ctx context.Context) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	target := e.options.CompactionOptions.defaults().OutputObjectBytes
-	if (e.state.SectionStatsReady && e.state.FillTarget == target) || !e.state.CatalogReady || e.version == "" {
+	if (e.state.SectionStatsReady && e.state.FillTarget == target && e.state.FillVersion == fillVersion) || !e.state.CatalogReady || e.version == "" {
 		return nil
 	}
 	root := e.state.Catalog
@@ -395,7 +396,7 @@ func (e *Engine) countCatalogStats(ctx context.Context) error {
 	next.SectionStatsReady = true
 	next.DataSections = sections
 	next.DataBytes = bytes
-	next.FillTarget, next.DataFill, next.IndexFill = fill.FillTarget, fill.DataFill, fill.IndexFill
+	next.FillTarget, next.FillVersion, next.DataFill, next.IndexFill = fill.FillTarget, fillVersion, fill.DataFill, fill.IndexFill
 	return e.publishMaintenanceLocked(ctx, next, e.preparationStore())
 }
 
@@ -521,7 +522,7 @@ func (e *Engine) updateMaintenanceMetrics(m manifest) {
 	e.metrics.LiveObjectBytes.Set(float64(m.LiveObjectBytes))
 	for b := 0; b < fillBuckets; b++ {
 		data, index := float64(m.DataFill[b]), float64(m.IndexFill[b])
-		if m.FillTarget != e.options.CompactionOptions.defaults().OutputObjectBytes {
+		if m.FillTarget != e.options.CompactionOptions.defaults().OutputObjectBytes || m.FillVersion != fillVersion {
 			data, index = math.NaN(), math.NaN()
 		}
 		label := fmt.Sprintf("%03d", 10*b)

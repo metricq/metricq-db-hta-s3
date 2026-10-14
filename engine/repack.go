@@ -37,7 +37,7 @@ const repackFillPercent = 75
 // mergeCascade applies localityMerge until no run of a stream's sections is
 // due anymore, as if each merge were a job of its own, and returns the
 // resulting runs of more than one original section as [begin, end) indices
-// into sections. Merging in one job what tiered jobs would merge one after
+// into sections. Merging in one job what separate jobs would merge one after
 // the other writes each byte once instead of once per step.
 func mergeCascade(sections []localitySection, target int64, fanIn int) [][2]int {
 	virtual := make([]localitySection, len(sections))
@@ -66,7 +66,7 @@ func mergeCascade(sections []localitySection, target int64, fanIn int) [][2]int 
 
 // repackStreamPlan returns the blocks of one stream that a repack job moves
 // besides the stream's blocks in the start object: the runs of sections the
-// tier rule merges now. The open suffix (partial tail blocks) is left to
+// merge rule merges now. The open suffix (partial tail blocks) is left to
 // merging; a settled prefix (sections of at least half the target) is
 // remembered and not read again.
 func (e *Engine) repackStreamPlan(ctx context.Context, snapshot *Engine, options CompactionOptions, metric string, level int64) ([]BlockInfo, error) {
@@ -117,7 +117,7 @@ func (e *Engine) repackStreamPlan(ctx context.Context, snapshot *Engine, options
 // streams and full objects. Start objects are small (below half the object
 // target) or have reached compaction_reclaim_dead_fraction. A job takes a
 // start object whole together with, for each of its streams, the runs of
-// sections the tier rule merges now, so moved sections join their stream once
+// sections the merge rule merges now, so moved sections join their stream once
 // and nothing has to be pulled apart again later. It gathers start objects up
 // to the job limits (compaction_job_max_bytes and _blocks, the source object
 // limit, its index read budget) and runs once its input fills 75 % of an

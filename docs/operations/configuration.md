@@ -135,7 +135,7 @@ integers. Option names start with the area they affect: `wal_`,
 | `compaction_merge_enabled` | true (executable) | | Merge adjacent small blocks of a stream |
 | `compaction_merge_cooldown_seconds` | 60 (executable), 0 | ≥ 0 | Objects younger than this are not merged |
 | `compaction_reclaim_dead_fraction` | 0.4 | 0 < x < 1 | Objects with more dead bytes are evacuated |
-| `compaction_locality_fan_in` | 4 | 2 – 64 | Number of contiguous sections of one size tier that locality merges into one section of the next tier, up to `compaction_output_object_bytes` |
+| `compaction_locality_fan_in` | 4 | 2 – 64 | Least number of contiguous sections of a metric level that repack merges into one, unless the result reaches half of `compaction_output_object_bytes` |
 | `compaction_locality_disabled` | false | | Turn off merging stream sections when repacking |
 
 What to change when is described in [Tuning](tuning.md).

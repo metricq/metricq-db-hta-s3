@@ -31,70 +31,30 @@ func localitySections(entries []indexEntry) []localitySection {
 	return sections
 }
 
-// sectionTier groups section sizes by powers of fanIn below target: tier 1
-// holds sections of at least target/fanIn, tier 2 at least target/fanIn², and
-// so on. Full sections (at least target) are tier 0 and never rewritten.
-func sectionTier(bytes, target int64, fanIn int) int {
-	tier := 0
-	for limit := target; bytes < limit && limit > 0; limit /= int64(fanIn) {
-		tier++
-	}
-	return tier
-}
-
-// localityMerge picks the oldest run of fanIn consecutive non-full sections
-// of one size tier, extended by further sections of that tier while the
-// result stays within target. Sections thus grow geometrically (fanIn small
-// sections become one of the next tier): a stream keeps its settled sections
-// plus at most fanIn-1 per smaller tier, and every byte is rewritten about
-// log_fanIn(target/section) times. In the top tier (at least target/fanIn)
-// fanIn sections never fit into target, so two suffice there. Without such a
-// run, the oldest fanIn sections fitting into target merge, so mixed sizes
-// left by bounded jobs cannot accumulate.
+// localityMerge picks the oldest run of consecutive unsettled sections
+// (below half the target) that may merge, and extends it as far as it stays
+// mergeable. A run may merge when it fits into target, its largest section is
+// at most the sum of the others, and it holds at least fanIn sections or
+// settles (reaches half the target). The merged section is thus at least
+// twice as large as each of its parts: every byte is rewritten at most
+// log2(target/section) times, and a large section is never rewritten to absorb
+// a few small ones. Small sections merge among themselves first, until they
+// match the large one. Sizes need not fall into fixed tiers, so checkpoint
+// sections of varying size do not block each other.
 func localityMerge(sections []localitySection, target int64, fanIn int) (int, int) {
-	tiers := make([]int, len(sections))
-	for i, s := range sections {
-		tiers[i] = sectionTier(s.bytes, target, fanIn)
-	}
-	for i := 0; i < len(sections); i++ {
-		if tiers[i] == 0 {
-			continue
-		}
-		j, total := i, int64(0)
-		for j < len(sections) && tiers[j] == tiers[i] && total+sections[j].bytes <= target {
+	settled := target / 2
+	for i := range sections {
+		end := i
+		var total, largest int64
+		for j := i; j < len(sections) && sections[j].bytes < settled && total+sections[j].bytes <= target; j++ {
 			total += sections[j].bytes
-			j++
-		}
-		need := fanIn
-		if tiers[i] == 1 {
-			need = 2
-		}
-		if j-i >= need {
-			return i, j
-		}
-	}
-	// Fallback for mixed sizes: only sections below the top tier (a quarter
-	// of the target) count and merge. Top-tier sections merge only with each
-	// other above; otherwise a section just below half the target would be
-	// rewritten whole to absorb a few small sections, again and again until it
-	// settles.
-	small := target / int64(fanIn)
-	unsettled := 0
-	for _, sec := range sections {
-		if sec.bytes < small {
-			unsettled++
-		}
-	}
-	if unsettled > 4*fanIn {
-		for i := 0; i+fanIn <= len(sections); i++ {
-			j, total := i, int64(0)
-			for j < len(sections) && sections[j].bytes < small && total+sections[j].bytes <= target {
-				total += sections[j].bytes
-				j++
+			largest = max(largest, sections[j].bytes)
+			if n := j + 1 - i; n >= 2 && 2*largest <= total && (n >= fanIn || total >= settled) {
+				end = j + 1
 			}
-			if j-i >= fanIn {
-				return i, j
-			}
+		}
+		if end > i {
+			return i, end
 		}
 	}
 	return 0, 0

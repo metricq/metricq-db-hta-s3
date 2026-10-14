@@ -43,10 +43,10 @@ type CompactionOptions struct {
 	MergeCooldownSeconds int64 `json:"compaction_merge_cooldown_seconds"`
 	// ReclaimDeadFraction is the dead-byte share at which objects are evacuated.
 	ReclaimDeadFraction float64 `json:"compaction_reclaim_dead_fraction"`
-	// LocalityFanIn is the number of contiguous sections of one size tier
-	// that locality merges into one of the next tier, up to
-	// OutputObjectBytes; larger values rewrite data less often but leave more
-	// sections per stream.
+	// LocalityFanIn is the least number of contiguous sections of one stream
+	// that repack merges into one, unless the result settles (reaches half
+	// of OutputObjectBytes); larger values rewrite data less often but leave
+	// more sections per stream.
 	LocalityFanIn int `json:"compaction_locality_fan_in"`
 	// LocalityDisabled turns off merging stream sections when repacking.
 	LocalityDisabled bool `json:"compaction_locality_disabled"`

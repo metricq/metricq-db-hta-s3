@@ -87,22 +87,28 @@ objects are left behind when other jobs move blocks out of them. A job takes
 a start object whole; a start object larger than one job moves stream by
 stream over several jobs.
 
-**Which sections merge (tier rule).** Sections grow in tiers, like a
-size-tiered LSM tree. Tier boundaries are the object target divided by powers
-of `compaction_locality_fan_in` (default 4): 4 MiB, 1 MiB, 256 KiB, 64 KiB and
-so on. Four consecutive sections of one tier become one section of the next
-tier. In the top tier (from a quarter of the target), sections merge while
-they fit into the target. When a stream has more than 16 sections below the
-top tier in mixed sizes, the oldest four of them that fit into the target
-merge regardless of tier; top-tier sections never take part in this, so a
-section just below half the target is not rewritten whole to absorb a few
-small ones. Sections of at least half the target are settled and are not
-read again. The
-open suffix of a stream (partial tail blocks) is left to merging. Every byte
-is rewritten about log₄(target / first section) times. For a 3 KB block
-growing to a 3 MB section that is about five times.
+**Which sections merge (merge rule).** Sections grow like the runs of a
+size-tiered LSM tree. Consecutive sections of one stream merge when
 
-**Cascade.** For every stream of a start object, the job applies the tier rule
+- they fit into the object target,
+- the largest of them is at most as large as all others together, and
+- they are at least `compaction_locality_fan_in` (default 4) sections, or
+  their sum reaches half the target.
+
+The oldest such run is taken, extended as far as it stays mergeable. The
+merged section is at least twice as large as each of its parts, so every byte
+is rewritten at most log₂(target / first section) times, and a large section
+is never rewritten whole to absorb a few small ones: the small ones first
+merge among themselves until they match it. Checkpoint sections vary in size
+(2 to 20 KB on the development database); the rule does not sort them into
+fixed size classes, so a slightly larger section does not hold up its
+neighbours. Simulated with such sizes, every byte is rewritten about five
+times on its way to a settled section, and a stream keeps at most about ten
+unsettled sections. Sections of at least half the target are settled and are
+not read again. The open suffix of a stream (partial tail blocks) is left to
+merging.
+
+**Cascade.** For every stream of a start object, the job applies the merge rule
 repeatedly, as if each merge were a job of its own. If four 3 KB sections
 become one 12 KB section and three more 12 KB sections already exist, the
 same job merges all of them into one 48 KB section. What tiered jobs would

@@ -15,7 +15,7 @@ import (
 )
 
 // Read-only report of every stream's sections in a live bucket: how many,
-// how large, and whether the tier rule has merges due that compaction has not
+// how large, and whether the merge rule has merges due that compaction has not
 // made yet.
 //
 //	METRICQ_LIVE_S3_ENDPOINT=... go test -tags review ./engine -run TestReviewLiveStreamSections -v

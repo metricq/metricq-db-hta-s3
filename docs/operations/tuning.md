@@ -81,9 +81,10 @@ so the dashboard draws them next to the measured values.
 - **`compaction_reclaim_dead_fraction`** — rewrite objects with at least this share of dead bytes.
   Lower reclaims space sooner at the price of more copying.
 - **`compaction_locality_fan_in`**, **`compaction_locality_disabled`** — let the
-  contiguous sections of a metric level grow in tiers up to
+  contiguous sections of a metric level grow geometrically up to half of
   `compaction_output_object_bytes`, so a `FLEX_TIMELINE` query needs few GETs.
-  A larger fan-in rewrites data less often but leaves more sections per stream;
+  The fan-in is the least number of sections merged at once. A larger fan-in
+  rewrites data less often but leaves more sections per stream;
   a larger `compaction_output_object_bytes` gives larger settled sections.
 
 ## Reading the fragmentation panels
@@ -105,8 +106,8 @@ section with one range request, so the count is the number of requests needed
 to read every stream in full. `storage_fragmentation_ratio` relates it to one
 section per stream (`storage_streams`) plus one per
 `compaction_output_object_bytes` of data. About 1 is ideal; the open tail of
-each stream adds up to one more section per stream, and the unsettled tiers of
-locality compaction add a few more, so values up to about 2–3 are healthy for
+each stream adds up to one more section per stream, and the unsettled sections
+of locality compaction add a few more, so values up to about 2–3 are healthy for
 many small streams. Sections per stream grow with history, the ratio should
 not: a steady rise means locality compaction falls behind. A database created
 before this statistic counts it once at startup, pausing publication for one

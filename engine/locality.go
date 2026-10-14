@@ -73,18 +73,22 @@ func localityMerge(sections []localitySection, target int64, fanIn int) (int, in
 			return i, j
 		}
 	}
-	// Fallback for mixed sizes: only unsettled sections (below half the
-	// target) count, so long histories of settled sections never trigger it.
+	// Fallback for mixed sizes: only sections below the top tier (a quarter
+	// of the target) count and merge. Top-tier sections merge only with each
+	// other above; otherwise a section just below half the target would be
+	// rewritten whole to absorb a few small sections, again and again until it
+	// settles.
+	small := target / int64(fanIn)
 	unsettled := 0
 	for _, sec := range sections {
-		if sec.bytes < target/2 {
+		if sec.bytes < small {
 			unsettled++
 		}
 	}
 	if unsettled > 4*fanIn {
 		for i := 0; i+fanIn <= len(sections); i++ {
 			j, total := i, int64(0)
-			for j < len(sections) && sections[j].bytes < target/2 && total+sections[j].bytes <= target {
+			for j < len(sections) && sections[j].bytes < small && total+sections[j].bytes <= target {
 				total += sections[j].bytes
 				j++
 			}

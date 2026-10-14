@@ -91,8 +91,13 @@ stream over several jobs.
 size-tiered LSM tree. Tier boundaries are the object target divided by powers
 of `compaction_locality_fan_in` (default 4): 4 MiB, 1 MiB, 256 KiB, 64 KiB and
 so on. Four consecutive sections of one tier become one section of the next
-tier. In the top tier, sections merge while they fit into the target.
-Sections of at least half the target are settled and are not read again. The
+tier. In the top tier (from a quarter of the target), sections merge while
+they fit into the target. When a stream has more than 16 sections below the
+top tier in mixed sizes, the oldest four of them that fit into the target
+merge regardless of tier; top-tier sections never take part in this, so a
+section just below half the target is not rewritten whole to absorb a few
+small ones. Sections of at least half the target are settled and are not
+read again. The
 open suffix of a stream (partial tail blocks) is left to merging. Every byte
 is rewritten about log₄(target / first section) times. For a 3 KB block
 growing to a 3 MB section that is about five times.

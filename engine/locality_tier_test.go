@@ -73,3 +73,25 @@ func TestLocalityMergeConvergesGeometrically(t *testing.T) {
 	}
 	t.Logf("%d settled and %d unsettled sections, rewrite factor %.2f", settled, small, float64(written)/float64(appended))
 }
+
+// The fallback for many unsettled sections merges small sections among
+// themselves: a section just below half the target is not rewritten whole to
+// absorb a few small ones.
+func TestLocalityFallbackLeavesTopTierAlone(t *testing.T) {
+	const target, fanIn = 4 << 20, 4
+	sizes := []int64{1900 << 10}
+	for i := 0; i < 17; i++ {
+		sizes = append(sizes, 3<<10+int64(i%3)<<12)
+	}
+	sections := make([]localitySection, len(sizes))
+	for i, n := range sizes {
+		sections[i] = localitySection{begin: i, end: i + 1, bytes: n}
+	}
+	first, end := localityMerge(sections, target, fanIn)
+	if first == end {
+		t.Fatal("seventeen small sections not merged")
+	}
+	if first == 0 {
+		t.Fatalf("fallback rewrote the 1.9 MB section: %d..%d", first, end)
+	}
+}

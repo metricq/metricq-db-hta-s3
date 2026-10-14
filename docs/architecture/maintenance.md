@@ -136,6 +136,15 @@ a job therefore also walks the streams round robin, at most 256 per job, and
 adds their due merges. It skips streams whose index root is unchanged since a
 walk found nothing due there.
 
+**Plans per index root.** A stream's plan (its due merges and where to cut
+them) depends only on its index, so it is remembered together with the
+stream's index root and reused until a checkpoint or job changes the root.
+While due merges wait for a nearly full job, every selection would otherwise
+read the same index pages again: on the development database (6000 streams,
+no queries) that was about 88,000 of 100,000 index page GETs per hour. Plans
+of windows that end before the stream's end (streams of more than 2048 blocks
+behind their full prefix) are not remembered.
+
 **Index packs.** Every job and checkpoint replaces index pages, so index packs
 become partly dead quickly and rank first in the candidate tree. If they came
 first, their pages would fill a job's block limit and starve the data merges.

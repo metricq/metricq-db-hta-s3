@@ -77,10 +77,24 @@ func mergeCascade(sections []localitySection, target int64, fanIn int) [][2]int 
 	return runs
 }
 
+// repackPlan is the plan of one stream at one index root: the blocks the
+// merge rule moves and the first blocks of runs to cut into full objects.
+type repackPlan struct {
+	root blob
+	due  []BlockInfo
+	cuts []blob
+}
+
 // repackStreamPlan returns the blocks of one stream that a repack job moves
 // besides the stream's blocks in the start object: the runs of sections the
 // merge rule merges now. The open suffix (partial tail blocks) is left to
 // merging; a prefix of full sections is remembered and not read again.
+//
+// The plan depends only on the stream's index, so it is remembered per
+// root: selections repeat while due merges wait for a nearly full job, and
+// planning again read the same pages each time, most index GETs of a
+// database without queries. A plan of a window that ended before the
+// stream's end is not remembered, as the next one starts further on.
 func (e *Engine) repackStreamPlan(ctx context.Context, snapshot *Engine, options CompactionOptions, metric string, level int64) ([]BlockInfo, error) {
 	if options.LocalityDisabled {
 		return nil, nil
@@ -90,6 +104,10 @@ func (e *Engine) repackStreamPlan(ctx context.Context, snapshot *Engine, options
 		return nil, nil
 	}
 	key := streamKey(metric, level)
+	if plan, ok := e.repackPlans[key]; ok && plan.root == root {
+		e.noteCuts(plan.cuts)
+		return plan.due, nil
+	}
 	after, ok := e.repackAfter[key]
 	if !ok {
 		after = math.MinInt64
@@ -118,6 +136,7 @@ func (e *Engine) repackStreamPlan(ctx context.Context, snapshot *Engine, options
 	}
 	e.repackAfter[key] = next
 	var out []BlockInfo
+	var cuts []blob
 	for _, run := range mergeCascade(sections, target, options.LocalityFanIn) {
 		run := entries[sections[run[0]].begin:sections[run[1]-1].end]
 		var bytes int64
@@ -127,13 +146,28 @@ func (e *Engine) repackStreamPlan(ctx context.Context, snapshot *Engine, options
 		}
 		if bytes >= target {
 			// Copying cuts the run into full objects from its first block on.
-			if e.repackCuts == nil {
-				e.repackCuts = make(map[blob]bool)
-			}
-			e.repackCuts[run[0].Blob] = true
+			cuts = append(cuts, run[0].Blob)
 		}
 	}
+	e.noteCuts(cuts)
+	if len(entries) < limit {
+		if e.repackPlans == nil {
+			e.repackPlans = make(map[string]repackPlan)
+		}
+		e.repackPlans[key] = repackPlan{root: root, due: out, cuts: cuts}
+	}
 	return out, nil
+}
+
+// noteCuts marks blocks that start a run to cut into full objects for the
+// job being selected.
+func (e *Engine) noteCuts(cuts []blob) {
+	for _, ref := range cuts {
+		if e.repackCuts == nil {
+			e.repackCuts = make(map[blob]bool)
+		}
+		e.repackCuts[ref] = true
+	}
 }
 
 // selectRepack plans one job for both layout goals at once: contiguous
@@ -338,15 +372,12 @@ func (e *Engine) selectRepack(ctx context.Context, snapshot *Engine, options Com
 	}
 	// Streams fragmented inside large, clean objects (written by a checkpoint
 	// after a restart, say) are in no start object. Walk the streams round
-	// robin and add their due merges, skipping streams unchanged since a walk
-	// found nothing due.
+	// robin and add their due merges, skipping streams unchanged since their
+	// plan found nothing due.
 	if !options.LocalityDisabled && !(limited && len(inputs) > 0) {
 		role := snapshot.nodeReader
 		snapshot.nodeReader = "repack_walk"
 		defer func() { snapshot.nodeReader = role }()
-		if e.repackClean == nil {
-			e.repackClean = make(map[string]blob)
-		}
 		var streams []localityStream
 		for name, levels := range snapshot.state.Roots {
 			for level, root := range levels {
@@ -356,6 +387,16 @@ func (e *Engine) selectRepack(ctx context.Context, snapshot *Engine, options Com
 			}
 		}
 		sort.Slice(streams, func(i, j int) bool { return streams[i].Key < streams[j].Key })
+		if len(e.repackPlans) > 2*len(streams) {
+			// Forget the plans of streams that no longer exist.
+			kept := make(map[string]repackPlan, len(streams))
+			for _, st := range streams {
+				if memo, ok := e.repackPlans[st.Key]; ok {
+					kept[st.Key] = memo
+				}
+			}
+			e.repackPlans = kept
+		}
 		start := sort.Search(len(streams), func(i int) bool { return streams[i].Key > e.repackStreamCursor })
 		checked := 0
 		walked, beforeDue := e.repackStreamCursor, ""
@@ -363,19 +404,23 @@ func (e *Engine) selectRepack(ctx context.Context, snapshot *Engine, options Com
 		for n := 0; n < len(streams); n++ {
 			st := streams[(start+n)%len(streams)]
 			root := snapshot.state.Roots[st.Metric][st.Level]
-			if e.repackClean[st.Key] == root {
+			memo, known := e.repackPlans[st.Key]
+			known = known && memo.root == root
+			if known && len(memo.due) == 0 {
 				continue
 			}
-			if checked >= 256 || snapshot.nodeReads >= repackNodeReads*3/4 {
-				break
+			if !known {
+				// Only streams planned anew read index pages.
+				if checked >= 256 || snapshot.nodeReads >= repackNodeReads*3/4 {
+					break
+				}
+				checked++
 			}
-			checked++
 			due, err := e.repackStreamPlan(ctx, snapshot, options, st.Metric, st.Level)
 			if err != nil {
 				return nil, false, err
 			}
 			if len(due) == 0 {
-				e.repackClean[st.Key] = root
 				walked = st.Key
 				continue
 			}

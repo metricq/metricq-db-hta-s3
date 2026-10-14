@@ -211,9 +211,9 @@ type Engine struct {
 	idlePass              uint64                   // completed candidate scan passes
 	repackCursor          string
 	repackStreamCursor    string
-	repackDueSince        time.Time       // first selection that left due merges waiting
-	repackClean           map[string]blob // streams with nothing due at this root
-	repackCuts            map[blob]bool   // first blocks of planned runs to cut into full objects
+	repackDueSince        time.Time             // first selection that left due merges waiting
+	repackPlans           map[string]repackPlan // per stream, its plan at an index root
+	repackCuts            map[blob]bool         // first blocks of planned runs to cut into full objects
 	fragmentScans         map[string]fragmentScan
 	fragmentCursor        string
 	compactionObjectLimit int // source objects per job, adapted to the catalog budget

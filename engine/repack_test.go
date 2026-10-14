@@ -140,7 +140,7 @@ func TestMergeCascadeLeavesNothingDue(t *testing.T) {
 
 // Due merges below a nearly full job wait, so jobs do not leave a partly
 // filled output that becomes a start object again, but no longer than
-// repackMergeWait.
+// repackMergeWait. Waiting costs no index reads.
 func TestRepackMergesWaitForAFullJob(t *testing.T) {
 	ctx := context.Background()
 	store := &rangeGCStore{gcStore: &gcStore{memoryStore: newStore()}}
@@ -174,6 +174,30 @@ func TestRepackMergesWaitForAFullJob(t *testing.T) {
 	}
 	if e.repackDueSince.IsZero() {
 		t.Fatal("due merges not noted")
+	}
+	// While the merges wait, selections reuse the plans of unchanged streams
+	// instead of reading their index again.
+	planReads := func() (n float64) {
+		for _, reader := range []string{"repack_start", "repack_walk"} {
+			for _, source := range []string{"local", "cache", "store"} {
+				n += metricValue(t, e.metrics.IndexPageReads.WithLabelValues(reader, source))
+			}
+		}
+		return n
+	}
+	before := planReads()
+	if before == 0 {
+		t.Fatal("planning read no index pages")
+	}
+	e.compactionCompletions = 1
+	if job, err = e.reserveCompaction(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if job.Repack {
+		t.Fatal("repacked while waiting")
+	}
+	if n := planReads() - before; n != 0 {
+		t.Fatalf("planning unchanged streams again read %v index pages", n)
 	}
 	e.repackDueSince = time.Now().Add(-repackMergeWait)
 	e.compactionCompletions = 1

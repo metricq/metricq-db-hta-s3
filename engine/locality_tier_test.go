@@ -13,6 +13,7 @@ func sectionsOf(sizes ...int64) []localitySection {
 func TestLocalityMergeRule(t *testing.T) {
 	const target = 4 << 20
 	k := int64(1 << 10)
+	m := int64(1 << 20)
 	cases := []struct {
 		name       string
 		sizes      []int64
@@ -24,9 +25,14 @@ func TestLocalityMergeRule(t *testing.T) {
 		{"large section waits for small ones to grow", []int64{300 * k, 40 * k, 40 * k, 40 * k, 40 * k}, 1, 5},
 		{"run extends while it stays mergeable", []int64{2 * k, 2 * k, 2 * k, 18 * k, 2 * k, 10 * k, 5 * k, 2 * k, 4 * k}, 0, 9},
 		{"outlier stops a run", []int64{2 * k, 2 * k, 2 * k, 2 * k, 900 * k}, 0, 4},
-		{"two sections that settle merge", []int64{1100 * k, 1100 * k}, 0, 2},
-		{"top sections merge while they fit", []int64{1200 * k, 1500 * k, 1100 * k}, 0, 3},
-		{"settled sections are never merged", []int64{2100 * k, 2100 * k, 4 * k, 4 * k}, 0, 0},
+		{"two sections below target wait", []int64{1100 * k, 1100 * k}, 0, 0},
+		{"a run reaching target merges whatever the sizes", []int64{1950 * m / 1000, 1500 * m / 1000, 1400 * m / 1000, 40 * k}, 0, 3},
+		{"a run ends at the section reaching target", []int64{2100 * m / 1000, 2700 * m / 1000, 2900 * m / 1000, 2500 * m / 1000}, 0, 2},
+		{"a large section waits below target", []int64{3700 * k, 4 * k, 4 * k, 4 * k, 4 * k}, 1, 5},
+		{"a large section fills up", []int64{3700 * k, 400 * k}, 0, 2},
+		{"full sections are never merged among themselves", []int64{target, 3900 * k, 40 * k, 40 * k, 40 * k, 40 * k}, 2, 6},
+		{"a smaller section before full ones merges into them", []int64{40 * k, target, 3900 * k}, 0, 2},
+		{"small sections before full ones merge into them", []int64{40 * k, 40 * k, 3900 * k, target}, 0, 3},
 	}
 	for _, c := range cases {
 		first, end := localityMerge(sectionsOf(c.sizes...), target, 4)
@@ -36,15 +42,19 @@ func TestLocalityMergeRule(t *testing.T) {
 	}
 }
 
-// Appending small sections and merging as selected keeps few sections:
-// few unsettled ones plus settled ones, and every byte is rewritten a
-// bounded number of times.
-func TestLocalityMergeConvergesGeometrically(t *testing.T) {
+// applyMerges appends chunks to a stream and merges as selected, cutting
+// merged runs as copying does. It checks that merges below the target at
+// least double every section they rewrite and that only the newest sections
+// are not full, and returns the rewrite factor and the most sections that
+// were not full at once.
+func applyMerges(t *testing.T, sizes []int64, chunks func(step int) int64, steps int) ([]int64, float64, int) {
+	t.Helper()
 	const target = 4 << 20
-	const chunk = 40 << 10
-	var sizes []int64
+	full := fullSectionBytes(target, 0)
 	var written, appended int64
-	for step := 0; step < 2000; step++ {
+	most := 0
+	for step := 0; step < steps; step++ {
+		chunk := chunks(step)
 		sizes = append(sizes, chunk)
 		appended += chunk
 		for {
@@ -52,38 +62,45 @@ func TestLocalityMergeConvergesGeometrically(t *testing.T) {
 			if first == end {
 				break
 			}
-			var merged int64
+			var merged, largest int64
 			for _, size := range sizes[first:end] {
 				merged += size
+				largest = max(largest, size)
+			}
+			if merged < target && 2*largest > merged {
+				t.Fatalf("step %d: merge %v grows its largest section by less than twice", step, sizes[first:end])
 			}
 			written += merged
-			sizes = append(append(append([]int64(nil), sizes[:first]...), merged), sizes[end:]...)
+			sizes = append(append(append([]int64(nil), sizes[:first]...), cutSections(merged, target)...), sizes[end:]...)
 		}
-	}
-	small := 0
-	for _, size := range sizes {
-		if size < target/2 {
-			small++
+		open := 0
+		for i, size := range sizes {
+			if size < full {
+				open++
+			} else if open > 0 {
+				t.Fatalf("step %d: full section %d behind %d smaller ones: %v", step, i, open, sizes)
+			}
 		}
+		most = max(most, open)
 	}
-	settled := len(sizes) - small
-	// 2000 chunks of 40 KiB are 78 MiB: about 20-40 settled sections.
-	if small > 12 || settled > 40 {
-		t.Fatalf("%d sections (%d unsettled): %v", len(sizes), small, sizes)
-	}
-	if amplification := float64(written) / float64(appended); amplification > 5 {
-		t.Fatalf("each byte rewritten %.1f times", amplification)
-	}
-	t.Logf("%d settled and %d unsettled sections, rewrite factor %.2f", settled, small, float64(written)/float64(appended))
+	return sizes, float64(written) / float64(appended), most
 }
 
-// A large unsettled section is not rewritten to absorb a few small ones,
-// whatever its size: the small sections merge among themselves. Before, a
-// fallback for many mixed sections rewrote sections just below its size limit
-// again and again.
+// A stream of equal chunks becomes full sections plus a few small ones, and
+// every byte is rewritten a bounded number of times.
+func TestLocalityMergeConvergesGeometrically(t *testing.T) {
+	sizes, amplification, most := applyMerges(t, nil, func(int) int64 { return 40 << 10 }, 2000)
+	if amplification > 4.5 || most > 8 {
+		t.Fatalf("rewrite factor %.2f, up to %d sections not full: %v", amplification, most, sizes)
+	}
+	t.Logf("%d sections, rewrite factor %.2f, up to %d not full", len(sizes), amplification, most)
+}
+
+// A large section that is not full is not rewritten to absorb a few small
+// ones, whatever its size: the small sections merge among themselves.
 func TestLocalityMergeLeavesLargeSectionsAlone(t *testing.T) {
 	const target, fanIn = 4 << 20, 4
-	for _, large := range []int64{1900 << 10, 900 << 10, 132 << 10} {
+	for _, large := range []int64{3700 << 10, 1900 << 10, 900 << 10, 132 << 10} {
 		sizes := []int64{large}
 		for i := 0; i < 17; i++ {
 			sizes = append(sizes, 3<<10+int64(i%3)<<12)
@@ -98,46 +115,30 @@ func TestLocalityMergeLeavesLargeSectionsAlone(t *testing.T) {
 	}
 }
 
-// Every merge at least doubles each section it rewrites, also with
-// checkpoint sections of varying size, and the unsettled sections of a stream
-// stay few.
-func TestLocalityMergeBoundsRewrites(t *testing.T) {
+// Sections of irregular size, such as those settled at half the target by an
+// earlier rule, are merged and cut into full sections from the front.
+func TestLocalityMergeCutsIntoFullSections(t *testing.T) {
 	const target = 4 << 20
+	m := int64(1 << 20)
+	sizes := []int64{21 * m / 10, 27 * m / 10, 29 * m / 10, 25 * m / 10}
+	runs := mergeCascade(sectionsOf(sizes...), target, 4)
+	if len(runs) != 1 || runs[0] != [2]int{0, 4} {
+		t.Fatalf("runs %v, want all four sections", runs)
+	}
+	total := sizes[0] + sizes[1] + sizes[2] + sizes[3]
+	got := cutSections(total, target)
+	if len(got) != 3 || got[0] != target || got[1] != target || got[2] != total-2*target {
+		t.Fatalf("cut into %v", got)
+	}
+}
+
+// With checkpoint sections of varying size, only the newest sections of a
+// stream are not full, and they stay few.
+func TestLocalityMergeBoundsRewrites(t *testing.T) {
 	pattern := []int64{2, 2, 2, 3, 4, 5, 10, 18, 2, 3, 2, 4, 2}
-	sizes := []int64{1900 << 10}
-	var written, appended int64
-	maxUnsettled := 0
-	for step := 0; step < 20000; step++ {
-		chunk := pattern[step*7%len(pattern)] << 10
-		sizes = append(sizes, chunk)
-		appended += chunk
-		for {
-			first, end := localityMerge(sectionsOf(sizes...), target, 4)
-			if first == end {
-				break
-			}
-			var merged, largest int64
-			for _, size := range sizes[first:end] {
-				merged += size
-				largest = max(largest, size)
-			}
-			if 2*largest > merged {
-				t.Fatalf("step %d: merge %v grows its largest section by less than twice", step, sizes[first:end])
-			}
-			written += merged
-			sizes = append(append(append([]int64(nil), sizes[:first]...), merged), sizes[end:]...)
-		}
-		unsettled := 0
-		for _, size := range sizes {
-			if size < target/2 {
-				unsettled++
-			}
-		}
-		maxUnsettled = max(maxUnsettled, unsettled)
+	sizes, amplification, most := applyMerges(t, []int64{1900 << 10}, func(step int) int64 { return pattern[step*7%len(pattern)] << 10 }, 50000)
+	if amplification > 7 || most > 14 {
+		t.Fatalf("rewrite factor %.2f, up to %d sections not full", amplification, most)
 	}
-	amplification := float64(written) / float64(appended)
-	if amplification > 7 || maxUnsettled > 14 {
-		t.Fatalf("rewrite factor %.2f, up to %d unsettled sections", amplification, maxUnsettled)
-	}
-	t.Logf("rewrite factor %.2f, up to %d unsettled sections", amplification, maxUnsettled)
+	t.Logf("%d sections, rewrite factor %.2f, up to %d not full", len(sizes), amplification, most)
 }

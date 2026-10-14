@@ -21,7 +21,7 @@ so the dashboard draws them next to the measured values.
 | *Jobs*: `catalog budget` events | inventories of mixed objects are large | Usually self-adjusting (*source-object limit* drops). Persistent: holding reduces mixed objects. |
 | *Compaction job pending* stays 1, *Last successful job* grows | jobs fail repeatedly | Look at the logs (`compaction failed`) and *Object store → Errors*. |
 | *Stored bytes*: dead share high and not shrinking | reclamation too slow or disabled | Lower `compaction_reclaim_dead_fraction` (more rewriting) or raise the rate limit. |
-| Cold queries slow, many GETs per query | fragmented layout | Ensure locality is enabled; raise `compaction_output_object_bytes` for larger settled sections; give compaction more rate. |
+| Cold queries slow, many GETs per query | fragmented layout | Ensure locality is enabled; raise `compaction_output_object_bytes` for larger full sections; give compaction more rate. |
 | `query_errors_total`: "would exceed query_max_response_bytes" | client requests too many points for one AMQP message | Ask clients for aggregate levels (larger `interval_max`); raising the limit needs a larger RabbitMQ `max_message_size`. |
 | `query_errors_total`: "query memory" | large concurrent queries | Raise `query_memory_bytes` if memory allows. |
 | Process memory high | held records, caches | Lower `hold_memory_bytes`, `ingest_memory_limit_bytes`; see [Sizing](sizing.md#memory). |
@@ -81,11 +81,12 @@ so the dashboard draws them next to the measured values.
 - **`compaction_reclaim_dead_fraction`** — rewrite objects with at least this share of dead bytes.
   Lower reclaims space sooner at the price of more copying.
 - **`compaction_locality_fan_in`**, **`compaction_locality_disabled`** — let the
-  contiguous sections of a metric level grow geometrically up to half of
-  `compaction_output_object_bytes`, so a `FLEX_TIMELINE` query needs few GETs.
+  contiguous sections of a metric level grow geometrically until they are cut
+  into full objects of `compaction_output_object_bytes`, so a
+  `FLEX_TIMELINE` query needs few GETs.
   The fan-in is the least number of sections merged at once. A larger fan-in
   rewrites data less often but leaves more sections per stream;
-  a larger `compaction_output_object_bytes` gives larger settled sections.
+  a larger `compaction_output_object_bytes` gives larger full sections.
 
 ## Reading the fragmentation panels
 
@@ -106,8 +107,8 @@ section with one range request, so the count is the number of requests needed
 to read every stream in full. `storage_fragmentation_ratio` relates it to one
 section per stream (`storage_streams`) plus one per
 `compaction_output_object_bytes` of data. About 1 is ideal; the open tail of
-each stream adds up to one more section per stream, and the unsettled sections
-of locality compaction add a few more, so values up to about 2–3 are healthy for
+each stream adds up to one more section per stream, and the newest sections of
+each stream, not yet full, add a few more, so values up to about 2–3 are healthy for
 many small streams. Sections per stream grow with history, the ratio should
 not: a steady rise means locality compaction falls behind. A database created
 before this statistic counts it once at startup, pausing publication for one

@@ -212,6 +212,7 @@ type Engine struct {
 	repackStreamCursor    string
 	repackDueSince        time.Time       // first selection that left due merges waiting
 	repackClean           map[string]blob // streams with nothing due at this root
+	repackCuts            map[blob]bool   // first blocks of planned runs to cut into full objects
 	fragmentScans         map[string]fragmentScan
 	fragmentCursor        string
 	compactionObjectLimit int // source objects per job, adapted to the catalog budget

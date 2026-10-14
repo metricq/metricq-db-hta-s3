@@ -36,30 +36,43 @@ const repackFillPercent = 75
 
 // mergeCascade applies localityMerge until no run of a stream's sections is
 // due anymore, as if each merge were a job of its own, and returns the
-// resulting runs of more than one original section as [begin, end) indices
-// into sections. Merging in one job what separate jobs would merge one after
-// the other writes each byte once instead of once per step.
+// original sections to move as disjoint [begin, end) index ranges. A merge
+// that reaches the target is cut into full sections and a remainder, as
+// copying does; all pieces keep the merged range, so a later merge of the
+// remainder extends that range. Merging in one job what separate jobs would
+// merge one after the other writes each byte once instead of once per step.
 func mergeCascade(sections []localitySection, target int64, fanIn int) [][2]int {
 	virtual := make([]localitySection, len(sections))
 	for i, s := range sections {
-		virtual[i] = localitySection{begin: i, end: i + 1, bytes: s.bytes}
+		virtual[i] = localitySection{begin: i, end: i + 1, bytes: s.bytes, block: s.block}
 	}
+	var merged [][2]int
 	for len(virtual) > 1 {
 		first, end := localityMerge(virtual, target, fanIn)
 		if first == end {
 			break
 		}
-		merged := localitySection{begin: virtual[first].begin, end: virtual[end-1].end}
+		begin, stop := virtual[first].begin, virtual[end-1].end
+		var total int64
 		for _, v := range virtual[first:end] {
-			merged.bytes += v.bytes
+			total += v.bytes
 		}
-		virtual = append(append(virtual[:first:first], merged), virtual[end:]...)
+		block := largestBlock(virtual[first:end])
+		var pieces []localitySection
+		for _, n := range cutSections(total, target) {
+			pieces = append(pieces, localitySection{begin: begin, end: stop, bytes: n, block: block})
+		}
+		virtual = append(append(virtual[:first:first], pieces...), virtual[end:]...)
+		merged = append(merged, [2]int{begin, stop})
 	}
+	sort.Slice(merged, func(i, j int) bool { return merged[i][0] < merged[j][0] })
 	var runs [][2]int
-	for _, v := range virtual {
-		if v.end-v.begin > 1 {
-			runs = append(runs, [2]int{v.begin, v.end})
+	for _, r := range merged {
+		if n := len(runs); n > 0 && r[0] < runs[n-1][1] {
+			runs[n-1][1] = max(runs[n-1][1], r[1])
+			continue
 		}
+		runs = append(runs, r)
 	}
 	return runs
 }
@@ -67,8 +80,7 @@ func mergeCascade(sections []localitySection, target int64, fanIn int) [][2]int 
 // repackStreamPlan returns the blocks of one stream that a repack job moves
 // besides the stream's blocks in the start object: the runs of sections the
 // merge rule merges now. The open suffix (partial tail blocks) is left to
-// merging; a settled prefix (sections of at least half the target) is
-// remembered and not read again.
+// merging; a prefix of full sections is remembered and not read again.
 func (e *Engine) repackStreamPlan(ctx context.Context, snapshot *Engine, options CompactionOptions, metric string, level int64) ([]BlockInfo, error) {
 	if options.LocalityDisabled {
 		return nil, nil
@@ -93,9 +105,10 @@ func (e *Engine) repackStreamPlan(ctx context.Context, snapshot *Engine, options
 	}
 	target := options.OutputObjectBytes
 	sections := localitySections(entries)
+	full := fullSectionBytes(target, largestBlock(sections))
 	next := after
 	for _, sec := range sections {
-		if sec.bytes < target/2 || entries[sec.end-1].Last == math.MaxInt64 {
+		if sec.bytes < full || entries[sec.end-1].Last == math.MaxInt64 {
 			break
 		}
 		next = entries[sec.end-1].Last + 1
@@ -106,8 +119,18 @@ func (e *Engine) repackStreamPlan(ctx context.Context, snapshot *Engine, options
 	e.repackAfter[key] = next
 	var out []BlockInfo
 	for _, run := range mergeCascade(sections, target, options.LocalityFanIn) {
-		for _, entry := range entries[sections[run[0]].begin:sections[run[1]-1].end] {
+		run := entries[sections[run[0]].begin:sections[run[1]-1].end]
+		var bytes int64
+		for _, entry := range run {
 			out = append(out, BlockInfo{Metric: metric, Level: level, Entry: entry})
+			bytes += entry.Blob.Length
+		}
+		if bytes >= target {
+			// Copying cuts the run into full objects from its first block on.
+			if e.repackCuts == nil {
+				e.repackCuts = make(map[blob]bool)
+			}
+			e.repackCuts[run[0].Blob] = true
 		}
 	}
 	return out, nil
@@ -122,12 +145,13 @@ func (e *Engine) repackStreamPlan(ctx context.Context, snapshot *Engine, options
 // to the job limits (compaction_job_max_bytes and _blocks, the source object
 // limit, its index read budget) and runs once its input fills 75 % of an
 // output object. Outputs are filled stream by stream without splitting a
-// run, so at most the last output of a job stays partly empty. After a
-// complete pass over the candidates a job also runs with less if it reclaims
-// dead bytes. A job with due merges always runs. Streams fragmented inside
-// large clean objects are in no start object, so the selection also walks
-// the streams round robin and adds their due merges. A start object larger
-// than a job moves stream by stream.
+// run, so at most the last output of a job stays partly empty; a run of at
+// least an object is cut into full objects of its own. After a complete pass
+// over the candidates a job also runs with less if it reclaims dead bytes,
+// and due merges run with less after waiting repackMergeWait. Streams
+// fragmented inside large clean objects are in no start object, so the
+// selection also walks the streams round robin and adds their due merges. A
+// start object larger than a job moves stream by stream.
 func (e *Engine) selectRepack(ctx context.Context, snapshot *Engine, options CompactionOptions, objectLimit int, cutoff int64) ([]BlockInfo, bool, error) {
 	limit := options.smallObjectLimit()
 	capacity := options.JobMaxBytes
@@ -138,6 +162,7 @@ func (e *Engine) selectRepack(ctx context.Context, snapshot *Engine, options Com
 	var bytes int64
 	dirtySeen, mergesDue := false, false
 	walkCursor, waitCursor := e.repackStreamCursor, e.repackStreamCursor
+	e.repackCuts = nil
 	// Where the job's bytes come from, for the debug log.
 	var plan repackPlanStats
 	type indexPack struct {

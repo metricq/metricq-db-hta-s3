@@ -41,6 +41,9 @@ type CompactionJob struct {
 	// First blocks of runs rewritten into full blocks plus one remainder at
 	// the run's end; each run's blocks are consecutive in Consecutive.
 	Rechunk []blob
+	// First blocks of repacked runs of at least one output object: each
+	// starts a new object, so the run is cut into full objects of its own.
+	Cut []blob
 
 	CleanupAfter int64
 
@@ -200,6 +203,7 @@ func (e *Engine) reserveCompaction(ctx context.Context) (CompactionJob, error) {
 	selected := make(map[blob]bool)
 	var consecutive [][2]blob
 	var rechunk []blob
+	var cut []blob
 	// Seeds are tried individually: a stream's first seed (often its tail) must
 	// not hide its other fragments. One group per stream and job keeps groups
 	// disjoint.
@@ -237,7 +241,14 @@ func (e *Engine) reserveCompaction(ctx context.Context) (CompactionJob, error) {
 		// Planning reads the index of every stream of the start objects; the
 		// shared page cache serves most of it, without a cache per job.
 		reader := &Engine{store: snapshot.store, options: snapshot.options, metrics: snapshot.metrics, state: snapshot.state, sharedNodes: snapshot.sharedNodes, sharedCatalog: snapshot.sharedCatalog, nodeReadLimit: repackNodeReads, catalogReadBudget: compactionCatalogBudget}
-		return e.selectRepack(ctx, reader, options, objectLimit, cutoff)
+		picked, more, err := e.selectRepack(ctx, reader, options, objectLimit, cutoff)
+		cut = nil
+		for _, b := range picked {
+			if e.repackCuts[b.Entry.Blob] {
+				cut = append(cut, b.Entry.Blob)
+			}
+		}
+		return picked, more, err
 	}
 	// Every second job slot repacks first; otherwise it runs when there is
 	// nothing to merge.
@@ -622,7 +633,7 @@ func (e *Engine) reserveCompaction(ctx context.Context) (CompactionJob, error) {
 		return CompactionJob{}, err
 	}
 	id := strings.TrimPrefix(idPack.key, "job/")
-	job := CompactionJob{Consecutive: consecutive, Rechunk: rechunk, Repack: repack, ID: id, Stage: "reserved", Generation: generation, Inputs: inputs, Created: time.Now().UnixNano()}
+	job := CompactionJob{Consecutive: consecutive, Rechunk: rechunk, Cut: cut, Repack: repack, ID: id, Stage: "reserved", Generation: generation, Inputs: inputs, Created: time.Now().UnixNano()}
 	// Register all staging namespaces before uploads, including COW metadata.
 	for _, prefix := range []string{"data/", "index/", "catalog/", "candidates/", "trash/", "state/", "roots/", "held-state/"} {
 		job.OutputPrefixes = append(job.OutputPrefixes, prefix+"compact-"+id+"/")
@@ -853,6 +864,10 @@ func (e *Engine) copyJob(ctx context.Context, job CompactionJob) (map[blob]repla
 		// recompressed marks a copied block encoded anew (same records).
 		recompressed bool
 	}
+	cutStart := make(map[blob]bool, len(job.Cut))
+	for _, ref := range job.Cut {
+		cutStart[ref] = true
+	}
 	rechunkStart := make(map[blob]bool, len(job.Rechunk))
 	for _, ref := range job.Rechunk {
 		rechunkStart[ref] = true
@@ -1027,6 +1042,13 @@ func (e *Engine) copyJob(ctx context.Context, job CompactionJob) (map[blob]repla
 		if n, ok := sectionBytes[gi]; ok && current != nil && int64(current.buf.Len())+n > options.OutputObjectBytes {
 			if err := upload(); err != nil {
 				return nil, nil, err
+			}
+		}
+		for j := g.start; j < g.end && current != nil; j++ {
+			if cutStart[inputs[j].Entry.Blob] {
+				if err := upload(); err != nil {
+					return nil, nil, err
+				}
 			}
 		}
 		if g.rechunk {
@@ -1453,6 +1475,14 @@ func (e *Engine) applyCompaction(ctx context.Context, job CompactionJob, replace
 			e.mu.Lock()
 			e.compactionCompletions++
 			e.mu.Unlock()
+			// A job that moved blocks within a stream's prefix of full sections
+			// (a merge or rechunk, say) may have changed it: plan the stream
+			// from its start again.
+			for _, b := range job.Inputs {
+				if key := streamKey(b.Metric, b.Level); !b.Index && e.repackAfter != nil && b.Entry.First < e.repackAfter[key] {
+					delete(e.repackAfter, key)
+				}
+			}
 			e.metrics.Compactions.Inc()
 			if job.Repack {
 				e.metrics.RepackJobs.Inc()

@@ -91,14 +91,19 @@ func TestRepackPacksSmallObjects(t *testing.T) {
 	checkCatalog(t, f.e)
 }
 
-// The cascade merges in one step what tiered jobs would merge one after the
-// other: the runs are disjoint, and afterwards no merge is due anymore.
+// The cascade merges in one step what separate jobs would merge one after
+// the other: the runs are disjoint, and after copying cuts them into full
+// sections and a remainder, no merge is due anymore.
 func TestMergeCascadeLeavesNothingDue(t *testing.T) {
 	const target, fanIn = 4 << 20, 4
 	for _, sizes := range [][]int64{
 		{4 << 10, 4 << 10, 4 << 10, 4 << 10},
 		{1 << 20, 256 << 10, 256 << 10, 256 << 10, 256 << 10, 4 << 10, 4 << 10, 4 << 10, 4 << 10},
 		{3 << 20, 3 << 20, 64 << 10, 16 << 10, 16 << 10, 16 << 10, 16 << 10, 16 << 10},
+		{1950 << 10, 1500 << 10, 1400 << 10},
+		{2100 << 10, 2700 << 10, 2900 << 10, 2500 << 10, 4 << 10, 4 << 10, 4 << 10, 4 << 10},
+		{4 << 20, 3500 << 10, 300 << 10, 100 << 10, 100 << 10, 100 << 10, 100 << 10, 600 << 10},
+		{8 << 10, 4 << 20, 4 << 20, 3900 << 10, 4 << 20, 20 << 10},
 	} {
 		sections := make([]localitySection, len(sizes))
 		for i, n := range sizes {
@@ -117,11 +122,13 @@ func TestMergeCascadeLeavesNothingDue(t *testing.T) {
 			for i := next; i < r[0]; i++ {
 				after = append(after, sections[i])
 			}
-			merged := localitySection{begin: r[0], end: r[1]}
+			var total int64
 			for i := r[0]; i < r[1]; i++ {
-				merged.bytes += sections[i].bytes
+				total += sections[i].bytes
 			}
-			after = append(after, merged)
+			for _, n := range cutSections(total, target) {
+				after = append(after, localitySection{begin: r[0], end: r[1], bytes: n})
+			}
 			next = r[1]
 		}
 		after = append(after, sections[next:]...)
@@ -176,4 +183,99 @@ func TestRepackMergesWaitForAFullJob(t *testing.T) {
 	if !job.Repack || len(job.Inputs) != 4 {
 		t.Fatalf("overdue merges: repack=%v inputs=%d", job.Repack, len(job.Inputs))
 	}
+}
+
+// Repack merges a stream's sections and cuts them into full objects holding
+// only that stream; only the newest sections are smaller.
+func TestRepackCutsStreamsIntoFullObjects(t *testing.T) {
+	previousWait := repackMergeWait
+	repackMergeWait = 0
+	defer func() { repackMergeWait = previousWait }()
+	ctx := context.Background()
+	s := &rangeGCStore{gcStore: &gcStore{memoryStore: newStore()}}
+	opts := maintenanceOptions(t.TempDir(), true)
+	opts.CompactionOptions.OutputObjectBytes = 64 << 10
+	opts.CompactionOptions.JobMaxBytes = 1 << 20
+	opts.CompactionOptions.JobMaxBlocks = 512
+	e, err := Open(ctx, s, opts, map[string]hta.Config{"a": {IntervalMin: int64(time.Second), IntervalMax: int64(100000 * time.Second), IntervalFactor: 10}, "b": {IntervalMin: int64(time.Second), IntervalMax: int64(100000 * time.Second), IntervalFactor: 10}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer e.Close()
+	for block := 0; block < 160; block++ {
+		for _, name := range []string{"a", "b"} {
+			points := make([]hta.Point, maxDataBlockRecords)
+			for j := range points {
+				n := block*maxDataBlockRecords + j
+				points[j] = hta.Point{Time: int64(n+1) * int64(time.Second), Value: math.Sin(float64(n)/31) + float64(n%13)/7}
+			}
+			if err := e.Ingest(ctx, name, chunk(points...)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := e.Flush(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if block%8 == 7 {
+			for i := 0; i < 16; i++ {
+				if err := e.CompactOnce(ctx); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+	}
+	for i := 0; i < 64; i++ {
+		if err := e.CompactOnce(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The layout is final: no stream level is rewritten again.
+	jobs := metricValue(t, e.metrics.RepackJobs)
+	for i := 0; i < 8; i++ {
+		if err := e.CompactOnce(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := metricValue(t, e.metrics.RepackJobs) - jobs; n > 0 {
+		t.Fatalf("%v repack jobs after compaction settled", n)
+	}
+	sizes := map[string]int64{}
+	if err := e.catalogWalk(ctx, e.state.Catalog, math.MaxInt, func(o ObjectInfo) bool {
+		sizes[o.Key] = o.Size
+		return true
+	}); err != nil {
+		t.Fatal(err)
+	}
+	target := opts.CompactionOptions.OutputObjectBytes
+	for _, name := range []string{"a", "b"} {
+		entries, err := e.indexEntriesAfter(ctx, e.state.Roots[name][0], math.MinInt64, 1<<20)
+		if err != nil {
+			t.Fatal(err)
+		}
+		open, _ := openSuffix(entries)
+		sections := localitySections(entries[:len(entries)-open])
+		full := fullSectionBytes(target, largestBlock(sections))
+		var layout []int64
+		fulls, smaller := 0, 0
+		for _, sec := range sections {
+			layout = append(layout, sec.bytes>>10)
+			if sec.bytes < full {
+				smaller++
+				continue
+			}
+			if smaller > 0 {
+				t.Fatalf("%s: full section behind smaller ones, sections in KiB %v", name, layout)
+			}
+			fulls++
+			// A full section fills its object alone.
+			if key := entries[sec.begin].Blob.Key; sizes[key] > sec.bytes+sec.bytes/16 {
+				t.Fatalf("%s: full section of %d bytes shares %s of %d bytes", name, sec.bytes, key, sizes[key])
+			}
+		}
+		if fulls < 3 || smaller > 8 {
+			t.Fatalf("%s: %d full and %d smaller sections, in KiB %v", name, fulls, smaller, layout)
+		}
+		t.Logf("%s: sections in KiB %v", name, layout)
+	}
+	checkCatalog(t, e)
 }

@@ -23,7 +23,8 @@ A job has three phases:
    up to 1024 records, write output packs of up to
    `compaction_output_object_bytes`. Inputs are ordered by stream and time, and
    no job splits a stream's run across two output objects unless the run is
-   larger than one.
+   larger than one. Such a run starts a new object and is cut into full
+   objects of its own and a remainder.
 3. **Publish.** Serialized with checkpoints: verify that every input is still
    live, rewrite the affected index paths, update catalog and metadata, move
    retired objects to the trash journal, conditionally PUT the manifest.
@@ -75,8 +76,10 @@ size. `compaction_rechunked_blocks_total` counts the rewrites.
   range request;
 - objects are nearly full.
 
-Only an object that holds a single stream and fills most of
-`compaction_output_object_bytes` is final. An object may hold many streams,
+A stream's past consists of *full sections*: sections that fill an object of
+`compaction_output_object_bytes` alone, up to the stream's largest block (at
+least 15/16 of the target). Only such an object is final. Only the newest
+sections of a stream are smaller, and their objects may hold many streams,
 which suits small streams such as higher aggregate levels.
 
 **Start objects.** A job starts from objects in the candidate tree that are
@@ -87,26 +90,36 @@ objects are left behind when other jobs move blocks out of them. A job takes
 a start object whole; a start object larger than one job moves stream by
 stream over several jobs.
 
-**Which sections merge (merge rule).** Sections grow like the runs of a
-size-tiered LSM tree. Consecutive sections of one stream merge when
+**Which sections merge (merge rule).** Consecutive sections of one stream,
+starting with one that is not full, merge when
 
-- they fit into the object target,
-- the largest of them is at most as large as all others together, and
-- they are at least `compaction_locality_fan_in` (default 4) sections, or
-  their sum reaches half the target.
+- their sum reaches the object target: copying cuts them into full sections
+  and a remainder, which joins the next merge; or
+- they stay below the target, are at least `compaction_locality_fan_in`
+  (default 4) sections, and the largest of them is at most as large as all
+  others together.
 
-The oldest such run is taken, extended as far as it stays mergeable. The
-merged section is at least twice as large as each of its parts, so every byte
-is rewritten at most log₂(target / first section) times, and a large section
-is never rewritten whole to absorb a few small ones: the small ones first
-merge among themselves until they match it. Checkpoint sections vary in size
-(2 to 20 KB on the development database); the rule does not sort them into
-fixed size classes, so a slightly larger section does not hold up its
-neighbours. Simulated with such sizes, every byte is rewritten about five
-times on its way to a settled section, and a stream keeps at most about ten
-unsettled sections. Sections of at least half the target are settled and are
-not read again. The open suffix of a stream (partial tail blocks) is left to
-merging.
+The oldest such run is taken, extended as far as it stays mergeable but not
+beyond the section that brings it to the target. Below the target, sections
+grow like the runs of a size-tiered LSM tree: a merge at least doubles each of
+its parts, and a large section is never rewritten whole to absorb a few small
+ones; the small ones first merge among themselves until they match it.
+Checkpoint sections vary in size (2 to 20 KB on the development database); the
+rule does not sort them into fixed size classes, so a slightly larger section
+does not hold up its neighbours. A full section is written for the last time.
+Sections of 2.1, 2.7, 2.9 and 2.5 MiB, for example, become 4 + 0.8 + 2.9 + 2.5
+and then 4 + 4 + 2.2 MiB.
+
+A run may end with a full section. A smaller section before full ones (left
+by an earlier layout or a rechunk) therefore merges into the next full
+section, and the remainder is passed on until the stream's newest sections.
+This rewrites the stream behind such a gap once.
+
+Simulated with checkpoint sections of 2 to 18 KB, every byte is rewritten
+about six times until it is part of a full section, and a stream keeps at most
+about a dozen sections that are not full. A prefix of full sections is not
+read again until a job moves blocks within it. The open suffix of a stream
+(partial tail blocks) is left to merging.
 
 **Cascade.** For every stream of a start object, the job applies the merge rule
 repeatedly, as if each merge were a job of its own. If four 3 KB sections

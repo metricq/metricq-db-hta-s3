@@ -44,6 +44,7 @@ func TestReviewLiveStreamSections(t *testing.T) {
 	var rows []row
 	hist := map[int]int{}
 	raced := 0
+	var dueBytes int64
 	for metric, levels := range snap.m.Roots {
 		for level, root := range levels {
 			if root.Key == "" {
@@ -63,6 +64,9 @@ func TestReviewLiveStreamSections(t *testing.T) {
 			r := row{name: fmt.Sprintf("%s/%d", metric, level), entries: len(entries), sections: len(sections) + min(open, 1), open: open, due: len(runs)}
 			for _, run := range runs {
 				r.dueBlocks += sections[run[1]-1].end - sections[run[0]].begin
+				for _, sec := range sections[run[0]:run[1]] {
+					dueBytes += sec.bytes
+				}
 			}
 			rows = append(rows, r)
 			b := r.sections
@@ -82,6 +86,7 @@ func TestReviewLiveStreamSections(t *testing.T) {
 		}
 	}
 	fmt.Printf("%d streams skipped (replaced during the walk)\n", raced)
+	fmt.Printf("%.1f MB due\n", float64(dueBytes)/1e6)
 	fmt.Printf("%d streams, %d sections (%.2f per stream); %d streams with merges due (%d blocks)\n", len(rows), total, float64(total)/float64(len(rows)), withDue, dueBlocks)
 	var ks []int
 	for k := range hist {

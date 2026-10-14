@@ -225,6 +225,7 @@ type Engine struct {
 	catalogReadBytes      int64
 	nodeReadLimit         int
 	nodeReads             int
+	nodeReader            string // purpose of index page reads, for metrics
 	store                 storage.Store
 	wal                   *wal
 	options               Options

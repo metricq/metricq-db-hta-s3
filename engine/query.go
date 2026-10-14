@@ -602,7 +602,7 @@ func (e *Engine) readSnapshot(name string) (*Engine, error) {
 	copySeries := *series
 	e.readers++
 	e.pins[e.state.Generation]++
-	snapshot := &Engine{store: e.store, options: e.options, metrics: e.metrics, nodeCache: make(map[blob]indexNode), sharedNodes: e.sharedNodes, sharedBlocks: e.sharedBlocks, state: manifest{
+	snapshot := &Engine{nodeReader: "query", store: e.store, options: e.options, metrics: e.metrics, nodeCache: make(map[blob]indexNode), sharedNodes: e.sharedNodes, sharedBlocks: e.sharedBlocks, state: manifest{
 		Generation: e.state.Generation, Series: map[string]*hta.Series{name: &copySeries}, Roots: map[string]map[int64]blob{name: e.state.Roots[name]}}}
 	// Share this metric's unflushed records without copying them. Records
 	// frozen by a running flush precede newer pending records.

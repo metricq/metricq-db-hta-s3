@@ -134,6 +134,7 @@ This table is generated from `engine/metrics.go` by
 | `metricq_db_store_requests_total` | counter | op, kind | Object store requests by operation and object kind. |
 | **Metadata cache** | | | |
 | `metricq_db_metadata_cache_requests_total` | counter | kind, result | Decoded metadata cache lookups. |
+| `metricq_db_index_page_reads_total` | counter | reader, source | Index page reads by purpose (`query`, `tails`, `merge_select`, `fragment_select`, `repack_start`, `repack_walk`, `copy`, `publish`, `maintenance_edit`, `other`) and origin (`local`, `cache`, `store`). |
 | `metricq_db_catalog_tree_packs` | gauge | tree | Objects holding the pages of the catalog or candidate tree (inventories excluded); a rebuild keeps it at most 16. |
 | `metricq_db_catalog_tree_pages` | gauge | tree | Pages of the catalog or candidate tree. |
 | `metricq_db_catalog_rebuilds_total` | counter | tree | Tree updates that rewrote the whole tree into a fresh pack. |
@@ -210,5 +211,12 @@ currently cover successful completion; a failed preparation remains visible in
 `metricq_db_metadata_cache_requests_total{kind,result}` reports direct decoded
 catalog/index cache hits and misses. Prefetched index misses and pinned/local
 index hits are not included; physical store counters remain authoritative.
+`metricq_db_index_page_reads_total{reader,source}` attributes index page reads
+to what needs them: `source="store"` are range GETs, `cache` hits of the
+shared page cache, `local` pages the operation already holds (its own cache or
+pages it wrote). `repack_start` plans the streams of start objects,
+`repack_walk` the stream walk; `other` covers checkpoints and the remaining
+engine-internal reads. In a database without queries, `store` reads are the
+cost of maintenance, and their split shows where to cut it.
 `metricq_db_compaction_deferred_merges_total` counts inspected large-tail merge
 candidates deferred for insufficient growth, not distinct pending jobs.

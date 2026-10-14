@@ -1602,8 +1602,8 @@
     },
     {
       "type": "timeseries",
-      "title": "Manifest size",
-      "description": "Written with every checkpoint and maintenance publication.",
+      "title": "Index page GETs by reader",
+      "description": "Index pages fetched from the store (range GETs), by what read them: query, checkpoint tails, compaction selection (merge, fragment, repack start objects, repack stream walk), copy, publication.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -1613,6 +1613,106 @@
         "w": 8,
         "x": 16,
         "y": 65
+      },
+      "targets": [
+        {
+          "expr": "sum by (reader) (rate(metricq_db_index_page_reads_total{source=\"store\",token=\"$token\"}[$__rate_interval]))",
+          "legendFormat": "{{reader}}",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": {
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "normal"
+            }
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Index page reads by source",
+      "description": "All index page reads: local (pages the operation already holds), cache (shared page cache) or store (a range GET).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 73
+      },
+      "targets": [
+        {
+          "expr": "sum by (source) (rate(metricq_db_index_page_reads_total{token=\"$token\"}[$__rate_interval]))",
+          "legendFormat": "{{source}}",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": {
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "normal"
+            }
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Manifest size",
+      "description": "Written with every checkpoint and maintenance publication.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 73
       },
       "targets": [
         {
@@ -1658,7 +1758,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 73
+        "y": 81
       },
       "panels": []
     },
@@ -1674,7 +1774,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 74
+        "y": 82
       },
       "targets": [
         {
@@ -1733,7 +1833,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 74
+        "y": 82
       },
       "targets": [
         {
@@ -1792,7 +1892,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 74
+        "y": 82
       },
       "targets": [
         {
@@ -1860,7 +1960,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 82
+        "y": 90
       },
       "targets": [
         {
@@ -1910,7 +2010,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 82
+        "y": 90
       },
       "targets": [
         {
@@ -1969,7 +2069,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 82
+        "y": 90
       },
       "targets": [
         {
@@ -2028,7 +2128,7 @@
         "h": 8,
         "w": 16,
         "x": 0,
-        "y": 90
+        "y": 98
       },
       "targets": [
         {
@@ -2118,7 +2218,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 98
+        "y": 106
       },
       "panels": []
     },
@@ -2134,7 +2234,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 99
+        "y": 107
       },
       "targets": [
         {
@@ -2211,7 +2311,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 99
+        "y": 107
       },
       "targets": [
         {
@@ -2270,7 +2370,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 99
+        "y": 107
       },
       "targets": [
         {
@@ -2338,7 +2438,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 107
+        "y": 115
       },
       "targets": [
         {
@@ -2406,7 +2506,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 107
+        "y": 115
       },
       "targets": [
         {
@@ -2465,7 +2565,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 107
+        "y": 115
       },
       "targets": [
         {
@@ -2524,7 +2624,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 115
+        "y": 123
       },
       "targets": [
         {
@@ -2570,7 +2670,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 123
+        "y": 131
       },
       "panels": []
     },
@@ -2586,7 +2686,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 124
+        "y": 132
       },
       "targets": [
         {
@@ -2636,7 +2736,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 124
+        "y": 132
       },
       "targets": [
         {
@@ -2691,7 +2791,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 132
+        "y": 140
       },
       "panels": []
     },
@@ -2707,7 +2807,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 133
+        "y": 141
       },
       "targets": [
         {
@@ -2766,7 +2866,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 133
+        "y": 141
       },
       "targets": [
         {
@@ -2834,7 +2934,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 133
+        "y": 141
       },
       "targets": [
         {
@@ -2880,7 +2980,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 141
+        "y": 149
       },
       "panels": []
     },
@@ -2896,7 +2996,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 142
+        "y": 150
       },
       "targets": [
         {
@@ -2955,7 +3055,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 142
+        "y": 150
       },
       "targets": [
         {
@@ -3005,7 +3105,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 142
+        "y": 150
       },
       "targets": [
         {

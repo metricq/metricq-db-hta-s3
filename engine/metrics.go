@@ -13,6 +13,7 @@ type Metrics struct {
 	CompactionDeferredMerges                                                                prometheus.Counter
 	CompactionPhases                                                                        *prometheus.HistogramVec
 	MetadataCache                                                                           *prometheus.CounterVec
+	IndexPageReads                                                                          *prometheus.CounterVec
 	CatalogRebuilds                                                                         *prometheus.CounterVec
 	CatalogTreePacks, CatalogTreePages                                                      *prometheus.GaugeVec
 	ObjectFill                                                                              *prometheus.GaugeVec
@@ -109,6 +110,7 @@ func NewMetrics(r prometheus.Registerer) *Metrics {
 		CompactionDeferredMerges:  counter("compaction_deferred_merges_total", "Large tail merge candidates deferred until sufficient growth or age."),
 		CompactionPhases:          phases,
 		MetadataCache:             counterVec("metadata_cache_requests_total", "Decoded metadata cache lookups.", "kind", "result"),
+		IndexPageReads:            counterVec("index_page_reads_total", "Index page reads by purpose and where the page came from: local (the operation's own pages), cache (shared page cache) or store (a range GET).", "reader", "source"),
 		CatalogRebuilds:           counterVec("catalog_rebuilds_total", "Catalog or candidate tree updates that rewrote the whole tree into a fresh pack.", "tree"),
 		CatalogTreePacks:          gaugeVec("catalog_tree_packs", "Objects holding the pages of the catalog or candidate tree (inventories excluded).", "tree"),
 		CatalogTreePages:          gaugeVec("catalog_tree_pages", "Pages of the catalog or candidate tree.", "tree"),

@@ -278,4 +278,14 @@ func TestRepackCutsStreamsIntoFullObjects(t *testing.T) {
 		t.Logf("%s: sections in KiB %v", name, layout)
 	}
 	checkCatalog(t, e)
+	// Index page reads are counted by purpose.
+	for _, reader := range []string{"repack_start", "publish"} {
+		var n float64
+		for _, source := range []string{"local", "cache", "store"} {
+			n += metricValue(t, e.metrics.IndexPageReads.WithLabelValues(reader, source))
+		}
+		if n == 0 {
+			t.Errorf("no index page reads counted for %s", reader)
+		}
+	}
 }

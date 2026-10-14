@@ -157,7 +157,7 @@ func (e *Engine) refreshTails(ctx context.Context, roots map[string]blob) error 
 		workers.Add(1)
 		go func() {
 			defer workers.Done()
-			r := &Engine{store: e.store, metrics: e.metrics, options: e.options, sharedNodes: e.sharedNodes, nodeCache: make(map[blob]indexNode)}
+			r := &Engine{nodeReader: "tails", store: e.store, metrics: e.metrics, options: e.options, sharedNodes: e.sharedNodes, nodeCache: make(map[blob]indexNode)}
 			for w := range work {
 				leaf, err := r.rightmostLeaf(ctx, w.root)
 				if err != nil {

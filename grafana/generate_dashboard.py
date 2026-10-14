@@ -163,6 +163,13 @@ panel("Request latency", [
     (f"histogram_quantile(0.5, sum by (le) (rate(metricq_db_store_put_seconds_bucket{T}[$__rate_interval])))", "PUT p50"),
     (f"histogram_quantile(0.99, sum by (le) (rate(metricq_db_store_put_seconds_bucket{T}[$__rate_interval])))", "PUT p99")], "s")
 panel("Errors", [(f"sum by (op, kind) (rate(metricq_db_store_errors_total{T}[$__rate_interval]))", "{{op}} {{kind}}")], "reqps")
+panel("Index page GETs by reader", [("sum by (reader) (rate(metricq_db_index_page_reads_total{source=\"store\",token=\"$token\"}[$__rate_interval]))", "{{reader}}")],
+      "reqps", stack=True,
+      description="Index pages fetched from the store (range GETs), by what read them: query, checkpoint tails, compaction "
+                  "selection (merge, fragment, repack start objects, repack stream walk), copy, publication.")
+panel("Index page reads by source", [(f"sum by (source) (rate(metricq_db_index_page_reads_total{T}[$__rate_interval]))", "{{source}}")],
+      "reqps", stack=True,
+      description="All index page reads: local (pages the operation already holds), cache (shared page cache) or store (a range GET).")
 panel("Manifest size", [(f"max(metricq_db_store_manifest_bytes{T})", "manifest")], "bytes",
       description="Written with every checkpoint and maintenance publication.")
 

@@ -154,16 +154,23 @@ func (e *Engine) readNode(ctx context.Context, r blob) (indexNode, error) {
 			return indexNode{}, fmt.Errorf("index operation budget exceeded")
 		}
 	}
+	reader := e.nodeReader
+	if reader == "" {
+		reader = "other"
+	}
 	if n, ok := e.tailPages[r]; ok {
+		e.metrics.IndexPageReads.WithLabelValues(reader, "local").Inc()
 		return n, nil
 	}
 	if e.nodeCache != nil {
 		if n, ok := e.nodeCache[r]; ok {
+			e.metrics.IndexPageReads.WithLabelValues(reader, "local").Inc()
 			return n, nil
 		}
 	}
 	if e.sharedNodes != nil {
 		if n, ok := e.sharedNodes.get(r); ok {
+			e.metrics.IndexPageReads.WithLabelValues(reader, "cache").Inc()
 			e.metrics.MetadataCache.WithLabelValues("index", "hit").Inc()
 			if e.nodeCache != nil {
 				e.nodeCache[r] = n
@@ -171,6 +178,7 @@ func (e *Engine) readNode(ctx context.Context, r blob) (indexNode, error) {
 			return n, nil
 		}
 	}
+	e.metrics.IndexPageReads.WithLabelValues(reader, "store").Inc()
 	e.metrics.MetadataCache.WithLabelValues("index", "miss").Inc()
 	b, err := e.readBlob(ctx, r)
 	if err != nil {

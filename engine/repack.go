@@ -341,6 +341,9 @@ func (e *Engine) selectRepack(ctx context.Context, snapshot *Engine, options Com
 	// robin and add their due merges, skipping streams unchanged since a walk
 	// found nothing due.
 	if !options.LocalityDisabled && !(limited && len(inputs) > 0) {
+		role := snapshot.nodeReader
+		snapshot.nodeReader = "repack_walk"
+		defer func() { snapshot.nodeReader = role }()
 		if e.repackClean == nil {
 			e.repackClean = make(map[string]blob)
 		}

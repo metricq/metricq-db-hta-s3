@@ -111,7 +111,7 @@ func NewMetrics(r prometheus.Registerer) *Metrics {
 		CompactionDeferredMerges:  counter("compaction_deferred_merges_total", "Large tail merge candidates deferred until sufficient growth or age."),
 		CompactionPhases:          phases,
 		MetadataCache:             counterVec("metadata_cache_requests_total", "Decoded metadata cache lookups.", "kind", "result"),
-		CompactionRepackPlans:     counterVec("compaction_repack_plans_total", "Stream plans of repack selection: cached (index root unchanged), incremental (only entries appended since the last plan read) or full (the stream read behind its full prefix).", "result"),
+		CompactionRepackPlans:     counterVec("compaction_repack_plans_total", "Stream plans of repack selection: cached (stream unchanged since its last plan), layout (from the stream layout kept by checkpoints and jobs; reads only due runs) or read (the stream read from the index behind its full prefix).", "result"),
 		IndexPageReads:            counterVec("index_page_reads_total", "Index page reads by purpose (query, tails, merge_select, fragment_select, repack_start, repack_walk, copy, publish, maintenance_edit, other: checkpoints and the rest) and where the page came from: local (the operation's own pages), cache (shared page cache) or store (a range GET).", "reader", "source"),
 		CatalogRebuilds:           counterVec("catalog_rebuilds_total", "Catalog or candidate tree updates that rewrote the whole tree into a fresh pack.", "tree"),
 		CatalogTreePacks:          gaugeVec("catalog_tree_packs", "Objects holding the pages of the catalog or candidate tree (inventories excluded).", "tree"),

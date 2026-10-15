@@ -212,9 +212,10 @@ type Engine struct {
 	idlePass              uint64                   // completed candidate scan passes
 	repackCursor          string
 	repackStreamCursor    string
-	repackDueSince        time.Time             // first selection that left due merges waiting
-	repackPlans           map[string]repackPlan // per stream, its plan at an index root
-	repackCuts            map[blob]bool         // first blocks of planned runs to cut into full objects
+	repackDueSince        time.Time                // first selection that left due merges waiting
+	layoutMu              sync.Mutex               // guards repackLayouts and repackAfter
+	repackLayouts         map[string]*streamLayout // per stream, what repack planning knows
+	repackCuts            map[blob]bool            // first blocks of planned runs to cut into full objects
 	fragmentScans         map[string]fragmentScan
 	fragmentCursor        string
 	compactionObjectLimit int // source objects per job, adapted to the catalog budget
@@ -852,6 +853,14 @@ func (e *Engine) Flush(ctx context.Context) (err error) {
 	refDelta := make(map[string]int64)
 	var publishedData, publishedIndex *pack
 	var stagedTails map[string]tailPath
+	// Index changes for the repack stream layouts, applied once published.
+	type layoutChange struct {
+		key            string
+		previous, root blob
+		items          []indexEntry
+		replaceTail    bool
+	}
+	var layoutChanges []layoutChange
 	var version string
 	err = func() error {
 		// Streams in metric/level order pack hot metrics into dedicated objects
@@ -870,6 +879,7 @@ func (e *Engine) Flush(ctx context.Context) (err error) {
 			publishedIndex = indexPack
 			indexPack.nodes = make(map[blob]indexNode)
 			stagedTails = make(map[string]tailPath)
+			layoutChanges = nil
 			type indexUpdate struct {
 				items       []indexEntry
 				replaceTail bool
@@ -982,9 +992,13 @@ func (e *Engine) Flush(ctx context.Context) (err error) {
 			for i, update := range updates {
 				metric, level := streams[i].metric, streams[i].level
 				indexPack.metric, indexPack.level = metric, level
-				root, appendErr := e.updateIndex(ctx, next.Roots[metric][level], update.items, indexPack, update.replaceTail)
+				previous := next.Roots[metric][level]
+				root, appendErr := e.updateIndex(ctx, previous, update.items, indexPack, update.replaceTail)
 				if appendErr != nil {
 					return appendErr
+				}
+				if len(update.items) > 0 {
+					layoutChanges = append(layoutChanges, layoutChange{streamKey(metric, level), previous, root, update.items, update.replaceTail})
 				}
 				next.Roots[metric][level] = root
 				next.rootDirty[metric] = true
@@ -1110,6 +1124,11 @@ func (e *Engine) Flush(ctx context.Context) (err error) {
 		e.pinTailPaths(stagedTails, publishedIndex.nodes)
 		publishedIndex.nodes = nil
 	}
+	e.layoutMu.Lock()
+	for _, c := range layoutChanges {
+		e.layoutAppended(c.key, c.previous, c.root, c.items, c.replaceTail)
+	}
+	e.layoutMu.Unlock()
 	e.commitHold(plan)
 	e.metrics.FlushRecords.Add(float64(e.flushing.len()))
 	e.flushing, e.flushingBytes = pendingSet{}, 0

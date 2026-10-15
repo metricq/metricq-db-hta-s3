@@ -314,10 +314,10 @@ func TestRepackCutsStreamsIntoFullObjects(t *testing.T) {
 	}
 }
 
-// Incremental plans equal plans read from scratch, across checkpoints that
-// append full and partial blocks and jobs that move blocks; after a
-// checkpoint, planning reads only the entries behind the last planned one.
-func TestRepackIncrementalPlansMatchFullPlans(t *testing.T) {
+// Plans from stream layouts kept by checkpoints and jobs equal plans read
+// from the index, across checkpoints that append full and partial blocks and
+// jobs that move blocks; they read only the blocks of due runs.
+func TestRepackLayoutPlansMatchReadPlans(t *testing.T) {
 	previousWait := repackMergeWait
 	repackMergeWait = 0
 	defer func() { repackMergeWait = previousWait }()
@@ -349,9 +349,9 @@ func TestRepackIncrementalPlansMatchFullPlans(t *testing.T) {
 		return out
 	}
 	n := 0
-	var incrementalPages, fullPages float64
-	incremental := func() float64 {
-		return metricValue(t, e.metrics.CompactionRepackPlans.WithLabelValues("incremental"))
+	var layoutPages, readPages float64
+	layoutPlans := func() float64 {
+		return metricValue(t, e.metrics.CompactionRepackPlans.WithLabelValues("layout"))
 	}
 	for step := 0; step < 480; step++ {
 		// Full blocks, partial blocks and partial tails in varying order.
@@ -384,27 +384,28 @@ func TestRepackIncrementalPlansMatchFullPlans(t *testing.T) {
 		}
 		before := pages()
 		got, gotCuts := plan()
-		incrementalPages += pages() - before
-		kept, keptAfter := e.repackPlans, e.repackAfter
-		e.repackPlans, e.repackAfter = nil, nil
+		layoutPages += pages() - before
+		e.layoutMu.Lock()
+		kept, keptAfter := e.repackLayouts, e.repackAfter
+		e.repackLayouts, e.repackAfter = nil, nil
+		e.layoutMu.Unlock()
 		before = pages()
 		want, wantCuts := plan()
-		fullPages += pages() - before
-		e.repackPlans, e.repackAfter = kept, keptAfter
+		readPages += pages() - before
+		e.layoutMu.Lock()
+		e.repackLayouts, e.repackAfter = kept, keptAfter
+		e.layoutMu.Unlock()
 		e.maintenanceMu.Unlock()
 		if !reflect.DeepEqual(keys(got), keys(want)) || !reflect.DeepEqual(gotCuts, wantCuts) {
-			t.Fatalf("step %d: incremental plan %v cuts %v, full plan %v cuts %v", step, keys(got), gotCuts, keys(want), wantCuts)
+			t.Fatalf("step %d: layout plan %v cuts %v, read plan %v cuts %v", step, keys(got), gotCuts, keys(want), wantCuts)
 		}
 	}
-	if incremental() < 50 {
-		t.Fatalf("only %v incremental plans", incremental())
+	if layoutPlans() < 200 {
+		t.Fatalf("only %v plans from layouts", layoutPlans())
 	}
-	// Plans after checkpoints read the entries behind the last planned one,
-	// not the stream behind its full prefix. The gain grows with the stream
-	// (here up to about 10 leaves): incremental plans read about 57 % of the
-	// pages after 480 steps, 39 % after 800.
-	if incrementalPages*3 > fullPages*2 {
-		t.Fatalf("incremental plans read %v index pages, full plans %v", incrementalPages, fullPages)
+	// Plans from layouts read index pages only for due runs.
+	if layoutPages*4 > readPages {
+		t.Fatalf("plans from layouts read %v index pages, plans read from the index %v", layoutPages, readPages)
 	}
-	t.Logf("incremental plans read %v index pages, full plans %v", incrementalPages, fullPages)
+	t.Logf("%v plans from layouts read %v index pages, plans read from the index %v", layoutPlans(), layoutPages, readPages)
 }

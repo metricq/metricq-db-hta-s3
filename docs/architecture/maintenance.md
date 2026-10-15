@@ -136,24 +136,24 @@ a job therefore also walks the streams round robin, at most 256 per job, and
 adds their due merges. It skips streams whose index root is unchanged since a
 walk found nothing due there.
 
-**Incremental plans.** A stream's plan (its due merges and where to cut
-them) depends only on its index. It is remembered together with the stream's
-index root and a summary of its sections behind the full prefix (size,
-largest block, time range) and reused while the root is unchanged. A
-checkpoint only appends, so after one the plan reads just the entries behind
-the last planned one, typically the rightmost leaf, and reads the blocks of
-a run that becomes due when it is due. A job that moves blocks of a stream
-forgets its plan, since it may change entries anywhere; a failed job forgets
-all plans; a plan whose last entry is no longer found, or now lies in the
-open suffix, is rebuilt from the index. Blocks stored contiguously behind the
-full prefix still belong to its last section. Before, every root change
-replanned the whole stream behind its full prefix: on the development
-database (6000 streams, a root change roughly every 20 minutes per raw stream,
-no queries) that was about 90,000 of 100,000-150,000 index page GETs per
-hour. Plans of windows that end before the stream's end (streams of more
-than 2048 blocks behind their full prefix) are not remembered.
-`compaction_repack_plans_total{result}` counts cached, incremental and full
-plans.
+**Stream layouts.** Planning needs a stream's sections behind its full
+prefix: their sizes, largest blocks and time ranges, and its open suffix. The
+database writes every change to them itself, so it keeps them in memory per
+stream (a few dozen bytes per section) instead of reading them back from the
+index. A checkpoint appends its entries or replaces a partial last entry; a
+job replaces whole sections or open entries by the entries it wrote. Planning
+then reads index pages only for the blocks of a run that is due, and keeps
+its plan until the next change. A stream is read from the index behind its
+full prefix after a restart, after a job took part of a section (a merge or
+rechunk, or a group cut to the job limits) or moved blocks within the full
+prefix, and when a run read for a plan does not match the layout; a failed
+job drops all layouts. Before, planning read every changed stream behind its
+full prefix: on the development database (6000 streams, a checkpoint change
+roughly every 20 minutes per raw stream, no queries) that was most of
+100,000-150,000 index page GETs per hour. Streams of more than 2048 blocks
+behind their full prefix are planned in windows and keep no layout.
+`compaction_repack_plans_total{result}` counts cached plans, plans from
+layouts and streams read.
 
 **Index packs.** Every job and checkpoint replaces index pages, so index packs
 become partly dead quickly and rank first in the candidate tree. If they came

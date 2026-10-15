@@ -173,7 +173,7 @@ This table is generated from `engine/metrics.go` by
 | `metricq_db_compaction_output_blocks_total` | counter |  | Copied, merged or repacked source replacements in successfully published jobs. |
 | `metricq_db_compaction_rechunked_blocks_total` | counter |  | Source blocks rewritten to move a fragment towards the end of its stream. |
 | `metricq_db_compaction_repack_jobs_total` | counter |  | Published jobs moving small or partly dead objects together with the due merges of their streams' sections into a nearly full object. |
-| `metricq_db_compaction_repack_plans_total` | counter | result | Stream plans of repack selection: cached (index root unchanged), incremental (only entries appended since the last plan read) or full (the stream read behind its full prefix). |
+| `metricq_db_compaction_repack_plans_total` | counter | result | Stream plans of repack selection: cached (stream unchanged since its last plan), layout (from the stream layout kept by checkpoints and jobs; reads only due runs) or read (the stream read from the index behind its full prefix). |
 | **Maintenance (deletion of retired and orphaned objects)** | | | |
 | `metricq_db_maintenance_delete_errors_total` | counter |  | Failed retired-object deletion attempts. |
 | `metricq_db_maintenance_delete_pending_objects` | gauge |  | Fully retired objects awaiting deletion, including reader-pinned objects. |

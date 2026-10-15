@@ -156,3 +156,72 @@ func TestQueryBudgetWaitsAndAvoidsHoldAndWait(t *testing.T) {
 		t.Fatalf("free %d", b.free)
 	}
 }
+
+func TestWindowRecords(t *testing.T) {
+	var records []hta.Record
+	for i := int64(1); i <= 10; i++ {
+		records = append(records, hta.Record{Time: 10 * i})
+	}
+	for _, c := range []struct {
+		begin, end  int64
+		first, last int64
+	}{{35, 65, 30, 70}, {40, 60, 30, 70}, {0, 5, 10, 10}, {200, 300, 100, 100}, {60, 40, 50, 50}} {
+		got := windowRecords(records, c.begin, c.end)
+		if len(got) == 0 || got[0].Time != c.first || got[len(got)-1].Time != c.last {
+			t.Errorf("window %d-%d: %v", c.begin, c.end, got)
+		}
+	}
+}
+
+// The size check counts the pending records of the window, not all pending
+// records of the stream: a short raw query over unflushed data answers as it
+// does after the flush.
+func TestShortRawQueryOverPendingRecords(t *testing.T) {
+	ctx := context.Background()
+	e, err := Open(ctx, newStore(), Options{WALDirectory: t.TempDir(), QueryMaxResponseBytes: 100_000}, testConfig, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer e.Close()
+	points := make([]hta.Point, 20_000)
+	for i := range points {
+		points[i] = hta.Point{Time: int64(i+1) * 10, Value: float64(i % 13)}
+	}
+	ingest(t, e, points...)
+	requests := []*metricq.HistoryRequest{
+		{Type: metricq.HistoryRequest_FLEX_TIMELINE, StartTime: 0, EndTime: 25},
+		{Type: metricq.HistoryRequest_FLEX_TIMELINE, StartTime: 100_000, EndTime: 100_025},
+		{Type: metricq.HistoryRequest_FLEX_TIMELINE, StartTime: 199_990, EndTime: 300_000},
+	}
+	var before []*metricq.HistoryResponse
+	for _, req := range requests {
+		r, err := e.Query(ctx, "x", req)
+		if err != nil {
+			t.Fatalf("pending records, %d-%d: %v", req.StartTime, req.EndTime, err)
+		}
+		before = append(before, r)
+	}
+	if err := e.Flush(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for i, req := range requests {
+		r, err := e.Query(ctx, "x", req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !proto.Equal(r, before[i]) {
+			t.Fatalf("%d-%d: %d values before the flush, %d after", req.StartTime, req.EndTime, len(before[i].Value), len(r.Value))
+		}
+	}
+	// The whole stream still exceeds the limit while it is pending.
+	ingest(t, e, func() []hta.Point {
+		more := make([]hta.Point, 20_000)
+		for i := range more {
+			more[i] = hta.Point{Time: int64(20_000+i+1) * 10, Value: float64(i % 13)}
+		}
+		return more
+	}()...)
+	if _, err := e.Query(ctx, "x", &metricq.HistoryRequest{Type: metricq.HistoryRequest_FLEX_TIMELINE, StartTime: 200_000, EndTime: 1 << 40}); err == nil || !strings.Contains(err.Error(), "would exceed") {
+		t.Fatalf("expected rejection of the pending stream: %v", err)
+	}
+}

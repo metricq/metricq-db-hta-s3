@@ -63,10 +63,15 @@ func (q *reader) records(level, begin, end int64) ([]hta.Record, error) {
 			entries = append(entries, next)
 		}
 	}
+	// Records not yet in blocks: only those of the window and one on either
+	// side (the raw boundary values) are needed; a held stream may have an
+	// hour of them.
+	flushing := windowRecords(q.e.flushing.stream(q.metric, level), lookupBegin, lookupEnd)
+	pending := windowRecords(q.e.pending.stream(q.metric, level), lookupBegin, lookupEnd)
 	// Size the read from the index before fetching anything: reject requests
 	// whose response would be too large and reserve memory for the decoded
 	// records, which are held twice (block cache of this query and result).
-	total := len(q.e.flushing.stream(q.metric, level)) + len(q.e.pending.stream(q.metric, level))
+	total := len(flushing) + len(pending)
 	refs := make([]blob, 0, len(entries))
 	seenEntry := make(map[blob]bool, len(entries))
 	for _, entry := range entries {
@@ -98,9 +103,18 @@ func (q *reader) records(level, begin, end int64) ([]hta.Record, error) {
 			out = append(out, entries...)
 		}
 	}
-	out = append(out, q.e.flushing.stream(q.metric, level)...)
-	out = append(out, q.e.pending.stream(q.metric, level)...)
+	out = append(out, flushing...)
+	out = append(out, pending...)
 	return out, nil
+}
+
+// windowRecords returns the records (ordered by time) starting in [begin,
+// end], with the record before and the one after the window.
+func windowRecords(records []hta.Record, begin, end int64) []hta.Record {
+	first := sort.Search(len(records), func(i int) bool { return records[i].Time >= begin })
+	last := sort.Search(len(records), func(i int) bool { return records[i].Time > end })
+	from, to := max(first-1, 0), min(last+1, len(records))
+	return records[from:max(to, from)]
 }
 
 // fetchBlocks resolves each ref from the per-query cache, then the

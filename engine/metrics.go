@@ -14,6 +14,7 @@ type Metrics struct {
 	CompactionPhases                                                                        *prometheus.HistogramVec
 	MetadataCache                                                                           *prometheus.CounterVec
 	IndexPageReads                                                                          *prometheus.CounterVec
+	CompactionRepackPlans                                                                   *prometheus.CounterVec
 	CatalogRebuilds                                                                         *prometheus.CounterVec
 	CatalogTreePacks, CatalogTreePages                                                      *prometheus.GaugeVec
 	ObjectFill                                                                              *prometheus.GaugeVec
@@ -110,14 +111,15 @@ func NewMetrics(r prometheus.Registerer) *Metrics {
 		CompactionDeferredMerges:  counter("compaction_deferred_merges_total", "Large tail merge candidates deferred until sufficient growth or age."),
 		CompactionPhases:          phases,
 		MetadataCache:             counterVec("metadata_cache_requests_total", "Decoded metadata cache lookups.", "kind", "result"),
-		IndexPageReads:            counterVec("index_page_reads_total", "Index page reads by purpose and where the page came from: local (the operation's own pages), cache (shared page cache) or store (a range GET).", "reader", "source"),
+		CompactionRepackPlans:     counterVec("compaction_repack_plans_total", "Stream plans of repack selection: cached (index root unchanged), incremental (only entries appended since the last plan read) or full (the stream read behind its full prefix).", "result"),
+		IndexPageReads:            counterVec("index_page_reads_total", "Index page reads by purpose (query, tails, merge_select, fragment_select, repack_start, repack_walk, copy, publish, maintenance_edit, other: checkpoints and the rest) and where the page came from: local (the operation's own pages), cache (shared page cache) or store (a range GET).", "reader", "source"),
 		CatalogRebuilds:           counterVec("catalog_rebuilds_total", "Catalog or candidate tree updates that rewrote the whole tree into a fresh pack.", "tree"),
 		CatalogTreePacks:          gaugeVec("catalog_tree_packs", "Objects holding the pages of the catalog or candidate tree (inventories excluded).", "tree"),
 		CatalogTreePages:          gaugeVec("catalog_tree_pages", "Pages of the catalog or candidate tree.", "tree"),
 		CompactionInputBytes:      counterVec("compaction_input_bytes_total", "Bytes of source blocks moved by published compaction jobs, by job kind (merge, rechunk, repack).", "kind"),
 		OrphanCandidates:          gauge("orphan_candidates", "Objects no manifest reached in the last orphan sweep; retired if the next sweep, an hour later, confirms them."),
 		OrphansRetired:            counter("orphans_retired_total", "Objects left by interrupted checkpoints or jobs and moved to the trash journal by the orphan sweep."),
-		ObjectFill:                gaugeVec("storage_object_fill", "Data, index and catalog objects by live bytes relative to compaction_output_object_bytes; fill is the lower bound in percent of a 10 % bucket, 100 holds objects at or above it. Catalog objects are counted hourly by the orphan sweep.", "kind", "fill"),
+		ObjectFill:                gaugeVec("storage_object_fill", "Data, index and catalog objects by live bytes relative to compaction_output_object_bytes, in 10 % buckets from 0-10% to 90-100%; the last includes full objects, which a cut leaves a block short of the target, and objects above it. Catalog objects are counted hourly by the orphan sweep.", "kind", "fill"),
 		Config:                    gaugeVec("config", "Configured engine option values; the parameter label names the option.", "parameter"),
 		IngestBatches:             counter("ingest_batches_total", "Group-committed delivery batches (one WAL fsync each)."),
 		IngestBatchSize:           batchSize,

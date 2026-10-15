@@ -136,14 +136,24 @@ a job therefore also walks the streams round robin, at most 256 per job, and
 adds their due merges. It skips streams whose index root is unchanged since a
 walk found nothing due there.
 
-**Plans per index root.** A stream's plan (its due merges and where to cut
-them) depends only on its index, so it is remembered together with the
-stream's index root and reused until a checkpoint or job changes the root.
-While due merges wait for a nearly full job, every selection would otherwise
-read the same index pages again: on the development database (6000 streams,
-no queries) that was about 88,000 of 100,000 index page GETs per hour. Plans
-of windows that end before the stream's end (streams of more than 2048 blocks
-behind their full prefix) are not remembered.
+**Incremental plans.** A stream's plan (its due merges and where to cut
+them) depends only on its index. It is remembered together with the stream's
+index root and a summary of its sections behind the full prefix (size,
+largest block, time range) and reused while the root is unchanged. A
+checkpoint only appends, so after one the plan reads just the entries behind
+the last planned one, typically the rightmost leaf, and reads the blocks of
+a run that becomes due when it is due. A job that moves blocks of a stream
+forgets its plan, since it may change entries anywhere; a failed job forgets
+all plans; a plan whose last entry is no longer found, or now lies in the
+open suffix, is rebuilt from the index. Blocks stored contiguously behind the
+full prefix still belong to its last section. Before, every root change
+replanned the whole stream behind its full prefix: on the development
+database (6000 streams, a root change roughly every 20 minutes per raw stream,
+no queries) that was about 90,000 of 100,000-150,000 index page GETs per
+hour. Plans of windows that end before the stream's end (streams of more
+than 2048 blocks behind their full prefix) are not remembered.
+`compaction_repack_plans_total{result}` counts cached, incremental and full
+plans.
 
 **Index packs.** Every job and checkpoint replaces index pages, so index packs
 become partly dead quickly and rank first in the candidate tree. If they came

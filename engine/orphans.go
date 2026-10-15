@@ -3,7 +3,6 @@ package engine
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"sort"
 	"strings"
@@ -123,7 +122,7 @@ func (e *Engine) setCatalogFill(catalogBytes map[string]int64) {
 		fill[fillBucket(bytes, target)]++
 	}
 	for b := 0; b < fillBuckets; b++ {
-		e.metrics.ObjectFill.WithLabelValues("catalog", fmt.Sprintf("%03d", 10*b)).Set(float64(fill[b]))
+		e.metrics.ObjectFill.WithLabelValues("catalog", fillLabel(b)).Set(float64(fill[b]))
 	}
 }
 

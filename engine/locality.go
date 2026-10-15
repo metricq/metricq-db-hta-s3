@@ -33,13 +33,20 @@ func localitySections(entries []indexEntry) []localitySection {
 	return sections
 }
 
-// fullSectionBytes is the size from which a section of a stream counts as
-// full: copying cuts a run where the next block no longer fits, so a cut
-// section may lack up to one block (the stream's largest, at least a
-// sixteenth of the target is allowed for). Full sections are final and never
-// merged again; counting a cut section as not full would rewrite it forever.
+// fullSectionBytes is the size from which a section whose largest block has
+// the given size counts as full: copying cuts a run where the next block no
+// longer fits, so a cut section may lack up to about one block (its largest,
+// at least a sixteenth of the target is allowed for). Full sections are final
+// and never merged again; counting a cut section as not full would rewrite it
+// forever. The bound depends on the section alone, so every plan of a stream
+// agrees on it, whichever part of the stream it reads.
 func fullSectionBytes(target, block int64) int64 {
 	return target - max(block, target/16)
+}
+
+// full tells whether the section is full (see fullSectionBytes).
+func (s localitySection) full(target int64) bool {
+	return s.bytes >= fullSectionBytes(target, s.block)
 }
 
 // largestBlock is the largest block of the sections.
@@ -69,12 +76,11 @@ func largestBlock(sections []localitySection) int64 {
 // themselves until they match it. Sizes need not fall into fixed tiers, so
 // checkpoint sections of varying size do not block each other.
 func localityMerge(sections []localitySection, target int64, fanIn int) (int, int) {
-	full := fullSectionBytes(target, largestBlock(sections))
 	for i := range sections {
 		end := i
 		var total, largest int64
 		for j := i; j < len(sections); j++ {
-			if sections[j].bytes >= full {
+			if sections[j].full(target) {
 				if j > i {
 					end = j + 1
 				}

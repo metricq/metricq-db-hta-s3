@@ -78,11 +78,79 @@ func mergeCascade(sections []localitySection, target int64, fanIn int) [][2]int 
 }
 
 // repackPlan is the plan of one stream at one index root: the blocks the
-// merge rule moves and the first blocks of runs to cut into full objects.
+// merge rule moves and the first blocks of runs to cut into full objects,
+// together with what the next plan builds on: the sections behind the
+// stream's prefix of full sections (open suffix excluded) and the last entry
+// they cover.
 type repackPlan struct {
-	root blob
-	due  []BlockInfo
-	cuts []blob
+	root     blob
+	due      []BlockInfo
+	cuts     []blob
+	sections []planSection
+	tail     indexEntry
+}
+
+// planSection summarizes a section of a planned stream: its place among
+// the entries behind the full prefix (begin and end), size, largest block,
+// time range and last entry.
+type planSection struct {
+	localitySection
+	first, last int64
+	tail        indexEntry
+}
+
+// repackPrefix is where a stream continues behind its prefix of full
+// sections: the time after it and its last entry. Entries stored
+// contiguously behind that entry still belong to its section.
+type repackPrefix struct {
+	after int64
+	last  indexEntry
+}
+
+// contiguous tells whether entry is stored right behind prev, so that both
+// belong to one section (see localitySections).
+func contiguous(prev, entry *indexEntry) bool {
+	return entry.Blob.Key == prev.Blob.Key && entry.Blob.Offset >= prev.Blob.Offset && entry.Blob.Offset-prev.Blob.Offset-prev.Blob.Length <= maxCoalescedGap
+}
+
+// absorbPrefix removes the leading entries stored contiguously behind the
+// stream's full prefix: they belong to its last, full section.
+func (e *Engine) absorbPrefix(key string, entries []indexEntry) []indexEntry {
+	prefix, ok := e.repackAfter[key]
+	if !ok {
+		return entries
+	}
+	for len(entries) > 0 && contiguous(&prefix.last, &entries[0]) {
+		prefix = repackPrefix{after: entries[0].Last + 1, last: entries[0]}
+		entries = entries[1:]
+	}
+	e.repackAfter[key] = prefix
+	return entries
+}
+
+// appendPlanSections adds entries, which follow prev (nil for none) and take
+// positions from base on, to the sections, extending the last section while
+// they are stored contiguously behind it.
+func appendPlanSections(sections []planSection, prev *indexEntry, entries []indexEntry, base int) []planSection {
+	for i := range entries {
+		entry := &entries[i]
+		if n := len(sections); n > 0 && prev != nil && sections[n-1].end == base+i && contiguous(prev, entry) {
+			last := &sections[n-1]
+			last.end = base + i + 1
+			last.bytes += entry.Blob.Length
+			last.block = max(last.block, entry.Blob.Length)
+			last.last = entry.Last
+			last.tail = *entry
+		} else {
+			sections = append(sections, planSection{localitySection{begin: base + i, end: base + i + 1, bytes: entry.Blob.Length, block: entry.Blob.Length}, entry.First, entry.Last, *entry})
+		}
+		prev = entry
+	}
+	return sections
+}
+
+func sameEntry(a, b indexEntry) bool {
+	return a.First == b.First && a.Last == b.Last && a.Blob == b.Blob
 }
 
 // repackStreamPlan returns the blocks of one stream that a repack job moves
@@ -90,11 +158,14 @@ type repackPlan struct {
 // merge rule merges now. The open suffix (partial tail blocks) is left to
 // merging; a prefix of full sections is remembered and not read again.
 //
-// The plan depends only on the stream's index, so it is remembered per
-// root: selections repeat while due merges wait for a nearly full job, and
-// planning again read the same pages each time, most index GETs of a
-// database without queries. A plan of a window that ended before the
-// stream's end is not remembered, as the next one starts further on.
+// Planning is incremental. A plan is remembered per stream; at the same
+// index root it is reused, and after a checkpoint appended blocks only the
+// entries behind the last planned one are read (the rightmost path, instead
+// of the whole stream behind its full prefix). A run that becomes due is read
+// when it is due. Jobs that move blocks of a stream forget its plan, as they
+// change entries anywhere; a plan whose last entry is no longer found is
+// rebuilt from the index. Planning every stream anew after each checkpoint
+// was most index GETs of a database without queries.
 func (e *Engine) repackStreamPlan(ctx context.Context, snapshot *Engine, options CompactionOptions, metric string, level int64) ([]BlockInfo, error) {
 	if options.LocalityDisabled {
 		return nil, nil
@@ -104,57 +175,137 @@ func (e *Engine) repackStreamPlan(ctx context.Context, snapshot *Engine, options
 		return nil, nil
 	}
 	key := streamKey(metric, level)
-	if plan, ok := e.repackPlans[key]; ok && plan.root == root {
-		e.noteCuts(plan.cuts)
-		return plan.due, nil
-	}
-	after, ok := e.repackAfter[key]
-	if !ok {
-		after = math.MinInt64
+	previous, known := e.repackPlans[key]
+	if known && previous.root == root {
+		e.metrics.CompactionRepackPlans.WithLabelValues("cached").Inc()
+		e.noteCuts(previous.cuts)
+		return previous.due, nil
 	}
 	limit := repackStreamEntries
-	entries, err := snapshot.indexEntriesAfter(ctx, root, after, limit)
-	if err != nil {
-		return nil, err
-	}
-	if len(entries) < limit {
-		blocks, _ := openSuffix(entries)
-		entries = entries[:len(entries)-blocks]
-	}
-	target := options.OutputObjectBytes
-	sections := localitySections(entries)
-	full := fullSectionBytes(target, largestBlock(sections))
-	next := after
-	for _, sec := range sections {
-		if sec.bytes < full || entries[sec.end-1].Last == math.MaxInt64 {
-			break
+	// fresh holds the entries read now, at positions from freshStart on.
+	var sections []planSection
+	var fresh []indexEntry
+	freshStart := 0
+	var tail indexEntry
+	complete := true
+	incremental := false
+	if known && previous.tail.Blob.Key != "" {
+		entries, err := snapshot.indexEntriesAfter(ctx, root, previous.tail.First, limit)
+		if err != nil {
+			return nil, err
 		}
-		next = entries[sec.end-1].Last + 1
+		// The open suffix must still begin behind the last planned entry;
+		// otherwise checkpoints rewrote the stream's tail differently.
+		open, _ := openSuffix(entries)
+		if len(entries) > 0 && len(entries) < limit && sameEntry(entries[0], previous.tail) && open < len(entries) {
+			incremental = true
+			fresh = entries[1 : len(entries)-open]
+			count := 0
+			if n := len(previous.sections); n > 0 {
+				count = previous.sections[n-1].end
+			} else {
+				fresh = e.absorbPrefix(key, fresh)
+			}
+			sections = appendPlanSections(append([]planSection(nil), previous.sections...), &previous.tail, fresh, count)
+			freshStart = count
+			tail = previous.tail
+		}
 	}
-	if e.repackAfter == nil {
-		e.repackAfter = make(map[string]int64)
+	if !incremental {
+		after := int64(math.MinInt64)
+		if prefix, ok := e.repackAfter[key]; ok {
+			after = prefix.after
+		}
+		entries, err := snapshot.indexEntriesAfter(ctx, root, after, limit)
+		if err != nil {
+			return nil, err
+		}
+		if len(entries) < limit {
+			blocks, _ := openSuffix(entries)
+			entries = entries[:len(entries)-blocks]
+		} else {
+			complete = false
+		}
+		entries = e.absorbPrefix(key, entries)
+		fresh = entries
+		sections = appendPlanSections(nil, nil, entries, 0)
 	}
-	e.repackAfter[key] = next
+	if len(fresh) > 0 {
+		tail = fresh[len(fresh)-1]
+	} else if prefix, ok := e.repackAfter[key]; ok && prefix.last.Last > tail.Last {
+		// Everything read belonged to the full prefix.
+		tail = prefix.last
+	}
+	result := "full"
+	if incremental {
+		result = "incremental"
+	}
+	e.metrics.CompactionRepackPlans.WithLabelValues(result).Inc()
+	target := options.OutputObjectBytes
+	// Leading full sections are final: remember where the stream continues.
+	window := make([]localitySection, len(sections))
+	for i, sec := range sections {
+		window[i] = sec.localitySection
+	}
+	drop := 0
+	for drop < len(sections) && sections[drop].full(target) && sections[drop].last != math.MaxInt64 {
+		if e.repackAfter == nil {
+			e.repackAfter = make(map[string]repackPrefix)
+		}
+		e.repackAfter[key] = repackPrefix{after: sections[drop].last + 1, last: sections[drop].tail}
+		drop++
+	}
+	if drop > 0 {
+		shift := sections[drop-1].end
+		sections = append([]planSection(nil), sections[drop:]...)
+		for i := range sections {
+			sections[i].begin -= shift
+			sections[i].end -= shift
+		}
+		freshStart -= shift
+		window = window[drop:]
+	}
+	for i := range window {
+		window[i].begin, window[i].end = i, i+1
+	}
 	var out []BlockInfo
 	var cuts []blob
-	for _, run := range mergeCascade(sections, target, options.LocalityFanIn) {
-		run := entries[sections[run[0]].begin:sections[run[1]-1].end]
+	for _, run := range mergeCascade(window, target, options.LocalityFanIn) {
+		from, to := sections[run[0]].begin, sections[run[1]-1].end
+		var entries []indexEntry
+		if from >= freshStart {
+			entries = fresh[from-freshStart : to-freshStart]
+		} else {
+			// The run reaches into sections planned before: read it now.
+			var err error
+			entries, err = snapshot.indexEntriesAfter(ctx, root, sections[run[0]].first, to-from)
+			if err != nil {
+				return nil, err
+			}
+			if len(entries) != to-from || entries[0].First != sections[run[0]].first || entries[len(entries)-1].Last != sections[run[1]-1].last {
+				// The index no longer matches the plan: plan anew.
+				delete(e.repackPlans, key)
+				return e.repackStreamPlan(ctx, snapshot, options, metric, level)
+			}
+		}
 		var bytes int64
-		for _, entry := range run {
+		for _, entry := range entries {
 			out = append(out, BlockInfo{Metric: metric, Level: level, Entry: entry})
 			bytes += entry.Blob.Length
 		}
 		if bytes >= target {
 			// Copying cuts the run into full objects from its first block on.
-			cuts = append(cuts, run[0].Blob)
+			cuts = append(cuts, entries[0].Blob)
 		}
 	}
 	e.noteCuts(cuts)
-	if len(entries) < limit {
+	if complete {
 		if e.repackPlans == nil {
 			e.repackPlans = make(map[string]repackPlan)
 		}
-		e.repackPlans[key] = repackPlan{root: root, due: out, cuts: cuts}
+		e.repackPlans[key] = repackPlan{root: root, due: out, cuts: cuts, sections: sections, tail: tail}
+	} else {
+		delete(e.repackPlans, key)
 	}
 	return out, nil
 }

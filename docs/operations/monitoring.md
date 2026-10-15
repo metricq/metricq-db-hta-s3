@@ -132,25 +132,25 @@ This table is generated from `engine/metrics.go` by
 | `metricq_db_store_manifest_bytes` | gauge |  | Size of the last published manifest. |
 | `metricq_db_store_put_seconds` | histogram |  | Backend PUT latency including failures. |
 | `metricq_db_store_requests_total` | counter | op, kind | Object store requests by operation and object kind. |
-| **Metadata cache** | | | |
+| **Metadata cache and index reads** | | | |
+| `metricq_db_index_page_reads_total` | counter | reader, source | Index page reads by purpose (query, tails, merge_select, fragment_select, repack_start, repack_walk, copy, publish, maintenance_edit, other: checkpoints and the rest) and where the page came from: local (the operation's own pages), cache (shared page cache) or store (a range GET). |
 | `metricq_db_metadata_cache_requests_total` | counter | kind, result | Decoded metadata cache lookups. |
-| `metricq_db_index_page_reads_total` | counter | reader, source | Index page reads by purpose (`query`, `tails`, `merge_select`, `fragment_select`, `repack_start`, `repack_walk`, `copy`, `publish`, `maintenance_edit`, `other`) and origin (`local`, `cache`, `store`). |
-| `metricq_db_catalog_tree_packs` | gauge | tree | Objects holding the pages of the catalog or candidate tree (inventories excluded); a rebuild keeps it at most 16. |
-| `metricq_db_catalog_tree_pages` | gauge | tree | Pages of the catalog or candidate tree. |
-| `metricq_db_catalog_rebuilds_total` | counter | tree | Tree updates that rewrote the whole tree into a fresh pack. |
 | **Storage state** | | | |
 | `metricq_db_storage_data_sections` | gauge |  | Contiguous runs of consecutive blocks of one stream within one object; range requests to read every stream in full. |
 | `metricq_db_storage_dead_bytes` | gauge |  | Unreferenced bytes inside partially live data/index objects. |
 | `metricq_db_storage_fragment_blocks` | gauge |  | Small data blocks followed by a newer block of their stream; compaction work. |
 | `metricq_db_storage_fragmentation_ratio` | gauge |  | Data sections relative to one per stream plus one per compaction_output_object_bytes of data; about 1 is ideal, open tails add up to one per stream. |
 | `metricq_db_storage_live_bytes` | gauge |  | Referenced compressed data/index bytes in the maintenance catalog. |
+| `metricq_db_storage_object_fill` | gauge | kind, fill | Data, index and catalog objects by live bytes relative to compaction_output_object_bytes, in 10 % buckets from 0-10% to 90-100%; the last includes full objects, which a cut leaves a block short of the target, and objects above it. Catalog objects are counted hourly by the orphan sweep. |
 | `metricq_db_storage_objects` | gauge |  | Data and index objects tracked by the maintenance catalog. |
-| `metricq_db_storage_object_fill` | gauge | kind, fill | Data, index and catalog objects by live bytes relative to `compaction_output_object_bytes`; `fill` is the upper bound in percent of a 10 % bucket: `100` holds objects above 90 %, including full ones, which a cut leaves a block short of the target, and `000` objects without live bytes. Data and index objects are counted once and then updated with every catalog change (recounted when the output object size changes); catalog objects (tree and inventory packs) are counted at maintenance start and by the hourly orphan sweep. |
-| `metricq_db_compaction_input_bytes_total` | counter | kind | Bytes of source blocks moved by published compaction jobs, by kind: `merge`, `rechunk`, `repack`. |
 | `metricq_db_storage_small_block_bytes` | gauge |  | Compressed bytes in live data blocks below 1024 records. |
 | `metricq_db_storage_small_blocks` | gauge |  | Live data blocks below 1024 records, including single stream tails. |
 | `metricq_db_storage_streams` | gauge |  | Streams (metric and HTA level) with published data. |
 | `metricq_db_storage_tail_blocks` | gauge |  | Partial blocks at the end of streams that together fit into one block: open tails, filled by later records or a deferred merge, not compaction work. |
+| **Catalog** | | | |
+| `metricq_db_catalog_rebuilds_total` | counter | tree | Catalog or candidate tree updates that rewrote the whole tree into a fresh pack. |
+| `metricq_db_catalog_tree_packs` | gauge | tree | Objects holding the pages of the catalog or candidate tree (inventories excluded). |
+| `metricq_db_catalog_tree_pages` | gauge | tree | Pages of the catalog or candidate tree. |
 | **Compaction** | | | |
 | `metricq_db_compaction_active` | gauge |  | One while a background compaction job runs. |
 | `metricq_db_compaction_candidate_objects` | gauge |  | Tracked candidate objects, including cooldown and single tails. |
@@ -159,6 +159,7 @@ This table is generated from `engine/metrics.go` by
 | `metricq_db_compaction_idle_candidate_skips_total` | counter |  | Candidate visits skipped without a catalog read: the candidate and its streams are unchanged since a scan found no work. |
 | `metricq_db_compaction_idle_candidates` | gauge |  | Candidates remembered as having no work, mostly objects holding only open stream tails. |
 | `metricq_db_compaction_input_blocks_total` | counter |  | Source blocks in successfully published jobs. |
+| `metricq_db_compaction_input_bytes_total` | counter | kind | Bytes of source blocks moved by published compaction jobs, by job kind (merge, rechunk, repack). |
 | `metricq_db_compaction_io_read_bytes_total` | counter |  | Compressed data/index bytes read by compaction. |
 | `metricq_db_compaction_io_write_bytes_total` | counter |  | Data/index pack bytes uploaded by compaction. |
 | `metricq_db_compaction_job_budget_exceeded_total` | counter |  | Compaction jobs aborted because publication exceeded the catalog budget. |
@@ -168,16 +169,17 @@ This table is generated from `engine/metrics.go` by
 | `metricq_db_compaction_job_pending` | gauge |  | One while a reserved or aborted compaction job is recorded in the manifest. |
 | `metricq_db_compaction_job_seconds` | histogram |  | Background compaction job duration. |
 | `metricq_db_compaction_jobs_total` | counter |  | Successfully published background compactions. |
-| `metricq_db_compaction_repack_jobs_total` | counter |  | Published jobs moving small or partly dead objects together with the due merges of their streams' sections into a nearly full object. |
 | `metricq_db_compaction_noop_total` | counter |  | Candidate scans with no actionable job. |
 | `metricq_db_compaction_output_blocks_total` | counter |  | Copied, merged or repacked source replacements in successfully published jobs. |
 | `metricq_db_compaction_rechunked_blocks_total` | counter |  | Source blocks rewritten to move a fragment towards the end of its stream. |
-| **Maintenance (deletion of retired objects)** | | | |
+| `metricq_db_compaction_repack_jobs_total` | counter |  | Published jobs moving small or partly dead objects together with the due merges of their streams' sections into a nearly full object. |
+| `metricq_db_compaction_repack_plans_total` | counter | result | Stream plans of repack selection: cached (index root unchanged), incremental (only entries appended since the last plan read) or full (the stream read behind its full prefix). |
+| **Maintenance (deletion of retired and orphaned objects)** | | | |
 | `metricq_db_maintenance_delete_errors_total` | counter |  | Failed retired-object deletion attempts. |
 | `metricq_db_maintenance_delete_pending_objects` | gauge |  | Fully retired objects awaiting deletion, including reader-pinned objects. |
-| `metricq_db_orphan_candidates` | gauge |  | Objects no manifest reached in the last hourly orphan sweep; retired if the next sweep confirms them. Should be zero or a few. |
-| `metricq_db_orphans_retired_total` | counter |  | Objects left by interrupted checkpoints or jobs and moved to the trash journal by the orphan sweep. |
 | `metricq_db_maintenance_deleted_objects_total` | counter |  | Successfully deleted retired objects. |
+| `metricq_db_orphan_candidates` | gauge |  | Objects no manifest reached in the last orphan sweep; retired if the next sweep, an hour later, confirms them. |
+| `metricq_db_orphans_retired_total` | counter |  | Objects left by interrupted checkpoints or jobs and moved to the trash journal by the orphan sweep. |
 | **Queries** | | | |
 | `metricq_db_query_data_requests` | histogram |  | Object store range requests for data blocks per history request; cached blocks need none. |
 | `metricq_db_query_errors_total` | counter |  | Failed history requests. |

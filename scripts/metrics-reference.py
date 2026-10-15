@@ -24,10 +24,11 @@ groups = [
     ("Checkpoints", ("checkpoint_",)),
     ("Holding", ("hold_",)),
     ("Object store", ("store_",)),
-    ("Metadata cache", ("metadata_",)),
+    ("Metadata cache and index reads", ("metadata_", "index_")),
     ("Storage state", ("storage_",)),
+    ("Catalog", ("catalog_",)),
     ("Compaction", ("compaction_",)),
-    ("Maintenance (deletion of retired objects)", ("maintenance_",)),
+    ("Maintenance (deletion of retired and orphaned objects)", ("maintenance_", "orphan")),
     ("Queries", ("query_",)),
     ("Configuration", ("config",)),
 ]

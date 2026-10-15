@@ -2119,7 +2119,7 @@
     {
       "type": "barchart",
       "title": "Object fill",
-      "description": "Share of each object kind (data, index, catalog) per fill bucket: live bytes relative to compaction_output_object_bytes, in 10 % steps (the label is the upper bound: 100 % holds objects above 90 %, including full ones, which a cut leaves a block short of the target; 0 % holds objects without live bytes). Each kind sums to 100 %. A settled layout has most data objects in the 100 % bucket; catalog objects (tree and inventory packs) are small by design and counted hourly by the orphan sweep.",
+      "description": "Share of each object kind (data, index, catalog) per fill bucket: live bytes relative to compaction_output_object_bytes, in 10 % steps (90-100% includes full objects, which a cut leaves a block short of the target). Each kind sums to 100 %. A settled layout has most data objects in the 90-100% bucket; catalog objects (tree and inventory packs) are small by design and counted hourly by the orphan sweep.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -2147,24 +2147,11 @@
         "defaults": {
           "unit": "percentunit"
         },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "fill %"
-            },
-            "properties": [
-              {
-                "id": "unit",
-                "value": "percent"
-              }
-            ]
-          }
-        ]
+        "overrides": []
       },
       "options": {
         "orientation": "vertical",
-        "xField": "fill %",
+        "xField": "fill",
         "groupWidth": 0.8,
         "barWidth": 0.9,
         "showValue": "never",
@@ -2204,7 +2191,7 @@
           "id": "organize",
           "options": {
             "renameByName": {
-              "fill\\kind": "fill %"
+              "fill\\kind": "fill"
             }
           }
         }

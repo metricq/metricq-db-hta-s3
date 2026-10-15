@@ -199,21 +199,17 @@ panel("Orphaned objects", [(f"max(metricq_db_orphan_candidates{T})", "unreachabl
 fill_by_kind = f"max by (kind, fill) (metricq_db_storage_object_fill{T})"
 panel("Object fill", [(f"{fill_by_kind} / on (kind) group_left () sum by (kind) ({fill_by_kind})", "")], "percentunit", kind="barchart", w=16,
       description="Share of each object kind (data, index, catalog) per fill bucket: live bytes relative to "
-                  "compaction_output_object_bytes, in 10 % steps (the label is the upper bound: 100 % holds objects above 90 %, "
-                  "including full ones, which a cut leaves a block short of the target; 0 % holds objects without live bytes). "
-                  "Each kind sums to 100 %. A settled layout has most data objects in the 100 % bucket; catalog objects "
+                  "compaction_output_object_bytes, in 10 % steps (90-100% includes full objects, which a cut leaves a block "
+                  "short of the target). Each kind sums to 100 %. A settled layout has most data objects in the 90-100% bucket; catalog objects "
                   "(tree and inventory packs) are small by design and counted hourly by the orphan sweep.")
 # One bar group per fill bucket, one bar per object kind.
 panels[-1]["targets"][0].update({"format": "table", "instant": True})
 panels[-1]["transformations"] = [
     {"id": "groupingToMatrix", "options": {"columnField": "kind", "rowField": "fill", "valueField": "Value", "emptyValue": "zero"}},
     {"id": "sortBy", "options": {"sort": [{"field": "fill\\kind"}]}},
-    {"id": "organize", "options": {"renameByName": {"fill\\kind": "fill %"}}},
+    {"id": "organize", "options": {"renameByName": {"fill\\kind": "fill"}}},
 ]
-# The bucket labels become numbers 0-100: percent, not the shares' percentunit.
-panels[-1]["fieldConfig"]["overrides"] = [
-    {"matcher": {"id": "byName", "options": "fill %"}, "properties": [{"id": "unit", "value": "percent"}]}]
-panels[-1]["options"] = {"orientation": "vertical", "xField": "fill %", "groupWidth": 0.8, "barWidth": 0.9, "showValue": "never",
+panels[-1]["options"] = {"orientation": "vertical", "xField": "fill", "groupWidth": 0.8, "barWidth": 0.9, "showValue": "never",
                          "stacking": "none", "legend": {"displayMode": "list", "placement": "bottom", "showLegend": True},
                          "tooltip": {"mode": "multi", "sort": "none"}, "xTickLabelRotation": 0}
 

@@ -569,21 +569,23 @@ func (e *Engine) catalogWalk(ctx context.Context, root blob, limit int, visit fu
 }
 
 // fillBuckets counts objects by live bytes in tenths of the output object
-// size, each bucket named by its upper bound: bucket b holds objects above
-// (b-1)/10 and up to b/10 of the target, so full objects, which a cut leaves
-// a block short of the target, count as 100 %. Bucket 0 holds objects
-// without live bytes; the last bucket also holds objects above the target.
-const fillBuckets = 11
+// size: bucket b holds objects from b/10 up to below (b+1)/10 of the target,
+// labelled "0-10%" to "90-100%". The last bucket also holds objects at or
+// above the target; full objects, which a cut leaves a block short of it,
+// count there as well.
+const fillBuckets = 10
 
 // fillVersion numbers the bucket semantics; manifests counted with another
 // one are recounted.
-const fillVersion = 1
+const fillVersion = 2
 
 func fillBucket(live, target int64) int {
-	if live <= 0 {
-		return 0
-	}
-	return int(min((live*10+target-1)/target, fillBuckets-1))
+	return int(min(max(live, 0)*10/target, fillBuckets-1))
+}
+
+// fillLabel names a fill bucket by its range in percent.
+func fillLabel(b int) string {
+	return fmt.Sprintf("%d-%d%%", 10*b, 10*(b+1))
 }
 
 // addFill counts an object into (delta 1) or out of (delta -1) the fill
@@ -594,9 +596,9 @@ func (m *manifest) addFill(o ObjectInfo, delta int64) {
 	}
 	b := fillBucket(o.LiveBytes, m.FillTarget)
 	if strings.HasPrefix(o.Key, "index/") {
-		m.IndexFill[b] += delta
+		m.IndexFills[b] += delta
 	} else {
-		m.DataFill[b] += delta
+		m.DataFills[b] += delta
 	}
 }
 

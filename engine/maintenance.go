@@ -396,7 +396,7 @@ func (e *Engine) countCatalogStats(ctx context.Context) error {
 	next.SectionStatsReady = true
 	next.DataSections = sections
 	next.DataBytes = bytes
-	next.FillTarget, next.FillVersion, next.DataFill, next.IndexFill = fill.FillTarget, fillVersion, fill.DataFill, fill.IndexFill
+	next.FillTarget, next.FillVersion, next.DataFills, next.IndexFills = fill.FillTarget, fillVersion, fill.DataFills, fill.IndexFills
 	return e.publishMaintenanceLocked(ctx, next, e.preparationStore())
 }
 
@@ -521,11 +521,11 @@ func (e *Engine) updateMaintenanceMetrics(m manifest) {
 	e.metrics.CompactionJobPending.Set(jobPending)
 	e.metrics.LiveObjectBytes.Set(float64(m.LiveObjectBytes))
 	for b := 0; b < fillBuckets; b++ {
-		data, index := float64(m.DataFill[b]), float64(m.IndexFill[b])
+		data, index := float64(m.DataFills[b]), float64(m.IndexFills[b])
 		if m.FillTarget != e.options.CompactionOptions.defaults().OutputObjectBytes || m.FillVersion != fillVersion {
 			data, index = math.NaN(), math.NaN()
 		}
-		label := fmt.Sprintf("%03d", 10*b)
+		label := fillLabel(b)
 		e.metrics.ObjectFill.WithLabelValues("data", label).Set(data)
 		e.metrics.ObjectFill.WithLabelValues("index", label).Set(index)
 	}

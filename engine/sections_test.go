@@ -42,7 +42,7 @@ func TestDataSectionsTrackCatalogAndRecount(t *testing.T) {
 	checkCatalog(t, f.e)
 	f.e.mu.Lock()
 	want := f.e.state.DataSections
-	wantFill := f.e.state.DataFill
+	wantFill := f.e.state.DataFills
 	if !f.e.state.SectionStatsReady || want == 0 || f.e.state.FillTarget == 0 {
 		f.e.mu.Unlock()
 		t.Fatalf("statistic not tracked: %+v", f.e.state.SectionStatsReady)
@@ -53,7 +53,7 @@ func TestDataSectionsTrackCatalogAndRecount(t *testing.T) {
 	next.rootDirtyKnown = true
 	next.Generation = f.e.state.Generation + 1
 	next.SectionStatsReady, next.DataSections, next.DataBytes = false, 0, 0
-	next.FillTarget, next.DataFill, next.IndexFill = 0, [fillBuckets]int64{}, [fillBuckets]int64{}
+	next.FillTarget, next.DataFills, next.IndexFills = 0, [fillBuckets]int64{}, [fillBuckets]int64{}
 	f.e.mu.Unlock()
 	if ratio := metricValue(t, f.e.metrics.FragmentationRatio); math.IsNaN(ratio) || ratio <= 0 {
 		t.Fatalf("fragmentation ratio %v", ratio)
@@ -71,14 +71,14 @@ func TestDataSectionsTrackCatalogAndRecount(t *testing.T) {
 	if f.e.state.SectionStatsReady || !math.IsNaN(metricValue(t, f.e.metrics.FragmentationRatio)) {
 		t.Fatal("legacy manifest reports sections")
 	}
-	if !math.IsNaN(metricValue(t, f.e.metrics.ObjectFill.WithLabelValues("data", "000"))) {
+	if !math.IsNaN(metricValue(t, f.e.metrics.ObjectFill.WithLabelValues("data", "0-10%"))) {
 		t.Fatal("legacy manifest reports object fill")
 	}
 	if err := f.e.countCatalogStats(f.ctx); err != nil {
 		t.Fatal(err)
 	}
-	if !f.e.state.SectionStatsReady || f.e.state.DataSections != want || f.e.state.DataFill != wantFill {
-		t.Fatalf("recount %d %v, want %d %v", f.e.state.DataSections, f.e.state.DataFill, want, wantFill)
+	if !f.e.state.SectionStatsReady || f.e.state.DataSections != want || f.e.state.DataFills != wantFill {
+		t.Fatalf("recount %d %v, want %d %v", f.e.state.DataSections, f.e.state.DataFills, want, wantFill)
 	}
 	checkCatalog(t, f.e)
 	// A fill counted with other bucket semantics is recounted as well.
@@ -86,21 +86,21 @@ func TestDataSectionsTrackCatalogAndRecount(t *testing.T) {
 	next = cloneMaintenanceManifest(f.e.committed)
 	next.rootDirtyKnown = true
 	next.Generation = f.e.state.Generation + 1
-	next.FillVersion, next.DataFill = 0, [fillBuckets]int64{}
+	next.FillVersion, next.DataFills = 0, [fillBuckets]int64{}
 	err = f.e.publishMaintenance(f.ctx, next)
 	f.e.mu.Unlock()
 	if err != nil {
 		t.Fatal(err)
 	}
 	f.restart()
-	if !math.IsNaN(metricValue(t, f.e.metrics.ObjectFill.WithLabelValues("data", "100"))) {
+	if !math.IsNaN(metricValue(t, f.e.metrics.ObjectFill.WithLabelValues("data", "90-100%"))) {
 		t.Fatal("fill of another bucket version reported")
 	}
 	if err := f.e.countCatalogStats(f.ctx); err != nil {
 		t.Fatal(err)
 	}
-	if f.e.state.FillVersion != fillVersion || f.e.state.DataFill != wantFill {
-		t.Fatalf("recount %v (version %d), want %v", f.e.state.DataFill, f.e.state.FillVersion, wantFill)
+	if f.e.state.FillVersion != fillVersion || f.e.state.DataFills != wantFill {
+		t.Fatalf("recount %v (version %d), want %v", f.e.state.DataFills, f.e.state.FillVersion, wantFill)
 	}
 	checkCatalog(t, f.e)
 	f.restart()
@@ -111,14 +111,17 @@ func TestDataSectionsTrackCatalogAndRecount(t *testing.T) {
 	f.check("after recount")
 }
 
-// Buckets are named by their upper bound: a full object, which a cut leaves
-// a block short of the target, counts as 100 %.
+// Buckets cover tenths of the target; a full object, which a cut leaves a
+// block short of the target, counts in the last one, 90-100 %.
 func TestFillBucket(t *testing.T) {
 	const target = 4 << 20
+	if fillLabel(0) != "0-10%" || fillLabel(9) != "90-100%" {
+		t.Fatalf("labels %s, %s", fillLabel(0), fillLabel(9))
+	}
 	for _, c := range []struct {
 		live int64
 		want int
-	}{{0, 0}, {-5, 0}, {1, 1}, {target / 10, 1}, {target/10 + 1, 2}, {target / 2, 5}, {target - 3000, 10}, {target * 15 / 16, 10}, {target, 10}, {2 * target, 10}} {
+	}{{0, 0}, {-5, 0}, {1, 0}, {target / 10, 0}, {target/10 + 1, 1}, {target / 2, 5}, {target - 3000, 9}, {target * 15 / 16, 9}, {target, 9}, {2 * target, 9}} {
 		if got := fillBucket(c.live, target); got != c.want {
 			t.Errorf("fillBucket(%d) = %d, want %d", c.live, got, c.want)
 		}

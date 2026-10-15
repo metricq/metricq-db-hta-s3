@@ -158,10 +158,11 @@ type manifest struct {
 
 	// Objects by live bytes relative to FillTarget (the output object size
 	// they were counted against), in tenths (see fillBucket). Recounted when
-	// the target or FillVersion changes.
-	FillTarget          int64
-	FillVersion         int
-	DataFill, IndexFill [fillBuckets]int64
+	// the target or FillVersion changes. Version 1 stored 11 buckets in
+	// fields named DataFill and IndexFill, which decoding now ignores.
+	FillTarget            int64
+	FillVersion           int
+	DataFills, IndexFills [fillBuckets]int64
 
 	Version    int
 	Generation uint64
@@ -205,7 +206,7 @@ type Engine struct {
 	orphanCandidates      map[string]bool
 	lastOrphanSweep       time.Time
 	compactionScanMore    bool
-	repackAfter           map[string]int64         // per stream, the end of its settled prefix
+	repackAfter           map[string]repackPrefix  // per stream, the end of its prefix of full sections
 	deferredSeeds         map[string]int64         // merge seeds deferred until this time (unix ns)
 	idleCandidates        map[string]idleCandidate // candidates whose last scan found no work
 	idlePass              uint64                   // completed candidate scan passes

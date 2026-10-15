@@ -124,8 +124,8 @@ func checkCatalog(t *testing.T, e *Engine) {
 	if e.state.SectionStatsReady && (sections != e.state.DataSections || dataBytes != e.state.DataBytes) {
 		t.Fatalf("section accounting differs: sections=%d/%d bytes=%d/%d", sections, e.state.DataSections, dataBytes, e.state.DataBytes)
 	}
-	if e.state.FillTarget > 0 && (fill.DataFill != e.state.DataFill || fill.IndexFill != e.state.IndexFill) {
-		t.Fatalf("fill accounting differs: data %v/%v index %v/%v", fill.DataFill, e.state.DataFill, fill.IndexFill, e.state.IndexFill)
+	if e.state.FillTarget > 0 && (fill.DataFills != e.state.DataFills || fill.IndexFills != e.state.IndexFills) {
+		t.Fatalf("fill accounting differs: data %v/%v index %v/%v", fill.DataFills, e.state.DataFills, fill.IndexFills, e.state.IndexFills)
 	}
 	checkIndexAggregates(t, e)
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"math"
 	"path"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -278,12 +279,11 @@ func TestRepackCutsStreamsIntoFullObjects(t *testing.T) {
 		}
 		open, _ := openSuffix(entries)
 		sections := localitySections(entries[:len(entries)-open])
-		full := fullSectionBytes(target, largestBlock(sections))
 		var layout []int64
 		fulls, smaller := 0, 0
 		for _, sec := range sections {
 			layout = append(layout, sec.bytes>>10)
-			if sec.bytes < full {
+			if !sec.full(target) {
 				smaller++
 				continue
 			}
@@ -312,4 +312,99 @@ func TestRepackCutsStreamsIntoFullObjects(t *testing.T) {
 			t.Errorf("no index page reads counted for %s", reader)
 		}
 	}
+}
+
+// Incremental plans equal plans read from scratch, across checkpoints that
+// append full and partial blocks and jobs that move blocks; after a
+// checkpoint, planning reads only the entries behind the last planned one.
+func TestRepackIncrementalPlansMatchFullPlans(t *testing.T) {
+	previousWait := repackMergeWait
+	repackMergeWait = 0
+	defer func() { repackMergeWait = previousWait }()
+	ctx := context.Background()
+	s := &rangeGCStore{gcStore: &gcStore{memoryStore: newStore()}}
+	opts := maintenanceOptions(t.TempDir(), true)
+	opts.CompactionOptions.OutputObjectBytes = 64 << 10
+	opts.CompactionOptions.JobMaxBytes = 1 << 20
+	opts.CompactionOptions.JobMaxBlocks = 512
+	e, err := Open(ctx, s, opts, map[string]hta.Config{"a": {IntervalMin: int64(time.Second), IntervalMax: int64(100000 * time.Second), IntervalFactor: 10}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer e.Close()
+	options := e.options.CompactionOptions.defaults()
+	plan := func() ([]BlockInfo, map[blob]bool) {
+		e.repackCuts = nil
+		due, err := e.repackStreamPlan(ctx, e, options, "a", 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return due, e.repackCuts
+	}
+	keys := func(due []BlockInfo) []blob {
+		var out []blob
+		for _, b := range due {
+			out = append(out, b.Entry.Blob)
+		}
+		return out
+	}
+	n := 0
+	var incrementalPages, fullPages float64
+	incremental := func() float64 {
+		return metricValue(t, e.metrics.CompactionRepackPlans.WithLabelValues("incremental"))
+	}
+	for step := 0; step < 480; step++ {
+		// Full blocks, partial blocks and partial tails in varying order.
+		count := []int{maxDataBlockRecords, 300, 2 * maxDataBlockRecords, 700, maxDataBlockRecords + 200}[step%5]
+		points := make([]hta.Point, count)
+		for j := range points {
+			n++
+			points[j] = hta.Point{Time: int64(n) * int64(time.Second), Value: math.Sin(float64(n)/31) + float64(n%13)/7}
+		}
+		if err := e.Ingest(ctx, "a", chunk(points...)); err != nil {
+			t.Fatal(err)
+		}
+		if err := e.Flush(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if step%9 == 8 {
+			for i := 0; i < 4; i++ {
+				if err := e.CompactOnce(ctx); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+		// Background jobs must not change the index between the two plans.
+		e.maintenanceMu.Lock()
+		pages := func() (r float64) {
+			for _, source := range []string{"local", "cache", "store"} {
+				r += metricValue(t, e.metrics.IndexPageReads.WithLabelValues("other", source))
+			}
+			return r
+		}
+		before := pages()
+		got, gotCuts := plan()
+		incrementalPages += pages() - before
+		kept, keptAfter := e.repackPlans, e.repackAfter
+		e.repackPlans, e.repackAfter = nil, nil
+		before = pages()
+		want, wantCuts := plan()
+		fullPages += pages() - before
+		e.repackPlans, e.repackAfter = kept, keptAfter
+		e.maintenanceMu.Unlock()
+		if !reflect.DeepEqual(keys(got), keys(want)) || !reflect.DeepEqual(gotCuts, wantCuts) {
+			t.Fatalf("step %d: incremental plan %v cuts %v, full plan %v cuts %v", step, keys(got), gotCuts, keys(want), wantCuts)
+		}
+	}
+	if incremental() < 50 {
+		t.Fatalf("only %v incremental plans", incremental())
+	}
+	// Plans after checkpoints read the entries behind the last planned one,
+	// not the stream behind its full prefix. The gain grows with the stream
+	// (here up to about 10 leaves): incremental plans read about 57 % of the
+	// pages after 480 steps, 39 % after 800.
+	if incrementalPages*3 > fullPages*2 {
+		t.Fatalf("incremental plans read %v index pages, full plans %v", incrementalPages, fullPages)
+	}
+	t.Logf("incremental plans read %v index pages, full plans %v", incrementalPages, fullPages)
 }

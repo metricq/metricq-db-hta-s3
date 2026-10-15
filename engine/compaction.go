@@ -1477,11 +1477,17 @@ func (e *Engine) applyCompaction(ctx context.Context, job CompactionJob, replace
 			e.mu.Unlock()
 			// A job that moved blocks within a stream's prefix of full sections
 			// (a merge or rechunk, say) may have changed it: plan the stream
-			// from its start again.
+			// from its start again. Any moved block changes entries the
+			// stream's incremental plan builds on.
 			for _, b := range job.Inputs {
-				if key := streamKey(b.Metric, b.Level); !b.Index && e.repackAfter != nil && b.Entry.First < e.repackAfter[key] {
+				if b.Index {
+					continue
+				}
+				key := streamKey(b.Metric, b.Level)
+				if prefix, ok := e.repackAfter[key]; ok && b.Entry.First < prefix.after {
 					delete(e.repackAfter, key)
 				}
+				delete(e.repackPlans, key)
 			}
 			e.metrics.Compactions.Inc()
 			if job.Repack {
@@ -1699,6 +1705,11 @@ func (e *Engine) CompactOnce(ctx context.Context) error {
 	replacements, packs, err := e.copyJob(ctx, job)
 	if err == nil {
 		err = e.applyCompaction(ctx, job, replacements, packs)
+	}
+	if err != nil {
+		// A job may fail because a plan no longer matched the index: plan
+		// every stream anew.
+		e.repackPlans = nil
 	}
 	if err == nil {
 		// Rewritten streams may end in a different block. Their new pages are

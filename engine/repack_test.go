@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"path"
 	"reflect"
@@ -408,4 +409,43 @@ func TestRepackLayoutPlansMatchReadPlans(t *testing.T) {
 		t.Fatalf("plans from layouts read %v index pages, plans read from the index %v", layoutPages, readPages)
 	}
 	t.Logf("%v plans from layouts read %v index pages, plans read from the index %v", layoutPlans(), layoutPages, readPages)
+}
+
+// A job that writes a run and a later block of the same stream into one
+// object, with unmoved sections between them in the stream, leaves two
+// sections: physically contiguous blocks are one section only when nothing
+// lies between them in the stream.
+func TestLayoutMovedKeepsUnmovedSectionsBetween(t *testing.T) {
+	entry := func(first int64, key string, offset, length int64) indexEntry {
+		return indexEntry{First: first, Last: first + 9, Records: maxDataBlockRecords, Blob: blob{Key: key, Offset: offset, Length: length}}
+	}
+	e := &Engine{}
+	run := []indexEntry{entry(0, "a", 0, 100), entry(10, "a", 100, 100)}
+	middle := []indexEntry{entry(20, "b", 0, 100), entry(30, "b", 100, 100)}
+	late := []indexEntry{entry(40, "c", 0, 100)}
+	after := []indexEntry{entry(50, "d", 0, 100)}
+	layout := &streamLayout{root: blob{Key: "r1"}}
+	layout.extend(nil, append(append(append(append([]indexEntry(nil), run...), middle...), late...), after...))
+	if len(layout.sections) != 4 {
+		t.Fatalf("fixture: %d sections", len(layout.sections))
+	}
+	e.repackLayouts = map[string]*streamLayout{"s": layout}
+	// The job moves the run and the late block into object x, back to back.
+	moved := []movedBlock{
+		{old: run[0], new: entry(0, "x", 0, 100)},
+		{old: run[1], new: entry(10, "x", 100, 100)},
+		{old: late[0], new: entry(40, "x", 200, 100)},
+	}
+	e.layoutMoved("s", moved, blob{Key: "r2"})
+	l := e.repackLayouts["s"]
+	if l == nil {
+		t.Fatal("layout dropped")
+	}
+	var got []string
+	for _, sec := range l.sections {
+		got = append(got, fmt.Sprintf("%d-%d/%d", sec.first, sec.last, sec.count))
+	}
+	if want := "0-19/2 20-39/2 40-49/1 50-59/1"; strings.Join(got, " ") != want {
+		t.Fatalf("sections %v, want %s", got, want)
+	}
 }

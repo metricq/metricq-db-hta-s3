@@ -2,9 +2,11 @@ package engine
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"math"
 	"sort"
+	"strings"
 )
 
 // streamLayout is what repack planning knows about one stream: its sections
@@ -197,12 +199,27 @@ func (e *Engine) layoutMoved(key string, moved []movedBlock, root blob) {
 	sort.Slice(added, func(i, j int) bool { return added[i].First < added[j].First })
 	// New entries among the remaining sections form sections of their own
 	// (they are in new objects); those behind them join the open suffix.
+	// Entries in one object form one section only between the same two
+	// remaining sections: a job may write a run and a later block of the
+	// stream back to back, with unmoved sections between them in the stream.
 	end := int64(math.MinInt64)
 	if n := len(sections); n > 0 {
 		end = sections[n-1].last
 	}
 	split := sort.Search(len(added), func(i int) bool { return added[i].First > end })
-	for _, sec := range appendSections(nil, nil, added[:split]) {
+	gap := func(entry indexEntry) int {
+		return sort.Search(len(sections), func(i int) bool { return sections[i].first > entry.First })
+	}
+	var inserted []planSection
+	for start := 0; start < split; {
+		stop := start + 1
+		for stop < split && gap(added[stop]) == gap(added[start]) {
+			stop++
+		}
+		inserted = append(inserted, appendSections(nil, nil, added[start:stop])...)
+		start = stop
+	}
+	for _, sec := range inserted {
 		i := sort.Search(len(sections), func(i int) bool { return sections[i].first > sec.first })
 		sections = append(sections[:i], append([]planSection{sec}, sections[i:]...)...)
 	}
@@ -210,6 +227,12 @@ func (e *Engine) layoutMoved(key string, moved []movedBlock, root blob) {
 	sort.Slice(tail, func(i, j int) bool { return tail[i].First < tail[j].First })
 	l.sections, l.open = sections, nil
 	l.extend(prefix, tail)
+	for i := 1; i < len(l.sections); i++ {
+		if l.sections[i].first <= l.sections[i-1].last {
+			e.dropLayout(key, "overlap")
+			return
+		}
+	}
 	e.setPrefix(key, prefix)
 	l.root, l.planned, l.due, l.cuts = root, false, nil, nil
 }
@@ -355,7 +378,16 @@ func (e *Engine) repackStreamPlan(ctx context.Context, snapshot *Engine, options
 		}
 		if len(entries) != count || entries[0].First != first || entries[len(entries)-1].Last != last {
 			// The layout no longer matches the index: read it again next time.
-			slog.Warn("repack layout does not match the index", "stream", key)
+			got := []any{"stream", key, "want_count", count, "want_first", first, "want_last", last, "got_count", len(entries)}
+			if len(entries) > 0 {
+				got = append(got, "got_first", entries[0].First, "got_last", entries[len(entries)-1].Last)
+			}
+			var secs []string
+			for _, sec := range sections {
+				secs = append(secs, fmt.Sprintf("%d:%d-%d/%d", sec.count, sec.first, sec.last, sec.bytes))
+			}
+			got = append(got, "run", fmt.Sprint(run), "sections", strings.Join(secs, " "), "path", map[bool]string{true: "layout", false: "read"}[known])
+			slog.Warn("repack layout does not match the index", got...)
 			e.layoutMu.Lock()
 			e.dropLayout(key, "run_mismatch")
 			e.layoutMu.Unlock()

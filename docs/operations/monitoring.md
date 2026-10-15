@@ -173,6 +173,7 @@ This table is generated from `engine/metrics.go` by
 | `metricq_db_compaction_output_blocks_total` | counter |  | Copied, merged or repacked source replacements in successfully published jobs. |
 | `metricq_db_compaction_rechunked_blocks_total` | counter |  | Source blocks rewritten to move a fragment towards the end of its stream. |
 | `metricq_db_compaction_repack_jobs_total` | counter |  | Published jobs moving small or partly dead objects together with the due merges of their streams' sections into a nearly full object. |
+| `metricq_db_compaction_repack_layout_drops_total` | counter | reason | Stream layouts of repack planning dropped, by reason: checkpoint_root (a checkpoint found another root), tail_replaced, prefix_moved, unknown_block, partial_section (a job moved blocks the layout cannot follow), run_mismatch (a run read differed); snapshot_root counts plans whose snapshot root differed from the layout (not dropped). |
 | `metricq_db_compaction_repack_plans_total` | counter | result | Stream plans of repack selection: cached (stream unchanged since its last plan), layout (from the stream layout kept by checkpoints and jobs; reads only due runs) or read (the stream read from the index behind its full prefix). |
 | **Maintenance (deletion of retired and orphaned objects)** | | | |
 | `metricq_db_maintenance_delete_errors_total` | counter |  | Failed retired-object deletion attempts. |

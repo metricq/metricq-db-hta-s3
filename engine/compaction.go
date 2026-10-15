@@ -1488,15 +1488,21 @@ func (e *Engine) applyCompaction(ctx context.Context, job CompactionJob, replace
 				key := streamKey(b.Metric, b.Level)
 				byStream[key] = append(byStream[key], movedBlock{old: b.Entry, new: r.Entry, dropped: r.Drop})
 			}
+			// Relocated index pages (index packs repacked as filler or in a
+			// job of their own) change the roots of their streams as well.
 			e.mu.Lock()
-			roots := make(map[string]blob, len(byStream))
+			roots := make(map[string]blob)
 			for _, b := range job.Inputs {
 				roots[streamKey(b.Metric, b.Level)] = e.state.Roots[b.Metric][b.Level]
 			}
 			e.mu.Unlock()
 			e.layoutMu.Lock()
-			for key, moved := range byStream {
-				e.layoutMoved(key, moved, roots[key])
+			for key, root := range roots {
+				if moved, ok := byStream[key]; ok {
+					e.layoutMoved(key, moved, root)
+				} else {
+					e.layoutRelocated(key, root)
+				}
 			}
 			e.layoutMu.Unlock()
 			e.metrics.Compactions.Inc()

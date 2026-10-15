@@ -111,14 +111,14 @@ func (e *Engine) layoutAppended(key string, previous, root blob, items []indexEn
 		return
 	}
 	if l.root != previous {
-		delete(e.repackLayouts, key)
+		e.dropLayout(key, "checkpoint_root")
 		return
 	}
 	if replaceTail {
 		// Only a partial last block is replaced, and it is open.
 		n := len(l.open)
 		if n == 0 || l.open[n-1].First != items[0].First {
-			delete(e.repackLayouts, key)
+			e.dropLayout(key, "tail_replaced")
 			return
 		}
 		l.open = l.open[:n-1]
@@ -150,7 +150,7 @@ func (e *Engine) layoutMoved(key string, moved []movedBlock, root blob) {
 		replaced[m.old.Blob] = m
 		if prefix != nil && m.old.First < prefix.after {
 			delete(e.repackAfter, key)
-			delete(e.repackLayouts, key)
+			e.dropLayout(key, "prefix_moved")
 			return
 		}
 	}
@@ -170,7 +170,7 @@ func (e *Engine) layoutMoved(key string, moved []movedBlock, root blob) {
 	for _, m := range replaced {
 		i := sort.Search(len(l.sections), func(i int) bool { return l.sections[i].last >= m.old.First })
 		if i == len(l.sections) || l.sections[i].first > m.old.First || l.sections[i].last < m.old.Last {
-			delete(e.repackLayouts, key)
+			e.dropLayout(key, "unknown_block")
 			return
 		}
 		taken[i]++
@@ -182,7 +182,7 @@ func (e *Engine) layoutMoved(key string, moved []movedBlock, root blob) {
 			sections = append(sections, sec)
 		case sec.count:
 		default:
-			delete(e.repackLayouts, key)
+			e.dropLayout(key, "partial_section")
 			return
 		}
 	}
@@ -212,6 +212,24 @@ func (e *Engine) layoutMoved(key string, moved []movedBlock, root blob) {
 	l.extend(prefix, tail)
 	e.setPrefix(key, prefix)
 	l.root, l.planned, l.due, l.cuts = root, false, nil, nil
+}
+
+// dropLayout forgets a stream's layout that no longer follows its index,
+// counting why. Caller holds layoutMu.
+func (e *Engine) dropLayout(key, reason string) {
+	if _, ok := e.repackLayouts[key]; ok {
+		delete(e.repackLayouts, key)
+		e.metrics.CompactionRepackLayoutDrops.WithLabelValues(reason).Inc()
+	}
+}
+
+// layoutRelocated follows a job that moved only index pages of the stream
+// to new objects: its entries are unchanged, its root is not. Caller holds
+// layoutMu.
+func (e *Engine) layoutRelocated(key string, root blob) {
+	if l, ok := e.repackLayouts[key]; ok {
+		l.root = root
+	}
 }
 
 // layoutState tells whether the stream has a layout at root (planning it
@@ -271,6 +289,11 @@ func (e *Engine) repackStreamPlan(ctx context.Context, snapshot *Engine, options
 	target := options.OutputObjectBytes
 	e.layoutMu.Lock()
 	layout, known := e.repackLayouts[key]
+	if known && layout.root != root {
+		// Not dropped: a checkpoint may already have moved the layout past
+		// this selection's snapshot.
+		e.metrics.CompactionRepackLayoutDrops.WithLabelValues("snapshot_root").Inc()
+	}
 	known = known && layout.root == root
 	if known && layout.planned {
 		due, cuts := layout.due, layout.cuts
@@ -334,7 +357,7 @@ func (e *Engine) repackStreamPlan(ctx context.Context, snapshot *Engine, options
 			// The layout no longer matches the index: read it again next time.
 			slog.Warn("repack layout does not match the index", "stream", key)
 			e.layoutMu.Lock()
-			delete(e.repackLayouts, key)
+			e.dropLayout(key, "run_mismatch")
 			e.layoutMu.Unlock()
 			return nil, nil
 		}
@@ -363,6 +386,14 @@ func (e *Engine) repackStreamPlan(ctx context.Context, snapshot *Engine, options
 			return out, nil
 		}
 	} else {
+		// A checkpoint may have committed meanwhile, and its layout update
+		// found no layout: a layout of this older snapshot would miss it.
+		e.mu.Lock()
+		current := e.committed.Roots[metric][level]
+		e.mu.Unlock()
+		if current != root {
+			return out, nil
+		}
 		if e.repackLayouts == nil {
 			e.repackLayouts = make(map[string]*streamLayout)
 		}

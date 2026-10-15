@@ -87,7 +87,9 @@ writes a stream only
 
 - in complete 1024-record blocks,
 - completely, once its oldest held record is older than `hold_max_age_seconds`,
-- completely, largest streams first, while held records exceed `hold_memory_bytes`.
+- completely, largest streams first, while held records exceed `hold_memory_bytes`
+  (down to half of it), or while a delivery refused for
+  `ingest_memory_limit_bytes` does not fit next to them.
 
 The remaining records stay in memory — queries read them there — and are
 persisted as one `held/` delta per checkpoint, containing only records not

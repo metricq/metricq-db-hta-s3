@@ -250,6 +250,7 @@ type Engine struct {
 	sequence              uint64
 	pending               pendingSet
 	pendingBytes          int64
+	ingestNeed            int64      // pending bytes a delivery refused for ingest memory needs
 	flushing              pendingSet // frozen by a running Flush, still queryable
 	flushWanted           chan struct{}
 	held                  map[string]*heldStream
@@ -668,6 +669,10 @@ func (e *Engine) IngestBatch(ctx context.Context, deliveries []Delivery) (int, e
 			break
 		}
 		if walSize >= e.options.WALHigh || walSize+int64(len(payload)+frameHeader) > e.options.WALHard || pendingBytes+plan.extra > e.options.IngestMemoryLimitBytes {
+			if pendingBytes+plan.extra > e.options.IngestMemoryLimitBytes {
+				// The next checkpoint writes held records until this fits.
+				e.ingestNeed = max(e.ingestNeed, plan.extra)
+			}
 			e.metrics.Backpressure.Set(1)
 			e.metrics.BackpressureEvents.Inc()
 			stop = ErrPressure

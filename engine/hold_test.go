@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"math"
 	"strings"
 	"testing"
@@ -335,4 +336,35 @@ func sameHistory(want, got *metricq.HistoryResponse) bool {
 		return proto.Equal(want, got)
 	}
 	return want.GetTimeDelta()[0] == got.GetTimeDelta()[0] && a[0].Count == b[0].Count && a[0].Minimum == b[0].Minimum && a[0].Maximum == b[0].Maximum && a[0].ActiveTime == b[0].ActiveTime && closeTo(a[0].Sum, b[0].Sum) && closeTo(a[0].Integral, b[0].Integral)
+}
+
+// A delivery that fits the ingest memory limit alone but not together with
+// the held records is refused; the following flush writes enough held
+// records for it, instead of keeping them until they age out.
+func TestHoldPressureFlushMakesRoomForRefusedDelivery(t *testing.T) {
+	f := newHoldFixture(t)
+	f.ingest("x", 1500)
+	f.flush()
+	held := f.e.pendingBytes
+	if held == 0 {
+		t.Fatal("fixture: nothing held")
+	}
+	// The held records stay within the hold budget; the limit leaves room
+	// for about 100 more records, while the delivery needs about 600.
+	f.e.options.HoldMemoryBytes = held
+	f.e.options.IngestMemoryLimitBytes = held + 100*pendingRecordBytes
+	points := make([]hta.Point, 600)
+	for i := range points {
+		points[i] = hta.Point{Time: f.next["y"], Value: float64(i)}
+		f.next["y"] += 10
+	}
+	delivery := []Delivery{{Metric: "y", Chunk: chunk(points...)}}
+	n, err := f.e.IngestBatch(f.ctx, delivery)
+	if n != 0 || !errors.Is(err, ErrPressure) {
+		t.Fatalf("fixture: delivery accepted (%d, %v) with %d bytes held", n, err, f.e.pendingBytes)
+	}
+	f.flush()
+	if n, err = f.e.IngestBatch(f.ctx, delivery); n != 1 || err != nil {
+		t.Fatalf("delivery still refused after the pressure flush (%d, %v), %d bytes pending", n, err, f.e.pendingBytes)
+	}
 }

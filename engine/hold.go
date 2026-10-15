@@ -109,9 +109,16 @@ func (e *Engine) holdDue() bool {
 	return false
 }
 
-// holdPressure reports held records above their memory budget. Caller holds mu.
+// holdPressure reports held records above their memory budget, or a
+// delivery refused because it does not fit next to them. Caller holds mu.
 func (e *Engine) holdPressure() bool {
-	return e.holding() && e.pendingBytes > e.options.HoldMemoryBytes
+	return e.holding() && (e.pendingBytes > e.options.HoldMemoryBytes || e.ingestBlocked())
+}
+
+// ingestBlocked tells whether a delivery was refused because it does not fit
+// the ingest memory limit next to the pending records.
+func (e *Engine) ingestBlocked() bool {
+	return e.ingestNeed > 0 && e.pendingBytes+e.ingestNeed > e.options.IngestMemoryLimitBytes
 }
 
 // unsavedBytes counts records neither written nor persisted in a delta.
@@ -180,13 +187,20 @@ func (e *Engine) planHold(deltaKey string) holdPlan {
 	}
 	limit := e.clock().Add(-time.Duration(e.options.HoldMaxAgeSeconds) * time.Second)
 	// Above the hold budget, write the largest streams completely until the
-	// held remainder drops to half of it.
+	// held remainder drops to half of it. A delivery refused because it did
+	// not fit the ingest memory limit next to the held records may need more:
+	// write until it fits, or it is refused again until the records age out.
 	remaining := e.pendingBytes
 	pressure := e.holdPressure()
+	goal := e.options.HoldMemoryBytes / 2
+	if e.ingestBlocked() {
+		goal = min(goal, e.options.IngestMemoryLimitBytes-e.ingestNeed)
+	}
+	e.ingestNeed = 0
 	for _, s := range streams {
 		h := e.heldStream(s.metric, s.level)
 		k := alignedWrite(s.n, gap(s.metric, s.level))
-		if h.since.Before(limit) || (pressure && remaining > e.options.HoldMemoryBytes/2) {
+		if h.since.Before(limit) || (pressure && remaining > goal) {
 			k = s.n
 		}
 		remaining -= int64(k) * pendingRecordBytes

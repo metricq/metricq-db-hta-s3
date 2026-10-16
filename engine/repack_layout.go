@@ -283,12 +283,18 @@ func (e *Engine) pruneLayouts(streams []localityStream) {
 	e.repackLayouts = kept
 }
 
-// forgetLayouts drops every layout, after a job failed: its plans may no
-// longer match the index.
-func (e *Engine) forgetLayouts() {
+// forgetJobLayouts drops the layouts of the streams a failed job took
+// blocks from: its plans may no longer match their index. Other streams'
+// layouts are unaffected; a failure such as a store timeout says nothing
+// about them.
+func (e *Engine) forgetJobLayouts(job CompactionJob) {
 	e.layoutMu.Lock()
-	e.repackLayouts = nil
-	e.layoutMu.Unlock()
+	defer e.layoutMu.Unlock()
+	for _, b := range job.Inputs {
+		if !b.Index {
+			e.dropLayout(streamKey(b.Metric, b.Level), "job_failed")
+		}
+	}
 }
 
 // repackStreamPlan returns the blocks of one stream that a repack job moves

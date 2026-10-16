@@ -146,9 +146,9 @@ then reads index pages only for the blocks of a run that is due, and keeps
 its plan until the next change. A stream is read from the index behind its
 full prefix after a restart, after a job took part of a section (a merge or
 rechunk, or a group cut to the job limits) or moved blocks within the full
-prefix, and when a run read for a plan does not match the layout; a failed
-job drops all layouts. Before, planning read every changed stream behind its
-full prefix: on the development database (6000 streams, a checkpoint change
+prefix, after a job taking blocks of the stream failed, and when a run read
+for a plan does not match the layout. Before, planning read every changed
+stream behind its full prefix: on the development database (6000 streams, a checkpoint change
 roughly every 20 minutes per raw stream, no queries) that was most of
 100,000-150,000 index page GETs per hour. Streams of more than 2048 blocks
 behind their full prefix are planned in windows and keep no layout.

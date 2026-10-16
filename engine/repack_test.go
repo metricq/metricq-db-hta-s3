@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/metricq/metricq-db-hta-s3/hta"
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 // smallObjects counts live data objects and index packs below the
@@ -447,5 +448,30 @@ func TestLayoutMovedKeepsUnmovedSectionsBetween(t *testing.T) {
 	}
 	if want := "0-19/2 20-39/2 40-49/1 50-59/1"; strings.Join(got, " ") != want {
 		t.Fatalf("sections %v, want %s", got, want)
+	}
+}
+
+// A failed job drops only the layouts of the streams it took blocks from.
+func TestFailedJobDropsOnlyItsLayouts(t *testing.T) {
+	e := &Engine{metrics: NewMetrics(prometheus.NewRegistry())}
+	e.repackLayouts = map[string]*streamLayout{
+		streamKey("a", 0): {root: blob{Key: "ra"}},
+		streamKey("b", 0): {root: blob{Key: "rb"}},
+		streamKey("c", 0): {root: blob{Key: "rc"}},
+	}
+	e.forgetJobLayouts(CompactionJob{Inputs: []BlockInfo{
+		{Metric: "a", Level: 0, Entry: indexEntry{Blob: blob{Key: "x"}}},
+		{Metric: "c", Level: 0, Index: true, Entry: indexEntry{Blob: blob{Key: "y"}}},
+	}})
+	if _, ok := e.repackLayouts[streamKey("a", 0)]; ok {
+		t.Fatal("layout of the job's stream kept")
+	}
+	for _, name := range []string{"b", "c"} {
+		if _, ok := e.repackLayouts[streamKey(name, 0)]; !ok {
+			t.Fatalf("layout of %s dropped", name)
+		}
+	}
+	if n := metricValue(t, e.metrics.CompactionRepackLayoutDrops.WithLabelValues("job_failed")); n != 1 {
+		t.Fatalf("%v drops counted", n)
 	}
 }

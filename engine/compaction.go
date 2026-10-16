@@ -1724,8 +1724,8 @@ func (e *Engine) CompactOnce(ctx context.Context) error {
 	}
 	if err != nil {
 		// A job may fail because a plan no longer matched the index: read
-		// every stream's layout anew.
-		e.forgetLayouts()
+		// its streams' layouts anew.
+		e.forgetJobLayouts(job)
 	}
 	if err == nil {
 		// Rewritten streams may end in a different block. Their new pages are

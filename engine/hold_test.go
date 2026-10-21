@@ -368,3 +368,18 @@ func TestHoldPressureFlushMakesRoomForRefusedDelivery(t *testing.T) {
 		t.Fatalf("delivery still refused after the pressure flush (%d, %v), %d bytes pending", n, err, f.e.pendingBytes)
 	}
 }
+
+// Hold ages use the wall clock only: the monotonic clock stops while the host
+// is suspended, and the rounded deadlines of needsScheduledFlush compare wall
+// times, so a monotonic reading in hold times made streams due by one clock
+// and not by the other.
+func TestHoldClockHasNoMonotonicReading(t *testing.T) {
+	e := &Engine{}
+	if now := e.clock(); strings.Contains(now.String(), "m=") {
+		t.Fatalf("hold clock carries a monotonic reading: %s", now)
+	}
+	e.now = time.Now
+	if now := e.clock(); strings.Contains(now.String(), "m=") {
+		t.Fatalf("injected hold clock carries a monotonic reading: %s", now)
+	}
+}

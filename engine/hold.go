@@ -63,11 +63,19 @@ type holdPlan struct {
 
 func (e *Engine) holding() bool { return e.options.HoldMaxAgeSeconds > 0 }
 
+// clock is the wall clock of hold ages. Without the monotonic reading, so
+// that every comparison of hold times uses the same clock: the monotonic
+// clock stops while the host is suspended, but Truncate (rounding the age
+// deadlines in needsScheduledFlush) drops it, and held records are older by
+// the suspended time. With both clocks mixed, a stream due by the wall clock
+// was not due by the monotonic one after a resume, and the flush loop
+// checkpointed every second, keeping compaction from selecting, until the
+// monotonic clock caught up an hour later.
 func (e *Engine) clock() time.Time {
 	if e.now != nil {
-		return e.now()
+		return e.now().Round(0)
 	}
-	return time.Now()
+	return time.Now().Round(0)
 }
 
 // addPending records a new unflushed record and when its stream started holding.
